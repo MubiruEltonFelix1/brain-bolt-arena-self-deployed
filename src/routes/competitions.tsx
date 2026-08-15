@@ -68,9 +68,9 @@ function CompetitionsPage() {
   async function load() {
     if (!user) return;
     const [{ data: qs }, { data: cs }, { data: ls }] = await Promise.all([
-      supabase.from("quizzes").select("id,title").eq("owner_id", user.id).is("archived_at", null).order("created_at", { ascending: false }),
-      supabase.from("competitions").select("id,title,status,mode,visibility,scheduled_start_at,lobby_duration_seconds,quiz_id,session_id,league_id,quizzes(title),leagues(name),sessions(code,status)").eq("owner_id", user.id).order("scheduled_start_at", { ascending: true, nullsFirst: false }),
-      supabase.from("leagues").select("id,name").eq("owner_id", user.id).is("archived_at", null).order("created_at", { ascending: false }),
+      supabase.from("quizzes").select("id,title").eq("owner_principal_id", user.id).is("archived_at", null).order("created_at", { ascending: false }),
+      supabase.from("competitions").select("id,title,status,mode,visibility,scheduled_start_at,lobby_duration_seconds,quiz_id,session_id,league_id,quizzes(title),leagues(name),sessions(code,status)").eq("owner_principal_id", user.id).order("scheduled_start_at", { ascending: true, nullsFirst: false }),
+      supabase.from("leagues").select("id,name").eq("owner_principal_id", user.id).is("archived_at", null).order("created_at", { ascending: false }),
     ]);
     setLeagues((ls as LeagueOption[] | null) ?? []);
     setQuizzes((qs as Quiz[] | null) ?? []);
@@ -285,7 +285,7 @@ function CreateCompetitionForm({ quizzes, leagues, onCreated }: { quizzes: Quiz[
 
     setSaving(true);
     const { error } = await supabase.from("competitions").insert({
-      owner_id: user.id,
+      owner_principal_id: user.id,
       quiz_id: quizId,
       title: title.trim(),
       mode: "scheduled",
@@ -294,7 +294,7 @@ function CreateCompetitionForm({ quizzes, leagues, onCreated }: { quizzes: Quiz[
       scheduled_start_at: localIso.toISOString(),
       league_id: leagueId || null,
       lobby_duration_seconds: Math.max(30, Math.min(3600, Math.round(lobbyMin * 60))),
-    });
+    } as never);
     setSaving(false);
     if (error) return toast.error(error.message);
     toast.success("Competition scheduled");

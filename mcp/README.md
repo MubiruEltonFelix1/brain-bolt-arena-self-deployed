@@ -6,7 +6,8 @@ An [MCP](https://modelcontextprotocol.io) server that connects Brain Bolt Arena 
 - `validate_quiz` — checks quiz JSON against Brain Bolt's format (per-question errors + warnings).
 - `to_csv` — serializes quiz JSON to the editor's CSV import template (validates first).
 - `save_quiz` — writes a generated quiz straight into the app's Supabase database (opt-in).
-- `get_capabilities` — returns the supported question types, limits, media URL policy, CSV template and owner requirements.
+- `get_capabilities` — returns the supported question types, limits, media URL policy, CSV template, lifecycle tools, ownership rules and idempotency requirements.
+- **Lifecycle (Phase 8B)** — `list_quizzes`, `get_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions`: inspect, update and safely manage existing quizzes. No competition/league orchestration yet.
 
 It runs locally as a stdio server. **Bwat is the only client connected to it for now** — exercised through the SDK test client in this repo (`bun run smoke`).
 
@@ -61,16 +62,44 @@ Takes `quiz` JSON, returns the CSV string for the app's quiz editor → **Import
 
 ### `save_quiz`
 
-Inserts the quiz + questions into Supabase using the **service role key**. Requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and an owner: pass `ownerId` (the uuid of a user in `auth.users`) or set `BRAINBOLT_DEFAULT_OWNER_ID` in `mcp/.env`. Returns `{ quizId, questionCount }`; the quiz shows up in the app's `/dashboard`.
+Inserts the quiz + questions into Supabase using the **service role key**. Requires `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, and an owner: pass `ownerId` (the uuid of a user in `auth.users`) or set `BRAINBOLT_DEFAULT_OWNER_ID` in `mcp/.env`. Returns `{ ok, action, id, quizId, questionCount, changed, warnings, errors, replayed }`; the quiz shows up in the app's `/dashboard`.
 
 Before writing anything, `save_quiz`:
 
 - re-runs the full semantic validation (hard errors on media questions without a real https URL, out-of-range answers, etc.) — invalid quizzes are rejected with a per-question report,
-- verifies the owner has a user principal (`principals` table, created 1:1 with auth users at signup) and fails with a precise error if not.
+- verifies the owner has a user principal (`principals` table, created 1:1 with auth users at signup) and fails with a precise error if not,
+- verifies the owner passes the app's own capability resolver `can(principal, 'quiz.create')` — the host capability (admin role, host role, or active host authorization), the same gate as the app's "quizzes host only write" RLS policy.
+
+`save_quiz` accepts an optional `idempotencyKey`: a retried call with the same key and identical payload replays the stored result instead of creating a duplicate quiz.
 
 > **Security note.** The service role key bypasses RLS and can write rows as any owner. Keep `mcp/.env` out of git (it is git-ignored) and only run the server on machines you trust. If you don't need DB writes, leave `SUPABASE_*` unset — everything else still works.
 >
 > **Trust boundary.** MCP is a trusted development/server-side integration at this stage: local stdio transport only, service-role writes, no remote authentication. Do not expose this server over a network transport without adding authentication and an owner allowlist.
+
+### Lifecycle tools (Phase 8B)
+
+The lifecycle tools manage existing quizzes. Every one of them:
+
+- takes an optional `actorId` (uuid of the acting auth user; defaults to `BRAINBOLT_DEFAULT_OWNER_ID`) and **resolves the acting principal** through the `principals` table — an actor without a user principal is rejected,
+- enforces capability through the app's **existing** `public.can(principal, action, resource)` resolver (service-role RPC). There is no parallel MCP permission system: reads, updates, archives and question edits all require `can(principal, 'quiz.edit', quizId)` — the principal must **own** the quiz (`owner_principal_id`, Phase 7L principal-only ownership) and hold the host capability. Admins are hosts but still must own the resource.
+- returns a structured envelope: `{ ok, action, id, changed, warnings, errors }` (plus `replayed` when an idempotency key was replayed).
+
+| Tool                 | Purpose                                                                                                                             |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `list_quizzes`       | Compact metadata for the actor's own quizzes (no question payloads, no answer keys). Filters: `search` (title substring), `archived` (true/false/omitted), `difficulty`, `isArena`, `limit` (1-100). |
+| `get_quiz`           | Full quiz: metadata + questions in the camelCase contract, in position order. Answer keys are returned **only to the owning principal**; `includeAnswers=false` strips them. |
+| `update_quiz`        | Patch-style: only the supplied fields of `title`, `description` (null clears), `difficulty`, `timePerQuestionSec` change; everything else is preserved. |
+| `archive_quiz`       | Soft-delete via `archived_at` — the **only** removal tool. There is no hard delete; "delete this quiz" should be answered with archive. Re-archiving is a no-op. |
+| `add_questions`      | Appends validated questions (same zod + semantic gate as generation: media URLs, answer ranges, duplicates, semicolon-free fields). Cap: 30 per quiz. |
+| `update_question`    | Patches one question; the **merged** question must pass the full validation gate. Question types are immutable (remove + re-add to change type). Fields that don't apply to the type are ignored with a warning. |
+| `remove_question`    | Removes one question and renumbers positions. Refuses to remove a quiz's last question. |
+| `reorder_questions`  | Rewrites 0-based positions from the full list of question ids; a partial or mismatched id set is rejected. |
+
+Schema gaps (exposed in `get_capabilities`, not invented by MCP): `quizzes` has **no** `visibility`, `published`, `category`, `branding` or `updated_at` columns — visibility/branding live on competitions/leagues/sessions. `created_at` is the only timestamp.
+
+#### Idempotency
+
+All write tools (`save_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions`) accept `idempotencyKey`. The key is claimed as a row in `mcp_idempotency_keys` (migration `20260817060000_...sql`); a repeated request with the same key and an **identical** payload replays the stored result instead of re-running the write — safe across server restarts, which is exactly the timeout/retry scenario this protects against. Reusing a key with a **different** payload is rejected with a precise error; failed runs free the key so a retry can succeed; keys expire after 24h.
 
 ## Question types
 

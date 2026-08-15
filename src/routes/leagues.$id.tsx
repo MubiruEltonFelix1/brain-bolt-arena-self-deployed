@@ -16,7 +16,7 @@ type League = {
   name: string;
   description: string | null;
   season: string | null;
-  owner_id: string;
+  owner_principal_id: string;
   status: LeagueStatus;
   visibility: LeagueVisibility;
   start_date: string | null;
@@ -111,7 +111,7 @@ function LeagueDetail() {
     const { data } = await supabase
       .from("quizzes")
       .select("id,title")
-      .eq("owner_id", user.id)
+      .eq("owner_principal_id", user.id)
       .is("archived_at", null)
       .order("created_at", { ascending: false });
     setMyQuizzes((data as Quiz[] | null) ?? []);
@@ -187,7 +187,7 @@ function LeagueDetail() {
 
   if (!league) return <HostShell><div className="p-12 font-mono text-sm">LOADING...</div></HostShell>;
 
-  const isOwner = user?.id === league.owner_id;
+  const isOwner = user?.id === league.owner_principal_id;
   const attachedIds = new Set(leagueQuizzes.map((q) => q.quiz_id));
   const availableQuizzes = myQuizzes.filter((q) => !attachedIds.has(q.id));
 

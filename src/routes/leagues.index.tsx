@@ -49,7 +49,7 @@ function LeaguesPage() {
     const { data } = await supabase
       .from("leagues")
       .select("*")
-      .eq("owner_id", user.id)
+      .eq("owner_principal_id", user.id)
       .order("created_at", { ascending: false });
     setLeagues((data as League[] | null) ?? []);
   }
@@ -61,7 +61,7 @@ function LeaguesPage() {
     if (!canHost) return toast.error("Hosting not authorized");
     setBusy(true);
     const { error } = await supabase.from("leagues").insert({
-      owner_id: user.id,
+      owner_principal_id: user.id,
       name: name.trim(),
       description: description.trim() || null,
       start_date: startDate || null,

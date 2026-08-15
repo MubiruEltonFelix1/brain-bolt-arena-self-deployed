@@ -166,7 +166,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (!identity) return;
     const { data: s, error: sErr } = await supabase
       .from("sessions")
-      .select("id,status,current_question_index,current_question_started_at,current_question_revealed,team_mode,question_order,quiz_id,league_id,paused_at,time_added_ms,quiz:quizzes(time_per_question,title),branding:branding_profiles(id,owner_id,organization_name,logo_url,primary_color,secondary_color)")
+      .select("id,status,current_question_index,current_question_started_at,current_question_revealed,team_mode,question_order,quiz_id,league_id,paused_at,time_added_ms,quiz:quizzes(time_per_question,title),branding:branding_profiles(id,owner_principal_id,organization_name,logo_url,primary_color,secondary_color)")
       .eq("id", sessionId)
       .maybeSingle();
     if (sErr) { setLoadFailed(true); return; }

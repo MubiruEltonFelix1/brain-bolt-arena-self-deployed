@@ -1,5 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Line, LineChart, XAxis, YAxis,
+} from "recharts";
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useHostStatus } from "@/hooks/use-host-status";
@@ -44,6 +48,28 @@ type Stats = {
   time_hosts: number;
 };
 
+type DailyStat = {
+  day: string;
+  new_players: number;
+  sessions: number;
+  participants: number;
+  answers: number;
+  results: number;
+  avg_accuracy: number | null;
+  avg_response_ms: number | null;
+};
+
+type TopQuiz = {
+  title: string;
+  plays: number;
+  is_arena: boolean;
+};
+
+type TopHost = {
+  display_name: string;
+  sessions: number;
+};
+
 function AdminPage() {
   const { isAdmin, loading } = useHostStatus();
   const navigate = useNavigate();
@@ -52,6 +78,11 @@ function AdminPage() {
   const [stats, setStats] = useState<Stats | null>(null);
   const [platform, setPlatform] = useState<PlatformStats | null>(null);
   const [busy, setBusy] = useState(false);
+  const [range, setRange] = useState<7 | 14 | 30 | 90>(30);
+  const [series, setSeries] = useState<DailyStat[]>([]);
+  const [topQuizzes, setTopQuizzes] = useState<TopQuiz[]>([]);
+  const [topHosts, setTopHosts] = useState<TopHost[]>([]);
+  const [refreshing, setRefreshing] = useState(false);
 
   useEffect(() => {
     if (!loading && !isAdmin) navigate({ to: "/dashboard" });
@@ -59,19 +90,33 @@ function AdminPage() {
 
   async function load() {
     // All figures are derived on demand from existing tables — no metrics store.
-    const [{ data: list, error: e1 }, { data: st, error: e2 }, { data: pl }] = await Promise.all([
-      supabase.rpc("admin_list_users", { p_search: search || undefined }),
-      supabase.rpc("admin_host_stats"),
-      supabase.rpc("admin_platform_stats"),
-    ]);
-    if (e1) toast.error(e1.message);
-    if (e2) toast.error(e2.message);
-    setUsers((list as AdminUser[] | null) ?? []);
-    setStats(((st as Stats[] | null) ?? [])[0] ?? null);
-    setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+    setRefreshing(true);
+    try {
+      const [{ data: list, error: e1 }, { data: st, error: e2 }, { data: pl }, { data: ts, error: e3 }, { data: tq, error: e4 }, { data: th, error: e5 }] = await Promise.all([
+        supabase.rpc("admin_list_users", { p_search: search || undefined }),
+        supabase.rpc("admin_host_stats"),
+        supabase.rpc("admin_platform_stats"),
+        supabase.rpc("admin_stats_timeseries" as never, { p_days: range } as never),
+        supabase.rpc("admin_top_quizzes" as never, { p_limit: 5 } as never),
+        supabase.rpc("admin_top_hosts" as never, { p_limit: 5 } as never),
+      ]);
+      if (e1) toast.error(e1.message);
+      if (e2) toast.error(e2.message);
+      if (e3) toast.error(e3.message);
+      if (e4) toast.error(e4.message);
+      if (e5) toast.error(e5.message);
+      setUsers((list as AdminUser[] | null) ?? []);
+      setStats(((st as Stats[] | null) ?? [])[0] ?? null);
+      setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+      setSeries(((ts as unknown as DailyStat[] | null) ?? []).filter((row) => row.day));
+      setTopQuizzes(((tq as unknown as TopQuiz[] | null) ?? []).filter((row) => row.title));
+      setTopHosts(((th as unknown as TopHost[] | null) ?? []).filter((row) => row.display_name));
+    } finally {
+      setRefreshing(false);
+    }
   }
 
-  useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin]);
+  useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin, range]);
 
   async function grant(profileId: string, type: "single" | "bundle" | "time", sessions: number | undefined, expiresAt: string | undefined) {
     setBusy(true);
@@ -137,14 +182,17 @@ function AdminPage() {
           <h1 className="font-display text-5xl italic uppercase mt-1">Host management</h1>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-          {summary.map((s) => (
-            <div key={s.label} className="border border-border bg-card p-4">
-              <p className="font-mono text-[10px] uppercase text-foreground/50">{s.label}</p>
-              <p className="font-display text-3xl italic text-volt mt-1">{s.value}</p>
-            </div>
-          ))}
-        </div>
+        <section className="space-y-3">
+          <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Host authorizations</h2>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+            {summary.map((s) => (
+              <div key={s.label} className="border border-border bg-card p-4">
+                <p className="font-mono text-[10px] uppercase text-foreground/50">{s.label}</p>
+                <p className="font-display text-3xl italic text-volt mt-1">{s.value}</p>
+              </div>
+            ))}
+          </div>
+        </section>
 
         <section className="space-y-3">
           <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Platform overview</h2>
@@ -175,6 +223,95 @@ function AdminPage() {
           )}
         </section>
 
+        <section className="space-y-3">
+          <div className="flex items-end justify-between gap-3 flex-wrap">
+            <div>
+              <p className="font-mono text-[10px] uppercase text-cyan-jolt">Trends</p>
+              <h2 className="font-display text-3xl italic uppercase mt-1">Activity</h2>
+            </div>
+            <div className="flex gap-1">
+              {([7, 14, 30, 90] as const).map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setRange(d)}
+                  className={`px-3 py-1.5 font-mono text-[10px] uppercase border ${
+                    range === d ? "border-volt text-volt" : "border-border text-foreground/60 hover:text-volt"
+                  }`}
+                >
+                  {d}D
+                </button>
+              ))}
+            </div>
+          </div>
+          {refreshing && (
+            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">Refreshing…</p>
+          )}
+          {series.length === 0 ? (
+            <div className="border border-border bg-card p-10 text-center font-mono text-xs uppercase text-foreground/40">
+              No activity recorded in this range
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <ActivityCard title="Sessions & players">
+                <SessionsChart data={series} />
+              </ActivityCard>
+              <ActivityCard title="Answers & accuracy">
+                <AnswersChart data={series} />
+              </ActivityCard>
+              <ActivityCard title="New registrations">
+                <RegistrationsChart data={series} />
+              </ActivityCard>
+              <ActivityCard title="Avg response time">
+                <ResponseChart data={series} />
+              </ActivityCard>
+            </div>
+          )}
+        </section>
+
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="border border-border bg-card">
+            <div className="p-4 border-b border-border">
+              <p className="font-mono text-[10px] uppercase text-volt">Leaderboard</p>
+              <h3 className="font-display text-xl italic uppercase mt-1">Top quizzes</h3>
+            </div>
+            {topQuizzes.length === 0 ? (
+              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No plays yet</div>
+            ) : (
+              topQuizzes.map((q, i) => (
+                <div key={q.title} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0">
+                  <span className="font-display text-xl italic text-volt w-6 shrink-0">{i + 1}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-display text-sm italic uppercase truncate">{q.title}</p>
+                  </div>
+                  {q.is_arena && (
+                    <span className="font-mono text-[9px] uppercase border border-volt/30 text-volt px-1.5 py-0.5">Arena</span>
+                  )}
+                  <span className="font-mono text-xs text-foreground/70">{q.plays.toLocaleString()}</span>
+                </div>
+              ))
+            )}
+          </div>
+          <div className="border border-border bg-card">
+            <div className="p-4 border-b border-border">
+              <p className="font-mono text-[10px] uppercase text-cyan-jolt">Leaderboard</p>
+              <h3 className="font-display text-xl italic uppercase mt-1">Top hosts</h3>
+            </div>
+            {topHosts.length === 0 ? (
+              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No sessions yet</div>
+            ) : (
+              topHosts.map((h, i) => (
+                <div key={h.display_name} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0">
+                  <span className="font-display text-xl italic text-cyan-jolt w-6 shrink-0">{i + 1}</span>
+                  <p className="flex-1 min-w-0 font-display text-sm italic uppercase truncate">{h.display_name}</p>
+                  <span className="font-mono text-xs text-foreground/70">
+                    {h.sessions.toLocaleString()} {h.sessions === 1 ? "session" : "sessions"}
+                  </span>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
         <HostRequestsPanel onChange={load} />
 
         <div className="flex gap-2">
@@ -200,6 +337,132 @@ function AdminPage() {
       </div>
     </HostShell>
   );
+}
+
+function ActivityCard({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="border border-border bg-card p-4 space-y-3">
+      <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+const axisTick = { fontSize: 10, fill: "var(--muted-foreground)" };
+const gridStroke = "var(--border)";
+const dayTick = (v: unknown) => String(v).slice(5); // YYYY-MM-DD → MM-DD
+
+const sessionsConfig = {
+  sessions: { label: "Sessions", color: "var(--volt)" },
+  participants: { label: "Players joined", color: "var(--cyan-jolt)" },
+} satisfies ChartConfig;
+
+const answersConfig = {
+  answers: { label: "Answers", color: "var(--amber-spark)" },
+  avg_accuracy: { label: "Accuracy", color: "var(--volt)" },
+} satisfies ChartConfig;
+
+const registrationsConfig = {
+  new_players: { label: "New players", color: "var(--pink-shock)" },
+} satisfies ChartConfig;
+
+const responseConfig = {
+  avg_response_ms: { label: "Avg response (ms)", color: "var(--cyan-jolt)" },
+} satisfies ChartConfig;
+
+function SessionsChart({ data }: { data: DailyStat[] }) {
+  return (
+    <ChartContainer config={sessionsConfig} className="aspect-auto h-52">
+      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <defs>
+          <linearGradient id="adminSessions" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="var(--volt)" stopOpacity={0.35} />
+            <stop offset="95%" stopColor="var(--volt)" stopOpacity={0.02} />
+          </linearGradient>
+          <linearGradient id="adminParticipants" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="5%" stopColor="var(--cyan-jolt)" stopOpacity={0.35} />
+            <stop offset="95%" stopColor="var(--cyan-jolt)" stopOpacity={0.02} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
+        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <YAxis tickLine={false} axisLine={false} width={36} tick={axisTick} />
+        <ChartTooltip
+          cursor={{ stroke: gridStroke }}
+          content={<ChartTooltipContent labelFormatter={(l) => formatDay(String(l))} />}
+        />
+        <Area dataKey="sessions" type="monotone" stroke="var(--volt)" strokeWidth={2} fill="url(#adminSessions)" />
+        <Area dataKey="participants" type="monotone" stroke="var(--cyan-jolt)" strokeWidth={2} fill="url(#adminParticipants)" />
+      </AreaChart>
+    </ChartContainer>
+  );
+}
+
+function AnswersChart({ data }: { data: DailyStat[] }) {
+  return (
+    <ChartContainer config={answersConfig} className="aspect-auto h-52">
+      <ComposedChart data={data} margin={{ top: 8, right: 0, bottom: 0, left: 0 }}>
+        <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
+        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <YAxis yAxisId="count" tickLine={false} axisLine={false} width={36} tick={axisTick} />
+        <YAxis yAxisId="pct" orientation="right" domain={[0, 100]} tickLine={false} axisLine={false} width={36} tick={axisTick} tickFormatter={(v) => `${v}%`} />
+        <ChartTooltip
+          cursor={{ stroke: gridStroke }}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(l) => formatDay(String(l))}
+              formatter={(value, name) => (name === "avg_accuracy" ? `${value}%` : Number(value).toLocaleString())}
+            />
+          }
+        />
+        <Bar yAxisId="count" dataKey="answers" fill="var(--amber-spark)" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
+        <Line yAxisId="pct" dataKey="avg_accuracy" type="monotone" stroke="var(--volt)" strokeWidth={2} dot={false} />
+      </ComposedChart>
+    </ChartContainer>
+  );
+}
+
+function RegistrationsChart({ data }: { data: DailyStat[] }) {
+  return (
+    <ChartContainer config={registrationsConfig} className="aspect-auto h-52">
+      <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
+        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <YAxis tickLine={false} axisLine={false} width={36} tick={axisTick} />
+        <ChartTooltip
+          cursor={{ stroke: gridStroke }}
+          content={<ChartTooltipContent labelFormatter={(l) => formatDay(String(l))} />}
+        />
+        <Bar dataKey="new_players" fill="var(--pink-shock)" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
+      </BarChart>
+    </ChartContainer>
+  );
+}
+
+function ResponseChart({ data }: { data: DailyStat[] }) {
+  return (
+    <ChartContainer config={responseConfig} className="aspect-auto h-52">
+      <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
+        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <YAxis tickLine={false} axisLine={false} width={36} tick={axisTick} />
+        <ChartTooltip
+          cursor={{ stroke: gridStroke }}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(l) => formatDay(String(l))}
+              formatter={(value) => `${Number(value).toLocaleString()} ms`}
+            />
+          }
+        />
+        <Line dataKey="avg_response_ms" type="monotone" stroke="var(--cyan-jolt)" strokeWidth={2} dot={false} connectNulls />
+      </LineChart>
+    </ChartContainer>
+  );
+}
+
+function formatDay(day: string) {
+  return new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function UserRow({

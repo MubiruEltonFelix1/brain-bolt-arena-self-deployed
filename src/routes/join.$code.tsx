@@ -64,7 +64,7 @@ function JoinPage() {
     (async () => {
       const { data, error } = await supabase
         .from("sessions")
-        .select("id, code, status, team_mode, quiz:quizzes(title), branding:branding_profiles(id,owner_id,organization_name,logo_url,primary_color,secondary_color)")
+        .select("id, code, status, team_mode, quiz:quizzes(title), branding:branding_profiles(id,owner_principal_id,organization_name,logo_url,primary_color,secondary_color)")
         .eq("code", code)
         .maybeSingle();
       if (cancelled) return;

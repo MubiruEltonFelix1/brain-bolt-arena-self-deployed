@@ -270,12 +270,149 @@ export function questionToDbRow(q: BrainBoltQuestion, position: number): Questio
   }
 }
 
+/**
+ * The canonical field set per question type (camelCase, as accepted by
+ * questionSchema). Used by update_question to report fields that do not
+ * apply to a question's type as warnings instead of silently dropping them.
+ */
+export const QUESTION_TYPE_FIELDS: Record<QuestionTypeId, readonly string[]> = {
+  mcq: ["text", "timeLimitSec", "pointValue", "doublePoints", "options", "correctIndex"],
+  image_mcq: [
+    "text",
+    "timeLimitSec",
+    "pointValue",
+    "doublePoints",
+    "options",
+    "correctIndex",
+    "imageUrl",
+  ],
+  true_false: ["text", "timeLimitSec", "pointValue", "doublePoints", "correct"],
+  number: [
+    "text",
+    "timeLimitSec",
+    "pointValue",
+    "doublePoints",
+    "correctNumber",
+    "min",
+    "max",
+    "tolerance",
+    "format",
+  ],
+  image_reveal: [
+    "text",
+    "timeLimitSec",
+    "pointValue",
+    "doublePoints",
+    "options",
+    "correctIndex",
+    "imageUrl",
+    "revealStages",
+  ],
+  audio: ["text", "timeLimitSec", "pointValue", "doublePoints", "options", "correctIndex", "audioUrl"],
+  ordering: ["text", "timeLimitSec", "pointValue", "doublePoints", "items"],
+  type: ["text", "timeLimitSec", "pointValue", "doublePoints", "acceptedAnswers"],
+  feedback: ["text", "timeLimitSec", "pointValue", "doublePoints"],
+  map_pin: ["text", "timeLimitSec", "pointValue", "doublePoints", "lat", "lng", "maxDistanceKm"],
+};
+
+/** A `questions` row as read back from the database (snake_case). */
+export type QuestionDbRowLike = {
+  id?: string;
+  question_type: string;
+  text: string;
+  options: unknown;
+  correct_index: number;
+  time_limit_sec: number | null;
+  point_value: number;
+  image_url: string | null;
+  double_points: boolean;
+  correct_lat: number | null;
+  correct_lng: number | null;
+  max_distance_km: number | null;
+  correct_number: number | null;
+  number_min: number | null;
+  number_max: number | null;
+  number_tolerance: number | null;
+  accepted_answers: string[] | null;
+  audio_url: string | null;
+  reveal_stages: number | null;
+};
+
+const NUMBER_FORMATS = ["general", "year", "decimal", "percentage", "currency"] as const;
+
+/**
+ * Inverse of questionToDbRow: maps a `questions` table row back to the
+ * camelCase Brain Bolt question contract. This is what get_quiz returns so
+ * the round-trip (get → edit → save/validate) is lossless.
+ */
+export function dbQuestionRowToCamel(row: QuestionDbRowLike): BrainBoltQuestion {
+  const base = {
+    text: row.text,
+    timeLimitSec: row.time_limit_sec ?? undefined,
+    pointValue: row.point_value,
+    doublePoints: row.double_points || undefined,
+  };
+  const options = Array.isArray(row.options) ? (row.options as string[]) : [];
+
+  switch (row.question_type) {
+    case "mcq":
+    case "image_mcq":
+    case "image_reveal":
+    case "audio":
+      return {
+        ...base,
+        type: row.question_type,
+        options,
+        correctIndex: row.correct_index,
+        imageUrl: row.image_url ? row.image_url : undefined,
+        audioUrl: row.question_type === "audio" && row.audio_url ? row.audio_url : undefined,
+        revealStages:
+          row.question_type === "image_reveal" && row.reveal_stages != null
+            ? row.reveal_stages
+            : undefined,
+      };
+    case "true_false":
+      return { ...base, type: "true_false", correct: row.correct_index === 0 };
+    case "number": {
+      const format = options[0] as (typeof NUMBER_FORMATS)[number] | undefined;
+      return {
+        ...base,
+        type: "number",
+        correctNumber: row.correct_number ?? 0,
+        min: row.number_min ?? 0,
+        max: row.number_max ?? 0,
+        tolerance: row.number_tolerance ?? undefined,
+        format: format && NUMBER_FORMATS.includes(format) ? format : undefined,
+      };
+    }
+    case "map_pin":
+      return {
+        ...base,
+        type: "map_pin",
+        lat: row.correct_lat ?? 0,
+        lng: row.correct_lng ?? 0,
+        maxDistanceKm: row.max_distance_km ?? undefined,
+      };
+    case "type":
+      return { ...base, type: "type", acceptedAnswers: row.accepted_answers ?? [] };
+    case "feedback":
+      return { ...base, type: "feedback" };
+    case "ordering":
+      return { ...base, type: "ordering", items: options };
+    default:
+      throw new Error(
+        `questions row has unsupported question_type "${row.question_type}" — ` +
+          "this quiz may have been written by a newer app version",
+      );
+  }
+}
+
 /** The quizzes-table row for save_quiz. */
 export type QuizDbRow = {
   title: string;
   description: string | null;
   time_per_question: number;
-  owner_id: string;
+  owner_principal_id: string;
   difficulty: "easy" | "medium" | "hard" | null;
   estimated_duration_minutes: number | null;
 };
@@ -285,7 +422,7 @@ export function quizToDbRow(quiz: BrainBoltQuiz, ownerId: string): QuizDbRow {
     title: quiz.title,
     description: quiz.description ?? null,
     time_per_question: quiz.timePerQuestionSec ?? 20,
-    owner_id: ownerId,
+    owner_principal_id: ownerId,
     difficulty: quiz.difficulty ?? null,
     estimated_duration_minutes: Math.max(1, Math.round(quiz.questions.length * 0.5)),
   };

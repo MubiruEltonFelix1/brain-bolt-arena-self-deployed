@@ -195,6 +195,7 @@ export type Database = {
           metadata: Json
           mode: Database["public"]["Enums"]["competition_mode"]
           owner_id: string
+          owner_principal_id: string | null
           quiz_id: string
           scheduled_start_at: string | null
           session_id: string | null
@@ -218,6 +219,7 @@ export type Database = {
           metadata?: Json
           mode?: Database["public"]["Enums"]["competition_mode"]
           owner_id: string
+          owner_principal_id?: string | null
           quiz_id: string
           scheduled_start_at?: string | null
           session_id?: string | null
@@ -241,6 +243,7 @@ export type Database = {
           metadata?: Json
           mode?: Database["public"]["Enums"]["competition_mode"]
           owner_id?: string
+          owner_principal_id?: string | null
           quiz_id?: string
           scheduled_start_at?: string | null
           session_id?: string | null
@@ -263,6 +266,13 @@ export type Database = {
             columns: ["league_id"]
             isOneToOne: false
             referencedRelation: "leagues"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "competitions_owner_principal_id_fkey"
+            columns: ["owner_principal_id"]
+            isOneToOne: false
+            referencedRelation: "principals"
             referencedColumns: ["id"]
           },
           {

@@ -30,7 +30,7 @@ function Dashboard() {
     const { data } = await supabase
       .from("quizzes")
       .select("id,title,description,time_per_question,created_at,questions(count)")
-      .eq("owner_id", user.id)
+      .eq("owner_principal_id", user.id)
       .is("archived_at", null)
       .order("created_at", { ascending: false });
     setLoadingQuizzes(false);
@@ -40,12 +40,12 @@ function Dashboard() {
         question_count: q.questions?.[0]?.count ?? 0,
       }))
     );
-    const { data: l } = await supabase.from("leagues").select("id,name").eq("owner_id", user.id);
+    const { data: l } = await supabase.from("leagues").select("id,name").eq("owner_principal_id", user.id);
     setLeagues((l as League[] | null) ?? []);
     const { data: b } = await supabase
       .from("branding_profiles")
       .select("id,organization_name")
-      .eq("owner_id", user.id)
+      .eq("owner_principal_id", user.id)
       .order("created_at", { ascending: false });
     setBrandingProfiles((b as BrandingLite[] | null) ?? []);
   }
@@ -68,7 +68,7 @@ function Dashboard() {
     if (!user) return;
     const { data, error } = await supabase
       .from("quizzes")
-      .insert({ owner_id: user.id, title: "Untitled Quiz" })
+      .insert({ owner_principal_id: user.id, title: "Untitled Quiz" } as never)
       .select("id")
       .single();
     if (error || !data) return toast.error(error?.message ?? "Failed");

@@ -1,6 +1,6 @@
 export type BrandingProfile = {
   id: string;
-  owner_id: string;
+  owner_principal_id: string;
   organization_name: string;
   logo_url: string | null;
   primary_color: string | null;

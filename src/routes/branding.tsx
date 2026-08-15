@@ -38,7 +38,7 @@ function BrandingPage() {
     const { data } = await supabase
       .from("branding_profiles")
       .select("*")
-      .eq("owner_id", user.id)
+      .eq("owner_principal_id", user.id)
       .order("created_at", { ascending: false });
     setProfiles((data as BrandingProfile[] | null) ?? []);
   }
@@ -67,7 +67,7 @@ function BrandingPage() {
 
     setSaving(true);
     const payload = {
-      owner_id: user.id,
+      owner_principal_id: user.id,
       organization_name: name,
       logo_url: draft.logo_url.trim() || null,
       primary_color: draft.primary_color || null,
@@ -76,7 +76,7 @@ function BrandingPage() {
 
     const { error } = draft.id
       ? await supabase.from("branding_profiles").update(payload).eq("id", draft.id)
-      : await supabase.from("branding_profiles").insert(payload);
+      : await supabase.from("branding_profiles").insert(payload as never);
     setSaving(false);
     if (error) return toast.error(error.message);
     toast.success(draft.id ? "Branding updated" : "Branding created");
@@ -95,7 +95,7 @@ function BrandingPage() {
 
   const preview: BrandingProfile = {
     id: draft.id ?? "preview",
-    owner_id: user?.id ?? "",
+    owner_principal_id: user?.id ?? "",
     organization_name: draft.organization_name || "Your Organization",
     logo_url: draft.logo_url || null,
     primary_color: draft.primary_color || null,

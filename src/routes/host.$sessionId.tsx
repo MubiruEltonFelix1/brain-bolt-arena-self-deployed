@@ -146,7 +146,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (bpId) {
       const { data: b } = await supabase
         .from("branding_profiles")
-        .select("id,owner_id,organization_name,logo_url,primary_color,secondary_color")
+        .select("id,owner_principal_id,organization_name,logo_url,primary_color,secondary_color")
         .eq("id", bpId).maybeSingle();
       setBranding((b as BrandingProfile | null) ?? null);
     }

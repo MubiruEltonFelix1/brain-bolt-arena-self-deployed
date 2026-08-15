@@ -608,3 +608,141 @@ window and no rollback requirement.
 
 ### Anomalies
 None.
+
+## Phase 7L — Principal-aware authorization completion & legacy retirement (EXECUTED 2026-08-16)
+
+**Status: `can(...)` = principal-only for all ownership-sensitive capabilities; all ownership RLS
+on the four tables + child tables (questions, league_quizzes, league_standings) = principal-aware;
+sync triggers = retired; legacy `owner_id` columns = retired. `sessions.host_id` remains legacy
+runtime identity (never part of this phase).**
+
+Migration files (apply in order, see gates below):
+1. `supabase/migrations/20260816124500_phase_7l_authorization_completion.sql` — **apply first**,
+   safe at any time.
+2. `supabase/migrations/20260816130000_phase_7l_retire_sync_triggers.sql` — **apply only AFTER
+   the application deploy** that switched writes to `owner_principal_id`.
+3. `supabase/migrations/20260816131500_phase_7l_retire_owner_id_columns.sql` — **apply only
+   AFTER (2)**; each DROP is individually reversible.
+
+### 7L.1 Full legacy ownership dependency audit (classification)
+
+Every live `owner_id` reference at the start of 7L, classified:
+
+| Reference | Location | Classification | Disposition |
+|---|---|---|---|
+| `can(...)` ownership branches ×4 (quiz.edit/delete, competition.manage, league.manage, branding.manage) — `owner_principal_id` first, `owner_id` fallback when NULL | 20260816120000:141-178 | transitional compatibility | fallback removed (M1 §3); principal-only |
+| Sync triggers ×4 (`tg_*_sync_owner_principal`) | 7H/7I/7J/7K | transitional compatibility (dual-write) | made bidirectional in M1 §2 (principal-authoritative, legacy mirror), then retired (M2) |
+| RLS WITH CHECK `auth.uid() = owner_id` — quizzes "quizzes manage own", competitions "Owners manage their competitions" | 7J:49, 7K:282 | transitional compatibility | principal-aware WITH CHECK (M1 §4) |
+| RLS USING legacy fallback `OR (owner_principal_id IS NULL AND auth.uid() = owner_id)` — quizzes, competitions, questions ×2 | 7J:47, 7K:280, 7J:58-76 | transitional compatibility | fallback removed (M1 §4) |
+| branding INSERT policy `auth.uid() = owner_id AND can('branding.create')` | 7H:121-124 | transitional compatibility | principal-aware WITH CHECK, create rule kept (M1 §4) |
+| league_quizzes policies — `l.owner_id` / `q.owner_id` | 20260719074454:36-62 | genuine ownership dependency (inherited league/quiz ownership) | principal-aware (M1 §4) |
+| league_standings policies — `l.owner_id` | 20260618084857:43-50 | genuine ownership dependency (inherited league ownership) | principal-aware (M1 §4) |
+| `prepare_competition_session_internal` — `COALESCE(owner_principal_id, owner_id)` host derivation | 7K:242 | genuine ownership dependency (owner-propagation point) | `owner_principal_id` only (M1 §5a) |
+| `prepare_competition_session` — `COALESCE(...)` gate read | 7K:262 | genuine ownership dependency | `owner_principal_id` only (M1 §5a) |
+| `list_due_competitions` — `c.owner_id = auth.uid()` | 20260812153755:147 | genuine ownership dependency (owner-scoped due list; autonomous scheduler itself has **no** owner reference) | principal-aware, decision-equivalent (M1 §5b) |
+| `can_view_league` — `l.owner_id = auth.uid()` | 20260812153755:132 | genuine ownership dependency | principal-aware, decision-equivalent (M1 §5c) |
+| `get_arena_quiz_detail` / `get_arena_quizzes` — creator_name via `q.owner_id` | 20260731050859:34, 20260801001013:62 | attribution (display only) | joins via `owner_principal_id`, output identical (M1 §5d) |
+| Client queries `.eq("owner_id", user.id)` ×9, insert payloads ×4, ownership guards ×2, dead SELECT columns ×3, local types ×3 | src/routes/*, src/lib/branding.ts | application dependency | migrated to `owner_principal_id` (7L §5 below) |
+| MCP server: `quizToDbRow` (save_quiz), `listQuizzes` fallback filter, select columns | mcp/src/schema.ts, mcp/src/supabase.ts, mcp/src/lifecycle.ts | server utility | migrated to `owner_principal_id` (principal-only) |
+| `scripts/verify-live.mjs` drift/dup checks vs owner_id | scripts/ | audit tooling | principal-only invariants (missing/non-user/dup structurally impossible via FK) |
+| `scripts/remap-ownership.mjs`, `scripts/remap.sql`, `migration-data/extract.json` | scripts/, migration-data/ | one-time historical migration artifacts | retained as history; not runtime dependencies |
+| Historical policy/function versions in older migrations | 20260616133205, 20260618084857, 20260717231622, 20260719074454, 20260724054750, 20260803053004, 20260804061631, 20260805054014, 20260806054006, 20260812153755, 20260812154432 | obsolete (superseded by later CREATE OR REPLACE / DROP POLICY) | none — historical record only |
+
+No views reference `owner_id`. No frozen-system code (gameplay, timing, realtime, Arena,
+autonomous execution, standings calculation, results, guest claiming, question rendering,
+scheduler) references `owner_id`.
+
+### 7L.2 Principal-aware `can(...)` completion
+
+All four ownership-sensitive capabilities resolve through the principal only:
+`quiz.edit`, `quiz.delete`, `competition.manage`, `league.manage`, `branding.manage` all evaluate
+`owner_principal_id = principal_for_user(v_user)` with no legacy fallback. Safety: the M1
+integrity gate proves zero NULL/mismatched/non-user/duplicate principal mappings, and the
+bidirectional triggers keep `owner_principal_id` non-NULL for every future row. Admin rules,
+host rules, create rules, `session.manage` (still host_id-based) and NULL handling are unchanged.
+The `can(text, uuid)` caller-identity overload (RLS-only, passes `auth.uid()` which `can()` still
+resolves) is unchanged and cannot be spoofed: it never accepts a client-supplied principal.
+
+### 7L.3 RLS completion
+
+Every remaining true ownership policy is principal-aware: quizzes and competitions (USING +
+WITH CHECK), branding INSERT, questions ×2, league_quizzes ×2, league_standings ×2. Leagues were
+already principal-aware (7I). The owner/admin/host/public-reader/participant/anonymous
+distinction is preserved: admin policies (`is_admin()`), restrictive host-write policies, and
+public-read policies are untouched. The legacy fallbacks were provably dead (NULL principal
+impossible) and were removed rather than kept.
+
+### 7L.4/5 Application migration
+
+All four ownership-bearing business-object writes, reads, guards and types now use
+`owner_principal_id` (user principals are id-identical to auth users, so values are unchanged):
+`routes/dashboard.tsx`, `routes/leagues.index.tsx`, `routes/leagues.$id.tsx`,
+`routes/branding.tsx`, `routes/competitions.tsx`, `routes/quizzes.$id.tsx` (writes ×4, filters ×9,
+guards ×2), the branding selects in `routes/host.$sessionId.tsx` / `join.$code.tsx` /
+`play.$sessionId.tsx`, `src/lib/branding.ts`, and the MCP server (`schema.ts`, `supabase.ts`,
+`lifecycle.ts`). Not altered: `sessions.host_id`, `participants.profile_id`,
+`competition_results.profile_id`, `user_roles.user_id`, attribution fields. The M1 bidirectional
+triggers make the write switch safe in a single deploy window: pre-deploy legacy writers
+(`owner_id`-only) still derive the principal; post-deploy principal writers get the legacy mirror.
+
+### 7L.6/7 Dual-write and legacy column retirement
+
+M2 drops the four sync triggers (gated on the app deploy — after it, no code path writes
+`owner_id`). M3 drops the four legacy columns (`branding_profiles`, `leagues`, `quizzes`,
+`competitions`) as individually reversible statements; PostgreSQL refuses the DROP if any policy
+or SQL-language function still references the column (safety net), and M1 removed every
+PL/pgSQL reference. Rollback SQL for each column is inlined in M3. `sessions.host_id` is NOT a
+legacy ownership column: it remains the runtime host identity and is untouched.
+
+### 7L.8 Final ownership integrity audit
+
+For every one of the four tables: exactly one principal owner per row (FK `owner_principal_id →
+principals.id`, `ON DELETE RESTRICT`), zero NULL principals, zero non-user principals (asserted
+by M1's integrity gate), zero duplicate mappings (structurally impossible: principals.id is a
+primary key), zero drift (both directions of the trigger write the same value; retired after the
+gate proved consistency), zero orphaned child relationships (questions/league_quizzes/
+league_standings inherit ownership via their parent's principal). `scripts/verify-live.mjs`
+section B now asserts these principal-only invariants.
+
+### 7L.9 Organization readiness
+
+The model now supports `User | Organization | Platform | Partner` principals (enum from 7F) with
+no schema change: a business object's owner is a `principals` reference, so reassigning ownership
+from User Principal A to Organization Principal B is a single-column UPDATE (the M1 triggers
+mirror `owner_id := NULL` for non-user principals, which the legacy column cannot represent).
+Ownership no longer assumes `owner = auth user`. Organizations themselves remain explicitly out
+of scope (Constitution §4 forbids a second ownership column; the 7G plan defers org membership).
+
+### 7L.10 Security verification
+
+Owner can still manage owned resources (principal RLS + `can()`); non-owner cannot (RLS + guards);
+admin retains administrative access (`is_admin()` untouched); host remains host, not owner
+(`sessions.host_id` and `session.manage` untouched; `can()` still requires `v_owner AND v_host`);
+anonymous access unchanged (public-read policies untouched); principals cannot be reassigned
+through client calls (`principals` is read-only to clients — no INSERT/UPDATE/DELETE policies,
+immutability trigger, and RLS on the four tables only matches `current_principal_id()`); `can()`
+cannot be spoofed (service_role-only grant; the RLS `can(text, uuid)` overload passes
+`auth.uid()`, never a client-controlled value). No privilege escalation: every change is
+decision-equivalent for user principals or removes a fallback that was provably dead.
+
+### 7L.11 Regression
+
+Zero behavioural change was introduced: every RLS/RPC/trigger change is decision-equivalent
+(user principals are id-identical to auth users) or removes provably dead fallbacks. The frozen
+surfaces — gameplay, timing, realtime, Arena, autonomous competition execution (`run_autonomous_*`
+have no ownership reference), League standings calculation, CompetitionResults, guest claiming,
+question rendering, scheduler behaviour — are untouched.
+
+### Remaining transitional exceptions (documented, not retired)
+
+- `sessions.host_id` — runtime host identity, deliberately not migrated (Constitution §4 row 5,
+  deferred).
+- `host_authorizations.profile_id`, `host_requests.user_id`, `user_roles.user_id`,
+  `competition_results.profile_id`, `participants.profile_id` — identity/attribution columns,
+  not ownership; deferred subject/grantee principal renames (DEFERRED_WORK register).
+- `can(text, uuid)` RLS caller wrapper — remains, resolves through `can()`.
+- One-time migration artifacts (`scripts/remap-*.mjs`, `migration-data/`) — historical only.
+
+### Anomalies
+None. `src/integrations/supabase/types.ts` was hand-synced for `competitions.owner_principal_id`
+(the generated file predated the 7K column); regenerate on the next Lovable type generation.

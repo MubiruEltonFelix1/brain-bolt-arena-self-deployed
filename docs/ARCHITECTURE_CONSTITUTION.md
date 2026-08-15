@@ -61,8 +61,9 @@ CURRENT: ownership references `auth.users.id` directly. `profiles.id` *is* the u
 `competition_results.profile_id` and `host_authorizations.profile_id` hold user ids — a naming
 leak, not a data problem.
 
-DEFERRED: creating `principals` has no value until a second Principal kind exists. Introduce it
-in the same pass as Organizations.
+✅ RESOLVED (Phase 7F, 2026-08-14): `principals` exists with user-kind seeded 1:1 (id =
+user_id); `principal_type` already admits organization/platform/partner. Organization membership
+remains deferred.
 
 ## 4. Ownership decision (LOCKED)
 
@@ -77,16 +78,16 @@ Tables that will eventually migrate (CURRENT → TARGET):
 
 | Table | Column today | Target | Notes |
 |---|---|---|---|
-| quizzes | owner_id | owner_principal_id | straight backfill |
-| competitions | owner_id | owner_principal_id | straight backfill |
-| leagues | owner_id | owner_principal_id | straight backfill |
-| branding_profiles | owner_id | owner_principal_id | straight backfill |
-| sessions | host_id | *drop* | derive from competition; runtime must not own |
-| host_authorizations | profile_id | grantee_principal_id | rename + retype |
-| host_requests | user_id | requester_principal_id | low risk |
-| user_roles | user_id | principal_id + scope_principal_id | needs role scoping first |
-| competition_results | profile_id | subject_principal_id | user-kind only initially |
-| participants | profile_id | subject_principal_id (nullable) | guests stay NULL |
+| quizzes | ~~owner_id~~ **owner_principal_id** | owner_principal_id | ✅ MIGRATED (7J + 7L; legacy column retired 7L) |
+| competitions | ~~owner_id~~ **owner_principal_id** | owner_principal_id | ✅ MIGRATED (7K + 7L; legacy column retired 7L) |
+| leagues | ~~owner_id~~ **owner_principal_id** | owner_principal_id | ✅ MIGRATED (7I + 7L; legacy column retired 7L) |
+| branding_profiles | ~~owner_id~~ **owner_principal_id** | owner_principal_id | ✅ MIGRATED (7H + 7L; legacy column retired 7L) |
+| sessions | host_id | *drop* | runtime identity; derive from competition — deferred |
+| host_authorizations | profile_id | grantee_principal_id | rename + retype — deferred |
+| host_requests | user_id | requester_principal_id | low risk — deferred |
+| user_roles | user_id | principal_id + scope_principal_id | needs role scoping first — deferred |
+| competition_results | profile_id | subject_principal_id | user-kind only initially — deferred |
+| participants | profile_id | subject_principal_id (nullable) | guests stay NULL — deferred |
 
 ## 5. Permission decision (LOCKED)
 
@@ -94,8 +95,8 @@ Four separated concepts:
 
 | Concept | Question it answers | CURRENT carrier |
 |---|---|---|
-| Identity | Who is the Principal? | `auth.users` / `profiles` |
-| Ownership | What does the Principal own? | `owner_id` columns |
+| Identity | Who is the Principal? | `auth.users` / `profiles` / `principals` |
+| Ownership | What does the Principal own? | `owner_principal_id` columns (✅ migrated for quizzes, competitions, leagues, branding_profiles; legacy `owner_id` retired) |
 | Role | What relationship does a Principal have to another Principal? | `user_roles` (unscoped) |
 | Grant | What specific capability was granted? | `host_authorizations` |
 
@@ -278,6 +279,12 @@ the same ~30 policies. Doing the resolver first collapses that into one function
 | 3 | Competition/Session boundary cleanup | Every session originates from a competition (additive), then drop duplicated session columns | sessions, competitions | `tg_sync_competition_from_session`, `prepare_competition_session*`, `advance_question_internal`, session RLS | **High** — touches frozen timing + autonomous engines | Phase A additive (trivial revert); phase B needs column restore from backup | #2, full replay testing | Phase B: maintenance window |
 | 4 | CompetitionResult canonicalization | Demote `league_standings` to cache; stop reading `participants`/`answers` for history | league_standings, (reads) participants, answers | `get_league_standings`, `src/lib/player-stats.ts` | Medium — historical rows may not be derivable | Snapshot `league_standings` before demotion | #3 | No |
 | 5 | Principal abstraction + `owner_principal_id` | One ownership primitive, one Principal table | new `principals`; quizzes, competitions, leagues, branding_profiles, host_authorizations, host_requests, user_roles, competition_results, participants | All owner-based policies via `can()` | **High** — partial backfill orphans ownership | Transactional; keep old columns until cutover verified | #2, #4 | Short window at cutover |
+
+✅ **EXECUTED as Phases 7F-7L (2026-08-14 → 2026-08-16).** `principals` (7F) with user-kind
+seed; the four ownership-bearing tables migrated (7H-7K) and their legacy `owner_id` columns
+retired (7L); `can(...)` principal-only for all ownership-sensitive capabilities (7L); all
+ownership RLS principal-aware (7L). Remaining rows of this table are deferred (DEFERRED_WORK
+register).
 | 6 | Organizations | Second Principal kind + scoped membership | principals, user_roles (scope), membership table | `can()` scope resolution | Medium | Feature-flag org kind | #5 + role scoping | No |
 | 7 | Advanced League registration/rosters | Roster, fixtures, season completion | leagues, new roster/fixture tables | league policies via `can()` | Low | Drop new tables | #6 | No |
 | 8 | Marketplace | Listings over reusable assets | new listing tables, quiz versioning | `can()` marketplace actions | Medium | Drop listings; versioning stays | Content versioning, #6 | No |
@@ -314,7 +321,7 @@ Accepted deviations, intentionally left in place because the MVP is frozen:
 - `is_authorized_host()` is admin-only while the trigger and UI accept the `host` role (section 6). Fails closed.
 - Sessions carry business state (`host_id`, `quiz_id`, `league_id`, `branding_profile_id`, `team_mode`, `autonomous`), trigger-synced with competitions.
 - Sessions may exist without a Competition (ad-hoc hosted games); Arena solo runs write results with no competition row.
-- Ownership references `auth.users.id` under five different column names; no Principal indirection.
+- ✅ RESOLVED (7F-7L): ownership on the four business tables now flows through `principals` (`owner_principal_id`); legacy `owner_id` columns retired. Remaining `auth.users.id` references are runtime/attribution/identity, not ownership: `sessions.host_id`, `participants.profile_id`, `competition_results.profile_id`, `host_authorizations.profile_id`, `user_roles.user_id`.
 - `profile_id` naming on `competition_results` and `host_authorizations` leaks Profile into ownership-adjacent positions (naming only — values are user ids).
 - Blanket `true` SELECT policies on `sessions`, `participants`, `answers`, `quizzes`, `leagues`, `league_standings`, `branding_profiles` — required by anonymous live play.
 - `league_standings` is a manually written aggregate rivalling live `get_league_standings`.
@@ -325,7 +332,7 @@ Accepted deviations, intentionally left in place because the MVP is frozen:
 ## 20. Frozen — do not touch
 
 - Timing engine: `src/lib/question-intro-timing.ts`, `src/lib/server-clock.ts`
-- Autonomous engine: `run_autonomous_tick`, `run_autonomous_scheduler`, `advance_question_internal`, `prepare_competition_session*`, pg_cron jobs
+- Autonomous engine: `run_autonomous_tick`, `run_autonomous_scheduler`, `advance_question_internal`, `prepare_competition_session*` (ownership-resolution carve-out only: Phase 7K/7L changed the owner read from `owner_id` to `owner_principal_id` — decision-equivalent for user principals), pg_cron jobs
 - Arena scoring: `submit_arena_run`, `score_arena_run`
 - League standings: `get_league_standings`
 - Shared question engine: `src/lib/question-registry.ts`, `src/components/question/QuestionRenderer.tsx`

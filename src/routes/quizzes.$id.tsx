@@ -11,7 +11,7 @@ export const Route = createFileRoute("/quizzes/$id")({
   component: QuizEditor,
 });
 
-type Quiz = { id: string; title: string; description: string | null; time_per_question: number; owner_id: string };
+type Quiz = { id: string; title: string; description: string | null; time_per_question: number; owner_principal_id: string };
 type QuestionType = "mcq" | "true_false" | "image_mcq" | "map_pin" | "number" | "type" | "feedback" | "image_reveal" | "audio" | "ordering";
 type Question = {
   id: string;
@@ -120,7 +120,7 @@ function QuizEditor() {
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
 
   if (!quiz) return <HostShell><div className="p-12 font-mono text-sm text-foreground/40">LOADING...</div></HostShell>;
-  if (user && quiz.owner_id !== user.id) return <HostShell><div className="p-12">Not your quiz.</div></HostShell>;
+  if (user && quiz.owner_principal_id !== user.id) return <HostShell><div className="p-12">Not your quiz.</div></HostShell>;
 
   async function saveQuiz(patch: Partial<Quiz>) {
     setSaving(true);
