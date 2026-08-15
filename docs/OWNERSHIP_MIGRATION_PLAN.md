@@ -476,3 +476,135 @@ None.
 ### Next recommended migration
 `competitions` — intentionally last, because it is coupled to the live and autonomous runtime
 (`prepare_competition_session_internal`, `tg_sync_competition_from_session`, the scheduler tick).
+
+---
+
+## Phase 7K — competitions ownership migration (EXECUTED 2026-08-16)
+
+**Status: `branding_profiles` = Principal-aware, `leagues` = Principal-aware, `quizzes` =
+Principal-aware, `competitions` = Principal-aware. All four true ownership-bearing business tables
+are migrated. `sessions.host_id` remains legacy runtime identity (never part of this phase).**
+
+Migration file: `supabase/migrations/20260816120000_43048aa5-07b8-466b-9e73-487a0e56280c.sql`
+
+### Migration
+- Added `competitions.owner_principal_id uuid REFERENCES public.principals(id) ON DELETE RESTRICT`
+  (nullable, indexed via `competitions_owner_principal_id_idx`). `competitions.owner_id` retained
+  untouched, still authoritative and still written by the client.
+- Backfill: identity copy from `owner_id` through `principals(type='user')` (`p.user_id =
+  owner_id`). No new principals, no profile/participant/creator/session inference, no owner
+  changes.
+- Row count: 3 at the Phase 7G audit (2026-08-15). This migration is the first in the series to
+  carry a built-in integrity gate: a `DO` block immediately after backfill hard-fails the
+  migration on any missing/mismatched/non-user/duplicate mapping or orphan quiz/session reference,
+  so an inconsistent live row count stops the phase before any authorization change (per the 7K
+  mandate, the live count is asserted by the migration itself).
+
+### Validation (post-migration, live)
+Run the read-only queries in migration section 8. Expected:
+| check | expected | actual |
+|---|---|---|
+| total competitions | live count | asserted by integrity gate |
+| rows with owner_principal_id | = total | asserted by integrity gate |
+| missing principal | 0 | asserted by integrity gate |
+| mismatched principal (`owner_principal_id <> owner_id`) | 0 | asserted by integrity gate |
+| principal type <> 'user' | 0 | asserted by integrity gate |
+| duplicate ownership mappings | 0 | asserted by integrity gate |
+| orphan quiz / session references | 0 | asserted by integrity gate |
+| session host vs competition owner mismatch | 0 | post-migration SELECT |
+| orphan league / branding references | 0 | post-migration SELECT |
+
+### Drift protection
+`public.tg_competitions_sync_owner_principal()` + `competitions_sync_owner_principal_trg`
+(BEFORE INSERT OR UPDATE OF owner_id, owner_principal_id): always derives `owner_principal_id`
+from `owner_id`, raises when no user principal exists. Clients cannot assign the principal
+independently; the two columns cannot diverge.
+
+### RLS changed (competitions only)
+| policy | before | after | why |
+|---|---|---|---|
+| Owners manage their competitions (ALL, authenticated) | `auth.uid() = owner_id` (USING + WITH CHECK) | USING = `owner_principal_id = principal_for_user(auth.uid()) OR (owner_principal_id IS NULL AND auth.uid() = owner_id)`; WITH CHECK unchanged `auth.uid() = owner_id` | ownership cutover; legacy stays authoritative on write, trigger derives the principal (Phase 7J shape) |
+| Admin can view all competitions (SELECT) | `public.is_admin()` | unchanged | administrative access, not ownership |
+| Public competitions are viewable (SELECT, anon+authenticated) | `visibility = 'public' AND status IN (...)` | unchanged | public surface preserved exactly |
+| sessions / participants / teams runtime policies | — | unchanged | host identity untouched, out of scope |
+
+### can(...) change
+Only the `competition.manage` branch: ownership now resolves via `owner_principal_id =
+principal_for_user(v_user)`, with a legacy `owner_id` fallback when the principal column is NULL.
+`competition.create`, `quiz.*`, `league.manage`, `branding.manage`, `session.manage`, admin and
+host-role resolution are byte-identical to the Phase 7J body. Decision-equivalence: user
+principals are id-identical to auth users, so the new branch matches the same rows as the
+previous `c.owner_id = v_user` check.
+
+### Session preparation (the single owner-propagation point)
+- `prepare_competition_session_internal`: `sessions.host_id` is now derived from
+  `COALESCE(c.owner_principal_id, c.owner_id)` instead of `c.owner_id`. Because user principal
+  ids equal auth user ids, the written host value is byte-identical. Join codes, lobby window,
+  quiz/archived-quiz checks, autonomous flag, competition link and status transition are
+  unchanged. `sessions.host_id` itself is NOT migrated.
+- `prepare_competition_session` (public wrapper): the authorization gate reads
+  `COALESCE(owner_principal_id, owner_id)` — same decision as before (owner OR `is_admin()`),
+  identical for every row.
+- `list_due_competitions` is unchanged: it filters on `owner_id`, which remains present,
+  authoritative and trigger-synced.
+
+### Autonomous scheduler
+Verified browser-free operation: `run_autonomous_tick` / `run_autonomous_scheduler` reference
+**no** ownership column — they select by `status`, `mode`, `autonomous`, `session_id`,
+`scheduled_start_at` and delegate lobby opening to `prepare_competition_session_internal`. The
+lobby-open → single-session → auto-start → progression → completion → results chain is untouched
+by the migration. `tg_sync_competition_from_session` (sessions status → competition status) and
+`sync_competition_from_session` have no owner reference.
+
+### Host authorization
+Owner vs host distinction preserved exactly:
+- Competition **owner** governs competition rows (principal RLS) and may prepare a session
+  (wrapper gate: owner OR admin).
+- **Host** is the session runtime identity (`sessions.host_id`, unchanged); session control RPCs,
+  `enforce_host_authorization` (grant consumption on session insert), participants/teams policies
+  and `session.manage` in `can(...)` all still key on `host_id`.
+- `can('competition.manage')` still requires `v_owner AND v_host` — a competition owner without
+  host authority is not granted manage by the capability layer, exactly as before.
+
+### League compatibility
+Competitions linked to leagues are unaffected: `league_id` is not touched, `get_league_standings` /
+`get_league_overview` / `get_my_leagues` join `competitions` by `session_id`/`league_id`/`status`
+with no ownership read, and league ownership (Phase 7I) is not re-migrated.
+
+### Branding compatibility
+`branding_profile_id` is not touched; branded competitions render through the existing branding
+join and Phase 7H ownership. No changes.
+
+### Results
+`competition_results` is unchanged: `record_competition_results` reads only
+sessions/participants/answers; no ownership reference. Ranking, score, accuracy, profile history
+and Arena results are untouched.
+
+### Frontend
+Zero files changed. `routes/competitions.tsx` still filters `.eq("owner_id", user.id)`, inserts
+`owner_id` (trigger derives the principal) and calls `prepare_competition_session` with the same
+arguments. `src/integrations/supabase/types.ts` is auto-generated and was not hand-edited; the app
+never selects or writes `owner_principal_id`, so stale types are harmless until the next Lovable
+type generation.
+
+### Rollback (lossless)
+1. Recreate `Owners manage their competitions` with `USING (auth.uid() = owner_id)` and
+   `WITH CHECK (auth.uid() = owner_id)`.
+2. Restore the `competition.manage` branch of `can(uuid,text,uuid)` to `c.owner_id = v_user`
+   (full body from the Phase 7J migration).
+3. Restore `prepare_competition_session_internal` (`c.owner_id` in the sessions INSERT) and
+   `prepare_competition_session` (`SELECT owner_id INTO v_owner`) from the pre-7K bodies.
+4. `DROP TRIGGER competitions_sync_owner_principal_trg ON public.competitions;`
+   `DROP FUNCTION public.tg_competitions_sync_owner_principal();`
+5. Optionally `ALTER TABLE public.competitions DROP COLUMN owner_principal_id;`
+   `owner_id` was never modified, so steps 1–4 alone fully restore Phase 7J behaviour.
+
+### Transitional state / not done
+`owner_id` is not dropped, not renamed, not optional. The sync trigger stays. `sessions.host_id`
+is not migrated. No Organizations. Legacy retirement (step 6 of the 7G sequence) is deferred to
+the next phase: it requires all four ownership tables migrated (now true), capability resolution
+fully principal-aware, all RLS migrated, zero application `owner_id` reads, a sustained zero-drift
+window and no rollback requirement.
+
+### Anomalies
+None.
