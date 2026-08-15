@@ -20,9 +20,13 @@ dist-ssr
 .env
 .env.*
 !.env.example
+mcp/.env
 
 # Vercel
 .vercel/
+
+# Transient migration artifacts
+migration-data/
 
 # Wrangler / Cloudflare
 .wrangler/
