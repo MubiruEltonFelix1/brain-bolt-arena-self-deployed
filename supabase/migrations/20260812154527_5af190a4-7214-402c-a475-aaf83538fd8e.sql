@@ -1,0 +1,1 @@
+REVOKE EXECUTE ON FUNCTION public.can(uuid, text, uuid) FROM supabase_read_only_user;

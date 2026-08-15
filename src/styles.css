@@ -1,0 +1,122 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@source inline("bg-volt bg-volt/5 bg-volt/10 bg-volt/15 bg-volt/20 text-volt border-volt border-volt/30 hover:border-volt hover:text-volt focus:border-volt shadow-volt/30 bg-pink-shock bg-pink-shock/10 bg-pink-shock/15 bg-pink-shock/20 text-pink-shock border-pink-shock/30 bg-cyan-jolt bg-cyan-jolt/15 bg-cyan-jolt/20 text-cyan-jolt border-cyan-jolt/30 bg-amber-spark bg-amber-spark/15 bg-amber-spark/20 text-amber-spark border-amber-spark/30");
+
+@theme inline {
+  --font-display: "Anton", sans-serif;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-arena: var(--arena);
+  --color-volt: var(--volt);
+  --color-pink-shock: var(--pink-shock);
+  --color-cyan-jolt: var(--cyan-jolt);
+  --color-amber-spark: var(--amber-spark);
+}
+
+:root,
+.dark {
+  --radius: 0.25rem;
+
+  /* Esports Broadcast — High Voltage */
+  --background: oklch(0.13 0.005 270);          /* #0A0A0C */
+  --foreground: oklch(0.96 0.005 270);          /* #F4F4F5 */
+  --arena: oklch(0.13 0.005 270);
+  --volt: oklch(0.95 0.24 125);                  /* #CCFF00 volt green */
+  --pink-shock: oklch(0.7 0.25 13);              /* #FF2D55 */
+  --cyan-jolt: oklch(0.85 0.15 200);
+  --amber-spark: oklch(0.85 0.18 80);
+
+  --card: oklch(0.19 0.008 270);                 /* #1E1E22 */
+  --card-foreground: oklch(0.96 0.005 270);
+  --popover: oklch(0.19 0.008 270);
+  --popover-foreground: oklch(0.96 0.005 270);
+
+  --primary: oklch(0.95 0.24 125);               /* volt */
+  --primary-foreground: oklch(0.13 0.005 270);
+  --secondary: oklch(0.19 0.008 270);
+  --secondary-foreground: oklch(0.96 0.005 270);
+  --muted: oklch(0.22 0.008 270);
+  --muted-foreground: oklch(0.65 0.01 270);
+  --accent: oklch(0.7 0.25 13);                  /* pink shock */
+  --accent-foreground: oklch(0.98 0.005 270);
+  --destructive: oklch(0.7 0.25 13);
+  --destructive-foreground: oklch(0.98 0.005 270);
+
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 8%);
+  --ring: oklch(0.95 0.24 125);
+}
+
+@keyframes join-pulse {
+  0%, 100% {
+    border-color: var(--volt);
+    box-shadow: 0 0 20px color-mix(in oklab, var(--volt) 25%, transparent);
+  }
+  50% {
+    border-color: var(--foreground);
+    box-shadow: 0 0 40px color-mix(in oklab, var(--foreground) 12%, transparent);
+  }
+}
+@keyframes timer-shrink { from { width: 100%; } to { width: 0%; } }
+@keyframes float-up {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0); opacity: 1; }
+}
+@keyframes scoring-burst {
+  0% { transform: scale(0.7); opacity: 0; }
+  40% { transform: scale(1.15); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes shake-x {
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+
+@utility animate-join { animation: join-pulse 2s infinite ease-in-out; }
+@utility animate-float { animation: float-up 0.5s cubic-bezier(0.32, 0.72, 0, 1) both; }
+@utility animate-burst { animation: scoring-burst 0.45s cubic-bezier(0.32, 0.72, 0, 1) both; }
+@utility animate-wrong { animation: shake-x 0.4s ease-in-out; }
+
+@utility skew-cta {
+  transform: skewX(-4deg);
+}
+
+@layer base {
+  * { border-color: var(--color-border); }
+  html, body { background-color: var(--background); color: var(--foreground); }
+  body { font-family: var(--font-sans); -webkit-font-smoothing: antialiased; }
+  ::selection { background: var(--volt); color: var(--background); }
+}
+
+#lovable-badge { display: none !important; }
