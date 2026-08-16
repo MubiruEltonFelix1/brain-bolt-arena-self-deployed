@@ -565,7 +565,7 @@ describe("update_question", () => {
   });
 
   test("warns and ignores unit on a number question — no unit column exists in the DB", async () => {
-    const { client } = makeEnv();
+    const { db, client } = makeEnv();
     const { quizId } = await saveOwnedQuiz(client);
     const { data } = await client
       .from("questions")
@@ -592,7 +592,7 @@ describe("update_question", () => {
     expect(result.changed).toEqual({ text: true });
     expect(result.warnings[0]).toContain("unit");
     expect(result.warnings[0]).toContain("ignored");
-    const row = client.db.questions.find((q) => q.id === data!.id)!;
+    const row = db.questions.find((q) => q.id === data!.id)!;
     expect(row.unit).toBeUndefined();
   });
 

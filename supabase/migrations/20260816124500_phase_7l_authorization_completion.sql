@@ -105,7 +105,7 @@ BEGIN
      OR v_drift_b > 0 OR v_drift_l > 0 OR v_drift_q > 0 OR v_drift_c > 0
      OR v_badtype > 0 OR v_dup > 0 OR v_host_mismatch > 0 THEN
     RAISE EXCEPTION
-      'Phase 7L-1 integrity check FAILED: missing(b=%,l=%,q=%,c=%) drift(b=%,l=%,q=%,c=%) non_user=%% duplicate=%% session_host_mismatch=%%',
+      'Phase 7L-1 integrity check FAILED: missing(b=%,l=%,q=%,c=%) drift(b=%,l=%,q=%,c=%) non_user=% duplicate=% session_host_mismatch=%',
       v_missing_b, v_missing_l, v_missing_q, v_missing_c,
       v_drift_b, v_drift_l, v_drift_q, v_drift_c,
       v_badtype, v_dup, v_host_mismatch;
@@ -141,9 +141,12 @@ BEGIN
     SELECT p.user_id INTO v_user
     FROM public.principals p
     WHERE p.id = NEW.owner_principal_id;
-    IF v_user IS NULL THEN
+    IF NOT FOUND THEN
       RAISE EXCEPTION 'No principal exists for owner_principal_id %', NEW.owner_principal_id;
     END IF;
+    -- user principals mirror their (id-identical) user id; organization /
+    -- platform / partner principals have user_id NULL and mirror NULL — the
+    -- legacy column cannot represent them.
     NEW.owner_id := v_user;
   ELSIF NEW.owner_id IS NOT NULL THEN
     SELECT p.id INTO v_principal
@@ -179,9 +182,12 @@ BEGIN
     SELECT p.user_id INTO v_user
     FROM public.principals p
     WHERE p.id = NEW.owner_principal_id;
-    IF v_user IS NULL THEN
+    IF NOT FOUND THEN
       RAISE EXCEPTION 'No principal exists for owner_principal_id %', NEW.owner_principal_id;
     END IF;
+    -- user principals mirror their (id-identical) user id; organization /
+    -- platform / partner principals have user_id NULL and mirror NULL — the
+    -- legacy column cannot represent them.
     NEW.owner_id := v_user;
   ELSIF NEW.owner_id IS NOT NULL THEN
     SELECT p.id INTO v_principal
@@ -217,9 +223,12 @@ BEGIN
     SELECT p.user_id INTO v_user
     FROM public.principals p
     WHERE p.id = NEW.owner_principal_id;
-    IF v_user IS NULL THEN
+    IF NOT FOUND THEN
       RAISE EXCEPTION 'No principal exists for owner_principal_id %', NEW.owner_principal_id;
     END IF;
+    -- user principals mirror their (id-identical) user id; organization /
+    -- platform / partner principals have user_id NULL and mirror NULL — the
+    -- legacy column cannot represent them.
     NEW.owner_id := v_user;
   ELSIF NEW.owner_id IS NOT NULL THEN
     SELECT p.id INTO v_principal
@@ -255,9 +264,12 @@ BEGIN
     SELECT p.user_id INTO v_user
     FROM public.principals p
     WHERE p.id = NEW.owner_principal_id;
-    IF v_user IS NULL THEN
+    IF NOT FOUND THEN
       RAISE EXCEPTION 'No principal exists for owner_principal_id %', NEW.owner_principal_id;
     END IF;
+    -- user principals mirror their (id-identical) user id; organization /
+    -- platform / partner principals have user_id NULL and mirror NULL — the
+    -- legacy column cannot represent them.
     NEW.owner_id := v_user;
   ELSIF NEW.owner_id IS NOT NULL THEN
     SELECT p.id INTO v_principal
