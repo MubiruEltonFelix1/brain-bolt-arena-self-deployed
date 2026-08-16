@@ -1,9 +1,23 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Line, LineChart, XAxis, YAxis,
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  ComposedChart,
+  Line,
+  LineChart,
+  XAxis,
+  YAxis,
 } from "recharts";
-import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from "@/components/ui/chart";
+import {
+  ChartContainer,
+  ChartTooltip,
+  ChartTooltipContent,
+  type ChartConfig,
+} from "@/components/ui/chart";
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useHostStatus } from "@/hooks/use-host-status";
@@ -120,6 +134,8 @@ function AdminPage() {
   const [hours, setHours] = useState<HourStat[]>([]);
   const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [tab, setTab] = useState<"live" | "analytics" | "users">("live");
+  const [liveUpdatedAt, setLiveUpdatedAt] = useState<number>(() => Date.now());
   // Guards against stale responses overwriting newer ones when the range
   // toggle is clicked in quick succession (7D → 90D before 7D resolves).
   const loadSeq = useRef(0);
@@ -128,20 +144,55 @@ function AdminPage() {
     if (!loading && !isAdmin) navigate({ to: "/dashboard" });
   }, [loading, isAdmin, navigate]);
 
-  // Live sessions refresh every 25s independent of the main load.
+  // Live sessions poll every 10s; a separate 1s ticker re-renders the
+  // "updated Xs ago" readout so the panel visibly counts down between polls.
   useEffect(() => {
     if (!isAdmin) return;
-    supabase.rpc("admin_live_sessions" as never).then(({ data }) => {
-      if (data) setLiveSessions((data as LiveSession[] | null) ?? []);
-    });
-    const t = setInterval(() => {
+    const fetchLive = () => {
       supabase.rpc("admin_live_sessions" as never).then(({ data }) => {
-        if (data) setLiveSessions((data as LiveSession[] | null) ?? []);
+        if (data) {
+          setLiveSessions((data as LiveSession[] | null) ?? []);
+          setLiveUpdatedAt(Date.now());
+        }
       });
-    }, 25000);
+    };
+    fetchLive();
+    const t = setInterval(fetchLive, 10000);
     return () => clearInterval(t);
     /* eslint-disable-next-line */
   }, [isAdmin]);
+
+  // One-second ticker lives inside UpdatedReadout (below) so only the readout
+  // re-renders each second, never the charts.
+
+  // Silent auto-refresh of the time-varying data every 30s so the charts and
+  // KPI cards move on their own. Snapshot of loadSeq: discarded if a full
+  // load() started since, and never touches `refreshing` (no flash).
+  useEffect(() => {
+    if (!isAdmin) return;
+    const refresh = async () => {
+      const seq = loadSeq.current;
+      try {
+        const [{ data: pl }, { data: ts }, { data: hr }] = await Promise.all([
+          supabase.rpc("admin_platform_stats"),
+          supabase.rpc("admin_stats_timeseries" as never, { p_days: range } as never),
+          supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
+        ]);
+        if (seq !== loadSeq.current) return;
+        if (pl) setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+        if (ts) setSeries(((ts as unknown as DailyStat[] | null) ?? []).filter((row) => row.day));
+        if (hr)
+          setHours(
+            ((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)),
+          );
+      } catch {
+        // Network blip — ignore, the next tick retries.
+      }
+    };
+    const t = setInterval(refresh, 30000);
+    return () => clearInterval(t);
+    /* eslint-disable-next-line */
+  }, [isAdmin, range]);
 
   // Range-independent insights, fetched once per admin session.
   useEffect(() => {
@@ -153,7 +204,9 @@ function AdminPage() {
       if (e6) toast.error(e6.message);
       if (e7) toast.error(e7.message);
       setFunnel(((fn as unknown as FunnelStats[] | null) ?? [])[0] ?? null);
-      setQuestionTypes(((qt as unknown as QuestionTypeStat[] | null) ?? []).filter((row) => row.question_type));
+      setQuestionTypes(
+        ((qt as unknown as QuestionTypeStat[] | null) ?? []).filter((row) => row.question_type),
+      );
     });
     /* eslint-disable-next-line */
   }, [isAdmin]);
@@ -163,7 +216,15 @@ function AdminPage() {
     const seq = ++loadSeq.current;
     setRefreshing(true);
     try {
-      const [{ data: list, error: e1 }, { data: st, error: e2 }, { data: pl }, { data: ts, error: e3 }, { data: tq, error: e4 }, { data: th, error: e5 }, { data: hr, error: e8 }] = await Promise.all([
+      const [
+        { data: list, error: e1 },
+        { data: st, error: e2 },
+        { data: pl },
+        { data: ts, error: e3 },
+        { data: tq, error: e4 },
+        { data: th, error: e5 },
+        { data: hr, error: e8 },
+      ] = await Promise.all([
         supabase.rpc("admin_list_users", { p_search: search || undefined }),
         supabase.rpc("admin_host_stats"),
         supabase.rpc("admin_platform_stats"),
@@ -185,15 +246,24 @@ function AdminPage() {
       setSeries(((ts as unknown as DailyStat[] | null) ?? []).filter((row) => row.day));
       setTopQuizzes(((tq as unknown as TopQuiz[] | null) ?? []).filter((row) => row.id));
       setTopHosts(((th as unknown as TopHost[] | null) ?? []).filter((row) => row.display_name));
-      setHours(((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)));
+      setHours(
+        ((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)),
+      );
     } finally {
       if (seq === loadSeq.current) setRefreshing(false);
     }
   }
 
-  useEffect(() => { if (isAdmin) load(); /* eslint-disable-next-line */ }, [isAdmin, range]);
+  useEffect(() => {
+    if (isAdmin) load(); /* eslint-disable-next-line */
+  }, [isAdmin, range]);
 
-  async function grant(profileId: string, type: "single" | "bundle" | "time", sessions: number | undefined, expiresAt: string | undefined) {
+  async function grant(
+    profileId: string,
+    type: "single" | "bundle" | "time",
+    sessions: number | undefined,
+    expiresAt: string | undefined,
+  ) {
     setBusy(true);
     const { error } = await supabase.rpc("admin_grant_host_authorization", {
       p_profile_id: profileId,
@@ -216,7 +286,11 @@ function AdminPage() {
     load();
   }
 
-  async function extend(authId: string, addSessions: number | undefined, newExpires: string | undefined) {
+  async function extend(
+    authId: string,
+    addSessions: number | undefined,
+    newExpires: string | undefined,
+  ) {
     const { error } = await supabase.rpc("admin_extend_host_authorization", {
       p_auth_id: authId,
       p_add_sessions: addSessions ?? undefined,
@@ -227,7 +301,12 @@ function AdminPage() {
     load();
   }
 
-  async function convert(authId: string, type: "single" | "bundle" | "time", sessions: number | undefined, expiresAt: string | undefined) {
+  async function convert(
+    authId: string,
+    type: "single" | "bundle" | "time",
+    sessions: number | undefined,
+    expiresAt: string | undefined,
+  ) {
     const { error } = await supabase.rpc("admin_convert_host_authorization", {
       p_auth_id: authId,
       p_type: type,
@@ -239,13 +318,16 @@ function AdminPage() {
     load();
   }
 
-  const summary = useMemo(() => [
-    { label: "Active hosts", value: stats?.active_hosts ?? 0 },
-    { label: "Expiring 7d", value: stats?.expiring_soon ?? 0 },
-    { label: "Single", value: stats?.single_hosts ?? 0 },
-    { label: "Bundle", value: stats?.bundle_hosts ?? 0 },
-    { label: "Time-based", value: stats?.time_hosts ?? 0 },
-  ], [stats]);
+  const summary = useMemo(
+    () => [
+      { label: "Active hosts", value: stats?.active_hosts ?? 0 },
+      { label: "Expiring 7d", value: stats?.expiring_soon ?? 0 },
+      { label: "Single", value: stats?.single_hosts ?? 0 },
+      { label: "Bundle", value: stats?.bundle_hosts ?? 0 },
+      { label: "Time-based", value: stats?.time_hosts ?? 0 },
+    ],
+    [stats],
+  );
 
   // Period-over-period deltas: the last 7 days of the loaded series vs the
   // 7 days before them. Only meaningful when the range spans ≥ 14 days.
@@ -269,12 +351,31 @@ function AdminPage() {
 
   function exportCsv() {
     if (series.length === 0) return;
-    const headers = ["day", "new_players", "sessions", "participants", "answers", "results", "avg_accuracy", "avg_response_ms"];
-    const lines = series.map((d) => [
-      d.day, d.new_players, d.sessions, d.participants, d.answers, d.results,
-      d.avg_accuracy ?? "", d.avg_response_ms ?? "",
-    ].join(","));
-    const blob = new Blob([[headers.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+    const headers = [
+      "day",
+      "new_players",
+      "sessions",
+      "participants",
+      "answers",
+      "results",
+      "avg_accuracy",
+      "avg_response_ms",
+    ];
+    const lines = series.map((d) =>
+      [
+        d.day,
+        d.new_players,
+        d.sessions,
+        d.participants,
+        d.answers,
+        d.results,
+        d.avg_accuracy ?? "",
+        d.avg_response_ms ?? "",
+      ].join(","),
+    );
+    const blob = new Blob([[headers.join(","), ...lines].join("\n")], {
+      type: "text/csv;charset=utf-8",
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
@@ -293,293 +394,438 @@ function AdminPage() {
           <h1 className="font-display text-5xl italic uppercase mt-1">Host management</h1>
         </div>
 
-        <section className="space-y-3">
-          <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Host authorizations</h2>
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-            {summary.map((s) => (
-              <div key={s.label} className="border border-border bg-card p-4">
-                <p className="font-mono text-[10px] uppercase text-foreground/50">{s.label}</p>
-                <p className="font-display text-3xl italic text-volt mt-1">{s.value}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        <section className="space-y-3">
-          <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Platform overview</h2>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            {[
-              { label: "Registered players", value: platform?.total_players },
-              { label: "Live / open sessions", value: platform?.live_sessions },
-              { label: "Competitions", value: platform?.total_competitions },
-              { label: "Arena plays", value: platform?.arena_plays },
-              { label: "Quizzes", value: platform?.total_quizzes },
-              { label: "Arena challenges", value: platform?.arena_quizzes },
-              { label: "Sessions · 7d", value: platform?.sessions_last_7d },
-              { label: "Results · 7d", value: platform?.results_last_7d },
-            ].map((m) => (
-              <div key={m.label} className="border border-border bg-card p-4">
-                <p className="font-mono text-[10px] uppercase text-foreground/50">{m.label}</p>
-                <p className="font-display text-2xl italic mt-1">
-                  {m.value == null ? "—" : m.value.toLocaleString()}
-                </p>
-              </div>
-            ))}
-          </div>
-          {platform && (platform.pending_host_requests > 0 || platform.expiring_authorizations > 0) && (
-            <p className="border border-amber-spark/50 bg-amber-spark/10 p-3 font-mono text-[11px] uppercase tracking-widest text-amber-spark">
-              ⚠ {platform.pending_host_requests} pending host request(s) ·{" "}
-              {platform.expiring_authorizations} authorization(s) expiring within 14 days
-            </p>
-          )}
-          {trend && (
-            <div className="flex flex-wrap gap-x-5 gap-y-1 border border-border bg-card px-4 py-3 font-mono text-[10px] uppercase tracking-widest">
-              <span className="text-foreground/40">Last 7d vs prior 7d</span>
-              {([["sessions", "Sessions"], ["answers", "Answers"], ["new_players", "Players"], ["results", "Results"]] as const).map(([key, label]) => {
-                const v = trend[key];
-                return (
-                  <span key={key}>
-                    <span className="text-foreground/60">{label}</span>{" "}
-                    {v == null ? (
-                      <span className="text-foreground/40">—</span>
-                    ) : (
-                      <span className={v >= 0 ? "text-volt" : "text-pink-shock"}>
-                        {v >= 0 ? "▲" : "▼"} {Math.abs(v)}%
-                      </span>
-                    )}
-                  </span>
-                );
-              })}
-            </div>
-          )}
-        </section>
-
-        <section className="space-y-3">
-          <div>
-            <p className="font-mono text-[10px] uppercase text-pink-shock">On air</p>
-            <h2 className="font-display text-3xl italic uppercase mt-1">Live sessions</h2>
-          </div>
-          {liveSessions.length === 0 ? (
-            <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
-              No sessions running right now
-            </div>
-          ) : (
-            <div className="border border-border bg-card">
-              {liveSessions.map((s) => (
-                <div key={s.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0 flex-wrap">
-                  <span
-                    className={`font-mono text-[10px] uppercase px-2 py-0.5 border ${
-                      s.status === "active" ? "border-volt text-volt"
-                      : s.status === "lobby" ? "border-cyan-jolt text-cyan-jolt"
-                      : s.status === "question_results" ? "border-amber-spark text-amber-spark"
-                      : "border-border text-foreground/50"
-                    }`}
-                  >
-                    {s.status === "active" ? "Live" : s.status === "lobby" ? "Lobby" : s.status === "question_results" ? "Results" : s.status}
-                  </span>
-                  <span className="font-mono text-sm text-volt">{s.code}</span>
-                  <p className="flex-1 min-w-0 font-display text-base italic uppercase truncate">{s.title}</p>
-                  <span className="font-mono text-xs text-foreground/70">{s.participants} player{s.participants === 1 ? "" : "s"}</span>
-                  <span className="font-mono text-[10px] uppercase text-foreground/40">{timeAgo(s.created_at)}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">Refreshes every 25s</p>
-        </section>
-
-        <section className="space-y-3">
-          <div className="flex items-end justify-between gap-3 flex-wrap">
-            <div>
-              <p className="font-mono text-[10px] uppercase text-cyan-jolt">Trends</p>
-              <h2 className="font-display text-3xl italic uppercase mt-1">Activity</h2>
-            </div>
-            <div className="flex items-center gap-1 flex-wrap">
-              <button
-                onClick={exportCsv}
-                disabled={series.length === 0}
-                className="border border-border px-3 py-1.5 font-mono text-[10px] uppercase text-foreground/60 hover:border-volt hover:text-volt disabled:opacity-40"
-              >
-                Export CSV
-              </button>
-              {([7, 14, 30, 90] as const).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => setRange(d)}
-                  className={`px-3 py-1.5 font-mono text-[10px] uppercase border ${
-                    range === d ? "border-volt text-volt" : "border-border text-foreground/60 hover:text-volt"
-                  }`}
-                >
-                  {d}D
-                </button>
-              ))}
-            </div>
-          </div>
-          {refreshing && (
-            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">Refreshing…</p>
-          )}
-          {!refreshing && series.length === 0 ? (
-            <div className="border border-border bg-card p-10 text-center font-mono text-xs uppercase text-foreground/40">
-              No activity recorded in this range
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <ActivityCard title="Sessions & players">
-                <SessionsChart data={series} />
-              </ActivityCard>
-              <ActivityCard title="Answers & accuracy">
-                <AnswersChart data={series} />
-              </ActivityCard>
-              <ActivityCard title="New registrations">
-                <RegistrationsChart data={series} />
-              </ActivityCard>
-              <ActivityCard title="Avg response time">
-                <ResponseChart data={series} />
-              </ActivityCard>
-            </div>
-          )}
-        </section>
-
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="border border-border bg-card p-4 space-y-4">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Session funnel</p>
-            {funnel ? (
-              <>
-                <div>
-                  <p className="font-display text-5xl italic text-volt">{funnel.completion_rate ?? 0}%</p>
-                  <p className="font-mono text-[10px] uppercase text-foreground/50 mt-1">
-                    of {funnel.total_sessions.toLocaleString()} sessions reached end
-                  </p>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-3 border-t border-border">
-                  <div>
-                    <p className="font-mono text-[10px] uppercase text-foreground/50">Abandoned</p>
-                    <p className="font-display text-2xl italic text-pink-shock mt-1">{funnel.abandoned_sessions.toLocaleString()}</p>
-                  </div>
-                  <div>
-                    <p className="font-mono text-[10px] uppercase text-foreground/50">Avg players</p>
-                    <p className="font-display text-2xl italic text-cyan-jolt mt-1">{funnel.avg_session_size ?? "—"}</p>
-                  </div>
-                  <div>
-                    <p className="font-mono text-[10px] uppercase text-foreground/50">Avg duration</p>
-                    <p className="font-display text-2xl italic text-amber-spark mt-1">{formatDuration(funnel.avg_duration_seconds)}</p>
-                  </div>
-                </div>
-              </>
-            ) : (
-              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">Loading…</div>
-            )}
-          </div>
-
-          <div className="border border-border bg-card p-4 space-y-4">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Question-type accuracy</p>
-            {questionTypes.length === 0 ? (
-              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No answers yet</div>
-            ) : (
-              questionTypes.map((qt) => (
-                <div key={qt.question_type}>
-                  <div className="flex justify-between gap-3 font-mono text-[10px] uppercase tracking-widest">
-                    <span className="text-foreground/70 truncate">{qt.question_type.replace(/_/g, " ")}</span>
-                    <span className="text-foreground/50 shrink-0">
-                      {qt.answers.toLocaleString()} · {qt.accuracy == null ? "—" : `${qt.accuracy}%`}
-                    </span>
-                  </div>
-                  <div className="mt-1.5 h-1.5 bg-background">
-                    <div
-                      className="h-full bg-volt"
-                      style={{ width: `${Math.min(100, Math.max(0, qt.accuracy ?? 0))}%` }}
-                    />
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <section className="space-y-3">
-          <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Peak hours · {range}d</h2>
-          {hours.length === 0 ? (
-            <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
-              No data in this range
-            </div>
-          ) : (
-            <div className="border border-border bg-card p-4">
-              <HoursChart data={hours} />
-            </div>
-          )}
-        </section>
-
-        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <div className="border border-border bg-card">
-            <div className="p-4 border-b border-border">
-              <p className="font-mono text-[10px] uppercase text-volt">Leaderboard</p>
-              <h3 className="font-display text-xl italic uppercase mt-1">Top quizzes</h3>
-            </div>
-            {topQuizzes.length === 0 ? (
-              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No plays yet</div>
-            ) : (
-              topQuizzes.map((q, i) => (
-                <div key={q.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0">
-                  <span className="font-display text-xl italic text-volt w-6 shrink-0">{i + 1}</span>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-display text-sm italic uppercase truncate">{q.title}</p>
-                    {(q.avg_score != null || q.avg_accuracy != null) && (
-                      <p className="font-mono text-[10px] uppercase text-foreground/50 truncate">
-                        avg {q.avg_score ?? "—"} pts · {q.avg_accuracy ?? "—"}% acc
-                      </p>
-                    )}
-                  </div>
-                  {q.is_arena && (
-                    <span className="font-mono text-[9px] uppercase border border-volt/30 text-volt px-1.5 py-0.5">Arena</span>
-                  )}
-                  <span className="font-mono text-xs text-foreground/70">{q.plays.toLocaleString()}</span>
-                </div>
-              ))
-            )}
-          </div>
-          <div className="border border-border bg-card">
-            <div className="p-4 border-b border-border">
-              <p className="font-mono text-[10px] uppercase text-cyan-jolt">Leaderboard</p>
-              <h3 className="font-display text-xl italic uppercase mt-1">Top hosts</h3>
-            </div>
-            {topHosts.length === 0 ? (
-              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No sessions yet</div>
-            ) : (
-              topHosts.map((h, i) => (
-                <div key={h.display_name} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0">
-                  <span className="font-display text-xl italic text-cyan-jolt w-6 shrink-0">{i + 1}</span>
-                  <p className="flex-1 min-w-0 font-display text-sm italic uppercase truncate">{h.display_name}</p>
-                  <span className="font-mono text-xs text-foreground/70">
-                    {h.sessions.toLocaleString()} {h.sessions === 1 ? "session" : "sessions"}
-                  </span>
-                </div>
-              ))
-            )}
-          </div>
-        </section>
-
-        <HostRequestsPanel onChange={load} />
-
-        <div className="flex gap-2">
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && load()}
-            placeholder="Search by name or email"
-            className="flex-1 bg-background border border-border px-4 py-3 font-mono text-sm focus:outline-none focus:border-volt"
-          />
-          <button onClick={load} className="bg-volt text-background font-display text-base px-5 py-3 skew-cta">
-            SEARCH
-          </button>
-        </div>
-
-        <div className="border border-border">
-          {users.length === 0 ? (
-            <div className="p-8 text-center text-foreground/50 font-mono text-sm uppercase">No users</div>
-          ) : users.map((u) => (
-            <UserRow key={u.id} user={u} busy={busy} onGrant={grant} onRevoke={revoke} onExtend={extend} onConvert={convert} />
+        <div className="flex gap-1 border-b border-border pb-2">
+          {(
+            [
+              ["live", "Live"],
+              ["analytics", "Analytics"],
+              ["users", "Users"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`px-4 py-2 font-display text-lg italic uppercase skew-cta transition-colors ${
+                tab === key ? "bg-volt text-background" : "text-foreground/60 hover:text-volt"
+              }`}
+            >
+              {label}
+            </button>
           ))}
         </div>
+
+        {tab === "users" && (
+          <>
+            <section className="space-y-3">
+              <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                Host authorizations
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                {summary.map((s) => (
+                  <div key={s.label} className="border border-border bg-card p-4">
+                    <p className="font-mono text-[10px] uppercase text-foreground/50">{s.label}</p>
+                    <p className="font-display text-3xl italic text-volt mt-1">{s.value}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </>
+        )}
+
+        {tab === "live" && (
+          <>
+            <section className="space-y-3">
+              <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                Platform overview
+              </h2>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                {[
+                  { label: "Registered players", value: platform?.total_players },
+                  { label: "Live / open sessions", value: platform?.live_sessions },
+                  { label: "Competitions", value: platform?.total_competitions },
+                  { label: "Arena plays", value: platform?.arena_plays },
+                  { label: "Quizzes", value: platform?.total_quizzes },
+                  { label: "Arena challenges", value: platform?.arena_quizzes },
+                  { label: "Sessions · 7d", value: platform?.sessions_last_7d },
+                  { label: "Results · 7d", value: platform?.results_last_7d },
+                ].map((m) => (
+                  <div key={m.label} className="border border-border bg-card p-4">
+                    <p className="font-mono text-[10px] uppercase text-foreground/50">{m.label}</p>
+                    <p className="font-display text-2xl italic mt-1">
+                      {m.value == null ? "—" : m.value.toLocaleString()}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {platform &&
+                (platform.pending_host_requests > 0 || platform.expiring_authorizations > 0) && (
+                  <p className="border border-amber-spark/50 bg-amber-spark/10 p-3 font-mono text-[11px] uppercase tracking-widest text-amber-spark">
+                    ⚠ {platform.pending_host_requests} pending host request(s) ·{" "}
+                    {platform.expiring_authorizations} authorization(s) expiring within 14 days
+                  </p>
+                )}
+              {trend && (
+                <div className="flex flex-wrap gap-x-5 gap-y-1 border border-border bg-card px-4 py-3 font-mono text-[10px] uppercase tracking-widest">
+                  <span className="text-foreground/40">Last 7d vs prior 7d</span>
+                  {(
+                    [
+                      ["sessions", "Sessions"],
+                      ["answers", "Answers"],
+                      ["new_players", "Players"],
+                      ["results", "Results"],
+                    ] as const
+                  ).map(([key, label]) => {
+                    const v = trend[key];
+                    return (
+                      <span key={key}>
+                        <span className="text-foreground/60">{label}</span>{" "}
+                        {v == null ? (
+                          <span className="text-foreground/40">—</span>
+                        ) : (
+                          <span className={v >= 0 ? "text-volt" : "text-pink-shock"}>
+                            {v >= 0 ? "▲" : "▼"} {Math.abs(v)}%
+                          </span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </section>
+
+            <section className="space-y-3">
+              <div className="flex items-end justify-between gap-3 flex-wrap">
+                <div className="flex items-center gap-3">
+                  <span className="relative flex size-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-volt opacity-60" />
+                    <span className="relative inline-flex size-2.5 rounded-full bg-volt" />
+                  </span>
+                  <div>
+                    <p className="font-mono text-[10px] uppercase text-pink-shock">On air</p>
+                    <h2 className="font-display text-3xl italic uppercase mt-1">Live sessions</h2>
+                  </div>
+                </div>
+                <div className="text-right font-mono text-[10px] uppercase tracking-widest text-foreground/40">
+                  <p>
+                    {liveSessions.length} running · updated <UpdatedReadout at={liveUpdatedAt} />
+                  </p>
+                  <p className="mt-0.5">polls every 10s</p>
+                </div>
+              </div>
+              {liveSessions.length === 0 ? (
+                <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
+                  No sessions running right now
+                </div>
+              ) : (
+                <div className="border border-border bg-card">
+                  {liveSessions.map((s) => (
+                    <div
+                      key={s.id}
+                      className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0 flex-wrap"
+                    >
+                      <span
+                        className={`font-mono text-[10px] uppercase px-2 py-0.5 border ${
+                          s.status === "active"
+                            ? "border-volt text-volt"
+                            : s.status === "lobby"
+                              ? "border-cyan-jolt text-cyan-jolt"
+                              : s.status === "question_results"
+                                ? "border-amber-spark text-amber-spark"
+                                : "border-border text-foreground/50"
+                        }`}
+                      >
+                        {s.status === "active"
+                          ? "Live"
+                          : s.status === "lobby"
+                            ? "Lobby"
+                            : s.status === "question_results"
+                              ? "Results"
+                              : s.status}
+                      </span>
+                      <span className="font-mono text-sm text-volt">{s.code}</span>
+                      <p className="flex-1 min-w-0 font-display text-base italic uppercase truncate">
+                        {s.title}
+                      </p>
+                      <span className="font-mono text-xs text-foreground/70">
+                        {s.participants} player{s.participants === 1 ? "" : "s"}
+                      </span>
+                      <span className="font-mono text-[10px] uppercase text-foreground/40">
+                        {timeAgo(s.created_at)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </section>
+          </>
+        )}
+
+        {tab === "analytics" && (
+          <>
+            <section className="space-y-3">
+              <div className="flex items-end justify-between gap-3 flex-wrap">
+                <div>
+                  <p className="font-mono text-[10px] uppercase text-cyan-jolt">Trends</p>
+                  <h2 className="font-display text-3xl italic uppercase mt-1">Activity</h2>
+                </div>
+                <div className="flex items-center gap-1 flex-wrap">
+                  <button
+                    onClick={exportCsv}
+                    disabled={series.length === 0}
+                    className="border border-border px-3 py-1.5 font-mono text-[10px] uppercase text-foreground/60 hover:border-volt hover:text-volt disabled:opacity-40"
+                  >
+                    Export CSV
+                  </button>
+                  {([7, 14, 30, 90] as const).map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => setRange(d)}
+                      className={`px-3 py-1.5 font-mono text-[10px] uppercase border ${
+                        range === d
+                          ? "border-volt text-volt"
+                          : "border-border text-foreground/60 hover:text-volt"
+                      }`}
+                    >
+                      {d}D
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {refreshing && (
+                <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">
+                  Refreshing…
+                </p>
+              )}
+              {!refreshing && series.length === 0 ? (
+                <div className="border border-border bg-card p-10 text-center font-mono text-xs uppercase text-foreground/40">
+                  No activity recorded in this range
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <ActivityCard title="Sessions & players">
+                    <SessionsChart data={series} />
+                  </ActivityCard>
+                  <ActivityCard title="Answers & accuracy">
+                    <AnswersChart data={series} />
+                  </ActivityCard>
+                  <ActivityCard title="New registrations">
+                    <RegistrationsChart data={series} />
+                  </ActivityCard>
+                  <ActivityCard title="Avg response time">
+                    <ResponseChart data={series} />
+                  </ActivityCard>
+                </div>
+              )}
+            </section>
+
+            <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="border border-border bg-card p-4 space-y-4">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                  Session funnel
+                </p>
+                {funnel ? (
+                  <>
+                    <div>
+                      <p className="font-display text-5xl italic text-volt">
+                        {funnel.completion_rate ?? 0}%
+                      </p>
+                      <p className="font-mono text-[10px] uppercase text-foreground/50 mt-1">
+                        of {funnel.total_sessions.toLocaleString()} sessions reached end
+                      </p>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-3 border-t border-border">
+                      <div>
+                        <p className="font-mono text-[10px] uppercase text-foreground/50">
+                          Abandoned
+                        </p>
+                        <p className="font-display text-2xl italic text-pink-shock mt-1">
+                          {funnel.abandoned_sessions.toLocaleString()}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-mono text-[10px] uppercase text-foreground/50">
+                          Avg players
+                        </p>
+                        <p className="font-display text-2xl italic text-cyan-jolt mt-1">
+                          {funnel.avg_session_size ?? "—"}
+                        </p>
+                      </div>
+                      <div>
+                        <p className="font-mono text-[10px] uppercase text-foreground/50">
+                          Avg duration
+                        </p>
+                        <p className="font-display text-2xl italic text-amber-spark mt-1">
+                          {formatDuration(funnel.avg_duration_seconds)}
+                        </p>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">
+                    Loading…
+                  </div>
+                )}
+              </div>
+
+              <div className="border border-border bg-card p-4 space-y-4">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                  Question-type accuracy
+                </p>
+                {questionTypes.length === 0 ? (
+                  <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">
+                    No answers yet
+                  </div>
+                ) : (
+                  questionTypes.map((qt) => (
+                    <div key={qt.question_type}>
+                      <div className="flex justify-between gap-3 font-mono text-[10px] uppercase tracking-widest">
+                        <span className="text-foreground/70 truncate">
+                          {qt.question_type.replace(/_/g, " ")}
+                        </span>
+                        <span className="text-foreground/50 shrink-0">
+                          {qt.answers.toLocaleString()} ·{" "}
+                          {qt.accuracy == null ? "—" : `${qt.accuracy}%`}
+                        </span>
+                      </div>
+                      <div className="mt-1.5 h-1.5 bg-background">
+                        <div
+                          className="h-full bg-volt"
+                          style={{ width: `${Math.min(100, Math.max(0, qt.accuracy ?? 0))}%` }}
+                        />
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+
+            <section className="space-y-3">
+              <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                Peak hours · {range}d
+              </h2>
+              {hours.length === 0 ? (
+                <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
+                  No data in this range
+                </div>
+              ) : (
+                <div className="border border-border bg-card p-4">
+                  <HoursChart data={hours} />
+                </div>
+              )}
+            </section>
+
+            <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div className="border border-border bg-card">
+                <div className="p-4 border-b border-border">
+                  <p className="font-mono text-[10px] uppercase text-volt">Leaderboard</p>
+                  <h3 className="font-display text-xl italic uppercase mt-1">Top quizzes</h3>
+                </div>
+                {topQuizzes.length === 0 ? (
+                  <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">
+                    No plays yet
+                  </div>
+                ) : (
+                  topQuizzes.map((q, i) => (
+                    <div
+                      key={q.id}
+                      className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0"
+                    >
+                      <span className="font-display text-xl italic text-volt w-6 shrink-0">
+                        {i + 1}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-display text-sm italic uppercase truncate">{q.title}</p>
+                        {(q.avg_score != null || q.avg_accuracy != null) && (
+                          <p className="font-mono text-[10px] uppercase text-foreground/50 truncate">
+                            avg {q.avg_score ?? "—"} pts · {q.avg_accuracy ?? "—"}% acc
+                          </p>
+                        )}
+                      </div>
+                      {q.is_arena && (
+                        <span className="font-mono text-[9px] uppercase border border-volt/30 text-volt px-1.5 py-0.5">
+                          Arena
+                        </span>
+                      )}
+                      <span className="font-mono text-xs text-foreground/70">
+                        {q.plays.toLocaleString()}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+              <div className="border border-border bg-card">
+                <div className="p-4 border-b border-border">
+                  <p className="font-mono text-[10px] uppercase text-cyan-jolt">Leaderboard</p>
+                  <h3 className="font-display text-xl italic uppercase mt-1">Top hosts</h3>
+                </div>
+                {topHosts.length === 0 ? (
+                  <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">
+                    No sessions yet
+                  </div>
+                ) : (
+                  topHosts.map((h, i) => (
+                    <div
+                      key={h.display_name}
+                      className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0"
+                    >
+                      <span className="font-display text-xl italic text-cyan-jolt w-6 shrink-0">
+                        {i + 1}
+                      </span>
+                      <p className="flex-1 min-w-0 font-display text-sm italic uppercase truncate">
+                        {h.display_name}
+                      </p>
+                      <span className="font-mono text-xs text-foreground/70">
+                        {h.sessions.toLocaleString()} {h.sessions === 1 ? "session" : "sessions"}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </section>
+          </>
+        )}
+
+        {tab === "users" && (
+          <>
+            <HostRequestsPanel onChange={load} />
+
+            <div className="flex gap-2">
+              <input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && load()}
+                placeholder="Search by name or email"
+                className="flex-1 bg-background border border-border px-4 py-3 font-mono text-sm focus:outline-none focus:border-volt"
+              />
+              <button
+                onClick={load}
+                className="bg-volt text-background font-display text-base px-5 py-3 skew-cta"
+              >
+                SEARCH
+              </button>
+            </div>
+
+            <div className="border border-border">
+              {users.length === 0 ? (
+                <div className="p-8 text-center text-foreground/50 font-mono text-sm uppercase">
+                  No users
+                </div>
+              ) : (
+                users.map((u) => (
+                  <UserRow
+                    key={u.id}
+                    user={u}
+                    busy={busy}
+                    onGrant={grant}
+                    onRevoke={revoke}
+                    onExtend={extend}
+                    onConvert={convert}
+                  />
+                ))
+              )}
+            </div>
+          </>
+        )}
       </div>
     </HostShell>
   );
@@ -631,14 +877,34 @@ function SessionsChart({ data }: { data: DailyStat[] }) {
           </linearGradient>
         </defs>
         <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
-        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <XAxis
+          dataKey="day"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          tick={axisTick}
+          tickFormatter={dayTick}
+          minTickGap={24}
+        />
         <YAxis tickLine={false} axisLine={false} width={36} tick={axisTick} />
         <ChartTooltip
           cursor={{ stroke: gridStroke }}
           content={<ChartTooltipContent labelFormatter={(l) => formatDay(String(l))} />}
         />
-        <Area dataKey="sessions" type="monotone" stroke="var(--volt)" strokeWidth={2} fill="url(#adminSessions)" />
-        <Area dataKey="participants" type="monotone" stroke="var(--cyan-jolt)" strokeWidth={2} fill="url(#adminParticipants)" />
+        <Area
+          dataKey="sessions"
+          type="monotone"
+          stroke="var(--volt)"
+          strokeWidth={2}
+          fill="url(#adminSessions)"
+        />
+        <Area
+          dataKey="participants"
+          type="monotone"
+          stroke="var(--cyan-jolt)"
+          strokeWidth={2}
+          fill="url(#adminParticipants)"
+        />
       </AreaChart>
     </ChartContainer>
   );
@@ -649,22 +915,56 @@ function AnswersChart({ data }: { data: DailyStat[] }) {
     <ChartContainer config={answersConfig} className="aspect-auto h-52">
       <ComposedChart data={data} margin={{ top: 8, right: 0, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
-        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <XAxis
+          dataKey="day"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          tick={axisTick}
+          tickFormatter={dayTick}
+          minTickGap={24}
+        />
         <YAxis yAxisId="count" tickLine={false} axisLine={false} width={36} tick={axisTick} />
-        <YAxis yAxisId="pct" orientation="right" domain={[0, 100]} tickLine={false} axisLine={false} width={36} tick={axisTick} tickFormatter={(v) => `${v}%`} />
+        <YAxis
+          yAxisId="pct"
+          orientation="right"
+          domain={[0, 100]}
+          tickLine={false}
+          axisLine={false}
+          width={36}
+          tick={axisTick}
+          tickFormatter={(v) => `${v}%`}
+        />
         <ChartTooltip
           cursor={{ stroke: gridStroke }}
           content={
             <ChartTooltipContent
               labelFormatter={(l) => formatDay(String(l))}
               formatter={(value, name) =>
-                value == null ? "—" : name === "avg_accuracy" ? `${value}%` : Number(value).toLocaleString()
+                value == null
+                  ? "—"
+                  : name === "avg_accuracy"
+                    ? `${value}%`
+                    : Number(value).toLocaleString()
               }
             />
           }
         />
-        <Bar yAxisId="count" dataKey="answers" fill="var(--amber-spark)" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
-        <Line yAxisId="pct" dataKey="avg_accuracy" type="monotone" stroke="var(--volt)" strokeWidth={2} dot={false} />
+        <Bar
+          yAxisId="count"
+          dataKey="answers"
+          fill="var(--amber-spark)"
+          fillOpacity={0.8}
+          radius={[2, 2, 0, 0]}
+        />
+        <Line
+          yAxisId="pct"
+          dataKey="avg_accuracy"
+          type="monotone"
+          stroke="var(--volt)"
+          strokeWidth={2}
+          dot={false}
+        />
       </ComposedChart>
     </ChartContainer>
   );
@@ -675,13 +975,26 @@ function RegistrationsChart({ data }: { data: DailyStat[] }) {
     <ChartContainer config={registrationsConfig} className="aspect-auto h-52">
       <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
-        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <XAxis
+          dataKey="day"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          tick={axisTick}
+          tickFormatter={dayTick}
+          minTickGap={24}
+        />
         <YAxis tickLine={false} axisLine={false} width={36} tick={axisTick} />
         <ChartTooltip
           cursor={{ stroke: gridStroke }}
           content={<ChartTooltipContent labelFormatter={(l) => formatDay(String(l))} />}
         />
-        <Bar dataKey="new_players" fill="var(--pink-shock)" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
+        <Bar
+          dataKey="new_players"
+          fill="var(--pink-shock)"
+          fillOpacity={0.8}
+          radius={[2, 2, 0, 0]}
+        />
       </BarChart>
     </ChartContainer>
   );
@@ -692,7 +1005,15 @@ function ResponseChart({ data }: { data: DailyStat[] }) {
     <ChartContainer config={responseConfig} className="aspect-auto h-52">
       <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
         <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
-        <XAxis dataKey="day" tickLine={false} axisLine={false} tickMargin={8} tick={axisTick} tickFormatter={dayTick} minTickGap={24} />
+        <XAxis
+          dataKey="day"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          tick={axisTick}
+          tickFormatter={dayTick}
+          minTickGap={24}
+        />
         <YAxis tickLine={false} axisLine={false} width={36} tick={axisTick} />
         <ChartTooltip
           cursor={{ stroke: gridStroke }}
@@ -703,14 +1024,24 @@ function ResponseChart({ data }: { data: DailyStat[] }) {
             />
           }
         />
-        <Line dataKey="avg_response_ms" type="monotone" stroke="var(--cyan-jolt)" strokeWidth={2} dot={false} connectNulls />
+        <Line
+          dataKey="avg_response_ms"
+          type="monotone"
+          stroke="var(--cyan-jolt)"
+          strokeWidth={2}
+          dot={false}
+          connectNulls
+        />
       </LineChart>
     </ChartContainer>
   );
 }
 
 function formatDay(day: string) {
-  return new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return new Date(`${day}T12:00:00`).toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
 }
 
 function timeAgo(iso: string) {
@@ -719,6 +1050,25 @@ function timeAgo(iso: string) {
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   return `${Math.floor(m / 60)}h ${m % 60}m ago`;
+}
+
+function secondsAgo(ts: number) {
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  return `${m}m ago`;
+}
+
+/** Self-contained 1s ticker so "updated Xs ago" counts down without
+ *  re-rendering the rest of the page (charts stay cheap). */
+function UpdatedReadout({ at }: { at: number }) {
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  return <>{secondsAgo(at)}</>;
 }
 
 function formatDuration(seconds: number | null) {
@@ -762,33 +1112,68 @@ function HoursChart({ data }: { data: HourStat[] }) {
             <ChartTooltipContent
               labelFormatter={(l) => `${Number(l) < 12 ? "am" : "pm"} ${Number(l) % 12 || 12}`}
               formatter={(value, name) =>
-                value == null ? "—" : `${Number(value).toLocaleString()} ${name === "sessions" ? "sessions" : "answers"}`
+                value == null
+                  ? "—"
+                  : `${Number(value).toLocaleString()} ${name === "sessions" ? "sessions" : "answers"}`
               }
             />
           }
         />
-        <Bar yAxisId="sessions" dataKey="sessions" fill="var(--volt)" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
-        <Line yAxisId="answers" dataKey="answers" type="monotone" stroke="var(--cyan-jolt)" strokeWidth={2} dot={false} />
+        <Bar
+          yAxisId="sessions"
+          dataKey="sessions"
+          fill="var(--volt)"
+          fillOpacity={0.8}
+          radius={[2, 2, 0, 0]}
+        />
+        <Line
+          yAxisId="answers"
+          dataKey="answers"
+          type="monotone"
+          stroke="var(--cyan-jolt)"
+          strokeWidth={2}
+          dot={false}
+        />
       </ComposedChart>
     </ChartContainer>
   );
 }
 
 function UserRow({
-  user, busy, onGrant, onRevoke, onExtend, onConvert,
+  user,
+  busy,
+  onGrant,
+  onRevoke,
+  onExtend,
+  onConvert,
 }: {
   user: AdminUser;
   busy: boolean;
-  onGrant: (profileId: string, type: "single" | "bundle" | "time", sessions: number | undefined, expiresAt: string | undefined) => void;
+  onGrant: (
+    profileId: string,
+    type: "single" | "bundle" | "time",
+    sessions: number | undefined,
+    expiresAt: string | undefined,
+  ) => void;
   onRevoke: (authId: string) => void;
-  onExtend: (authId: string, addSessions: number | undefined, newExpires: string | undefined) => void;
-  onConvert: (authId: string, type: "single" | "bundle" | "time", sessions: number | undefined, expiresAt: string | undefined) => void;
+  onExtend: (
+    authId: string,
+    addSessions: number | undefined,
+    newExpires: string | undefined,
+  ) => void;
+  onConvert: (
+    authId: string,
+    type: "single" | "bundle" | "time",
+    sessions: number | undefined,
+    expiresAt: string | undefined,
+  ) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [type, setType] = useState<"single" | "bundle" | "time">("single");
   const [sessions, setSessions] = useState(5);
   const [expires, setExpires] = useState(() => {
-    const d = new Date(); d.setMonth(d.getMonth() + 1);
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
     return d.toISOString().slice(0, 10);
   });
 
@@ -804,11 +1189,17 @@ function UserRow({
     <div className="border-b border-border last:border-b-0">
       <div className="flex items-center justify-between p-4 gap-4 flex-wrap">
         <div className="flex-1 min-w-0">
-          <p className="font-display text-lg italic uppercase truncate">{user.display_name || user.email}</p>
+          <p className="font-display text-lg italic uppercase truncate">
+            {user.display_name || user.email}
+          </p>
           <p className="font-mono text-xs text-foreground/50 truncate">{user.email}</p>
         </div>
         <div className="text-right">
-          <p className={`font-mono text-xs uppercase ${user.is_active ? "text-volt" : "text-foreground/50"}`}>{status}</p>
+          <p
+            className={`font-mono text-xs uppercase ${user.is_active ? "text-volt" : "text-foreground/50"}`}
+          >
+            {status}
+          </p>
         </div>
         <button
           onClick={() => setOpen((v) => !v)}
@@ -837,7 +1228,9 @@ function UserRow({
               <label className="block">
                 <span className="font-mono text-[10px] uppercase text-foreground/60">Sessions</span>
                 <input
-                  type="number" min={1} value={sessions}
+                  type="number"
+                  min={1}
+                  value={sessions}
                   onChange={(e) => setSessions(parseInt(e.target.value) || 1)}
                   className="w-full mt-1 bg-background border border-border px-3 py-2 font-mono text-xs"
                 />
@@ -847,7 +1240,8 @@ function UserRow({
               <label className="block">
                 <span className="font-mono text-[10px] uppercase text-foreground/60">Expires</span>
                 <input
-                  type="date" value={expires}
+                  type="date"
+                  value={expires}
                   onChange={(e) => setExpires(e.target.value)}
                   className="w-full mt-1 bg-background border border-border px-3 py-2 font-mono text-xs"
                 />
@@ -855,11 +1249,14 @@ function UserRow({
             )}
             <button
               disabled={busy}
-              onClick={() => onGrant(
-                user.id, type,
-                type === "bundle" ? sessions : type === "single" ? 1 : undefined,
-                type === "time" ? new Date(expires).toISOString() : undefined,
-              )}
+              onClick={() =>
+                onGrant(
+                  user.id,
+                  type,
+                  type === "bundle" ? sessions : type === "single" ? 1 : undefined,
+                  type === "time" ? new Date(expires).toISOString() : undefined,
+                )
+              }
               className="bg-volt text-background font-display text-base px-4 py-2.5 skew-cta disabled:opacity-50"
             >
               GRANT / REPLACE
@@ -891,11 +1288,14 @@ function UserRow({
                 </button>
               )}
               <button
-                onClick={() => onConvert(
-                  user.auth_id!, type,
-                  type === "bundle" ? sessions : type === "single" ? 1 : undefined,
-                  type === "time" ? new Date(expires).toISOString() : undefined,
-                )}
+                onClick={() =>
+                  onConvert(
+                    user.auth_id!,
+                    type,
+                    type === "bundle" ? sessions : type === "single" ? 1 : undefined,
+                    type === "time" ? new Date(expires).toISOString() : undefined,
+                  )
+                }
                 className="border border-border px-3 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt"
               >
                 Convert to selected
@@ -934,28 +1334,40 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   async function load() {
-    const { data, error } = await supabase.rpc("admin_list_host_requests" as never, {
-      p_status: filter === "all" ? null : filter,
-    } as never);
+    const { data, error } = await supabase.rpc(
+      "admin_list_host_requests" as never,
+      {
+        p_status: filter === "all" ? null : filter,
+      } as never,
+    );
     if (error) return toast.error(error.message);
     setItems((data as HostRequest[] | null) ?? []);
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [filter]);
+  useEffect(() => {
+    load(); /* eslint-disable-next-line */
+  }, [filter]);
 
   async function approve(id: string) {
     setBusyId(id);
-    const { error } = await supabase.rpc("admin_approve_host_request" as never, { p_request_id: id } as never);
+    const { error } = await supabase.rpc(
+      "admin_approve_host_request" as never,
+      { p_request_id: id } as never,
+    );
     setBusyId(null);
     if (error) return toast.error(error.message);
     toast.success("Approved · 90-day access granted");
-    load(); onChange();
+    load();
+    onChange();
   }
 
   async function reject(id: string) {
     if (!confirm("Reject this hosting request?")) return;
     setBusyId(id);
-    const { error } = await supabase.rpc("admin_reject_host_request" as never, { p_request_id: id } as never);
+    const { error } = await supabase.rpc(
+      "admin_reject_host_request" as never,
+      { p_request_id: id } as never,
+    );
     setBusyId(null);
     if (error) return toast.error(error.message);
     toast.success("Rejected");
@@ -979,7 +1391,9 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
               key={f}
               onClick={() => setFilter(f)}
               className={`px-3 py-1.5 font-mono text-[10px] uppercase border ${
-                filter === f ? "border-volt text-volt" : "border-border text-foreground/60 hover:text-volt"
+                filter === f
+                  ? "border-volt text-volt"
+                  : "border-border text-foreground/60 hover:text-volt"
               }`}
             >
               {f}
@@ -988,28 +1402,41 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
         </div>
       </div>
       {items.length === 0 ? (
-        <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No {filter === "all" ? "" : filter} requests</div>
+        <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">
+          No {filter === "all" ? "" : filter} requests
+        </div>
       ) : (
         <div>
           {items.map((r) => (
             <div key={r.id} className="border-b border-border last:border-b-0 p-4 space-y-2">
               <div className="flex items-start justify-between gap-4 flex-wrap">
                 <div className="min-w-0">
-                  <p className="font-display text-base italic uppercase truncate">{r.organization}</p>
+                  <p className="font-display text-base italic uppercase truncate">
+                    {r.organization}
+                  </p>
                   <p className="font-mono text-[11px] text-foreground/60 truncate">
                     {r.display_name || r.email} · {r.email}
                   </p>
                   <p className="font-mono text-[10px] uppercase text-foreground/50 mt-1">
-                    {r.purpose} · {r.expected_participants} · {new Date(r.created_at).toLocaleDateString()}
+                    {r.purpose} · {r.expected_participants} ·{" "}
+                    {new Date(r.created_at).toLocaleDateString()}
                   </p>
                 </div>
-                <span className={`font-mono text-[10px] uppercase px-2 py-1 border ${
-                  r.status === "pending" ? "border-cyan-jolt text-cyan-jolt"
-                  : r.status === "approved" ? "border-volt text-volt"
-                  : "border-pink-shock text-pink-shock"
-                }`}>{r.status}</span>
+                <span
+                  className={`font-mono text-[10px] uppercase px-2 py-1 border ${
+                    r.status === "pending"
+                      ? "border-cyan-jolt text-cyan-jolt"
+                      : r.status === "approved"
+                        ? "border-volt text-volt"
+                        : "border-pink-shock text-pink-shock"
+                  }`}
+                >
+                  {r.status}
+                </span>
               </div>
-              {r.message && <p className="text-foreground/70 text-sm whitespace-pre-wrap">{r.message}</p>}
+              {r.message && (
+                <p className="text-foreground/70 text-sm whitespace-pre-wrap">{r.message}</p>
+              )}
               {r.status === "pending" && (
                 <div className="flex gap-2 pt-1">
                   <button
@@ -1035,4 +1462,3 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
     </div>
   );
 }
-
