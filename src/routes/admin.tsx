@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, ComposedChart, Line, LineChart, XAxis, YAxis,
 } from "recharts";
@@ -60,14 +60,47 @@ type DailyStat = {
 };
 
 type TopQuiz = {
+  id: string;
   title: string;
   plays: number;
   is_arena: boolean;
+  avg_score: number | null;
+  avg_accuracy: number | null;
 };
 
 type TopHost = {
   display_name: string;
   sessions: number;
+};
+
+type FunnelStats = {
+  total_sessions: number;
+  completed_sessions: number;
+  abandoned_sessions: number;
+  completion_rate: number | null;
+  avg_session_size: number | null;
+  avg_duration_seconds: number | null;
+};
+
+type QuestionTypeStat = {
+  question_type: string;
+  answers: number;
+  accuracy: number | null;
+};
+
+type HourStat = {
+  hour: number;
+  sessions: number;
+  answers: number;
+};
+
+type LiveSession = {
+  id: string;
+  code: string;
+  status: string;
+  title: string;
+  created_at: string;
+  participants: number;
 };
 
 function AdminPage() {
@@ -82,37 +115,79 @@ function AdminPage() {
   const [series, setSeries] = useState<DailyStat[]>([]);
   const [topQuizzes, setTopQuizzes] = useState<TopQuiz[]>([]);
   const [topHosts, setTopHosts] = useState<TopHost[]>([]);
+  const [funnel, setFunnel] = useState<FunnelStats | null>(null);
+  const [questionTypes, setQuestionTypes] = useState<QuestionTypeStat[]>([]);
+  const [hours, setHours] = useState<HourStat[]>([]);
+  const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  // Guards against stale responses overwriting newer ones when the range
+  // toggle is clicked in quick succession (7D → 90D before 7D resolves).
+  const loadSeq = useRef(0);
 
   useEffect(() => {
     if (!loading && !isAdmin) navigate({ to: "/dashboard" });
   }, [loading, isAdmin, navigate]);
 
+  // Live sessions refresh every 25s independent of the main load.
+  useEffect(() => {
+    if (!isAdmin) return;
+    supabase.rpc("admin_live_sessions" as never).then(({ data }) => {
+      if (data) setLiveSessions((data as LiveSession[] | null) ?? []);
+    });
+    const t = setInterval(() => {
+      supabase.rpc("admin_live_sessions" as never).then(({ data }) => {
+        if (data) setLiveSessions((data as LiveSession[] | null) ?? []);
+      });
+    }, 25000);
+    return () => clearInterval(t);
+    /* eslint-disable-next-line */
+  }, [isAdmin]);
+
+  // Range-independent insights, fetched once per admin session.
+  useEffect(() => {
+    if (!isAdmin) return;
+    Promise.all([
+      supabase.rpc("admin_session_funnel" as never),
+      supabase.rpc("admin_question_type_stats" as never),
+    ]).then(([{ data: fn, error: e6 }, { data: qt, error: e7 }]) => {
+      if (e6) toast.error(e6.message);
+      if (e7) toast.error(e7.message);
+      setFunnel(((fn as unknown as FunnelStats[] | null) ?? [])[0] ?? null);
+      setQuestionTypes(((qt as unknown as QuestionTypeStat[] | null) ?? []).filter((row) => row.question_type));
+    });
+    /* eslint-disable-next-line */
+  }, [isAdmin]);
+
   async function load() {
     // All figures are derived on demand from existing tables — no metrics store.
+    const seq = ++loadSeq.current;
     setRefreshing(true);
     try {
-      const [{ data: list, error: e1 }, { data: st, error: e2 }, { data: pl }, { data: ts, error: e3 }, { data: tq, error: e4 }, { data: th, error: e5 }] = await Promise.all([
+      const [{ data: list, error: e1 }, { data: st, error: e2 }, { data: pl }, { data: ts, error: e3 }, { data: tq, error: e4 }, { data: th, error: e5 }, { data: hr, error: e8 }] = await Promise.all([
         supabase.rpc("admin_list_users", { p_search: search || undefined }),
         supabase.rpc("admin_host_stats"),
         supabase.rpc("admin_platform_stats"),
         supabase.rpc("admin_stats_timeseries" as never, { p_days: range } as never),
         supabase.rpc("admin_top_quizzes" as never, { p_limit: 5 } as never),
         supabase.rpc("admin_top_hosts" as never, { p_limit: 5 } as never),
+        supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
       ]);
+      if (seq !== loadSeq.current) return; // superseded by a newer load
       if (e1) toast.error(e1.message);
       if (e2) toast.error(e2.message);
       if (e3) toast.error(e3.message);
       if (e4) toast.error(e4.message);
       if (e5) toast.error(e5.message);
+      if (e8) toast.error(e8.message);
       setUsers((list as AdminUser[] | null) ?? []);
       setStats(((st as Stats[] | null) ?? [])[0] ?? null);
       setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
       setSeries(((ts as unknown as DailyStat[] | null) ?? []).filter((row) => row.day));
-      setTopQuizzes(((tq as unknown as TopQuiz[] | null) ?? []).filter((row) => row.title));
+      setTopQuizzes(((tq as unknown as TopQuiz[] | null) ?? []).filter((row) => row.id));
       setTopHosts(((th as unknown as TopHost[] | null) ?? []).filter((row) => row.display_name));
+      setHours(((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)));
     } finally {
-      setRefreshing(false);
+      if (seq === loadSeq.current) setRefreshing(false);
     }
   }
 
@@ -172,6 +247,42 @@ function AdminPage() {
     { label: "Time-based", value: stats?.time_hosts ?? 0 },
   ], [stats]);
 
+  // Period-over-period deltas: the last 7 days of the loaded series vs the
+  // 7 days before them. Only meaningful when the range spans ≥ 14 days.
+  const trend = useMemo(() => {
+    if (series.length < 14) return null;
+    const cur = series.slice(-7);
+    const prev = series.slice(-14, -7);
+    const pct = (key: "sessions" | "answers" | "new_players" | "results") => {
+      const c = cur.reduce((a, r) => a + r[key], 0);
+      const p = prev.reduce((a, r) => a + r[key], 0);
+      if (p === 0) return null;
+      return Math.round(((c - p) / p) * 100);
+    };
+    return {
+      sessions: pct("sessions"),
+      answers: pct("answers"),
+      new_players: pct("new_players"),
+      results: pct("results"),
+    };
+  }, [series]);
+
+  function exportCsv() {
+    if (series.length === 0) return;
+    const headers = ["day", "new_players", "sessions", "participants", "answers", "results", "avg_accuracy", "avg_response_ms"];
+    const lines = series.map((d) => [
+      d.day, d.new_players, d.sessions, d.participants, d.answers, d.results,
+      d.avg_accuracy ?? "", d.avg_response_ms ?? "",
+    ].join(","));
+    const blob = new Blob([[headers.join(","), ...lines].join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `admin-activity-${range}d.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (loading || !isAdmin) return null;
 
   return (
@@ -221,6 +332,60 @@ function AdminPage() {
               {platform.expiring_authorizations} authorization(s) expiring within 14 days
             </p>
           )}
+          {trend && (
+            <div className="flex flex-wrap gap-x-5 gap-y-1 border border-border bg-card px-4 py-3 font-mono text-[10px] uppercase tracking-widest">
+              <span className="text-foreground/40">Last 7d vs prior 7d</span>
+              {([["sessions", "Sessions"], ["answers", "Answers"], ["new_players", "Players"], ["results", "Results"]] as const).map(([key, label]) => {
+                const v = trend[key];
+                return (
+                  <span key={key}>
+                    <span className="text-foreground/60">{label}</span>{" "}
+                    {v == null ? (
+                      <span className="text-foreground/40">—</span>
+                    ) : (
+                      <span className={v >= 0 ? "text-volt" : "text-pink-shock"}>
+                        {v >= 0 ? "▲" : "▼"} {Math.abs(v)}%
+                      </span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </section>
+
+        <section className="space-y-3">
+          <div>
+            <p className="font-mono text-[10px] uppercase text-pink-shock">On air</p>
+            <h2 className="font-display text-3xl italic uppercase mt-1">Live sessions</h2>
+          </div>
+          {liveSessions.length === 0 ? (
+            <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
+              No sessions running right now
+            </div>
+          ) : (
+            <div className="border border-border bg-card">
+              {liveSessions.map((s) => (
+                <div key={s.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0 flex-wrap">
+                  <span
+                    className={`font-mono text-[10px] uppercase px-2 py-0.5 border ${
+                      s.status === "active" ? "border-volt text-volt"
+                      : s.status === "lobby" ? "border-cyan-jolt text-cyan-jolt"
+                      : s.status === "question_results" ? "border-amber-spark text-amber-spark"
+                      : "border-border text-foreground/50"
+                    }`}
+                  >
+                    {s.status === "active" ? "Live" : s.status === "lobby" ? "Lobby" : s.status === "question_results" ? "Results" : s.status}
+                  </span>
+                  <span className="font-mono text-sm text-volt">{s.code}</span>
+                  <p className="flex-1 min-w-0 font-display text-base italic uppercase truncate">{s.title}</p>
+                  <span className="font-mono text-xs text-foreground/70">{s.participants} player{s.participants === 1 ? "" : "s"}</span>
+                  <span className="font-mono text-[10px] uppercase text-foreground/40">{timeAgo(s.created_at)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">Refreshes every 25s</p>
         </section>
 
         <section className="space-y-3">
@@ -229,7 +394,14 @@ function AdminPage() {
               <p className="font-mono text-[10px] uppercase text-cyan-jolt">Trends</p>
               <h2 className="font-display text-3xl italic uppercase mt-1">Activity</h2>
             </div>
-            <div className="flex gap-1">
+            <div className="flex items-center gap-1 flex-wrap">
+              <button
+                onClick={exportCsv}
+                disabled={series.length === 0}
+                className="border border-border px-3 py-1.5 font-mono text-[10px] uppercase text-foreground/60 hover:border-volt hover:text-volt disabled:opacity-40"
+              >
+                Export CSV
+              </button>
               {([7, 14, 30, 90] as const).map((d) => (
                 <button
                   key={d}
@@ -246,7 +418,7 @@ function AdminPage() {
           {refreshing && (
             <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">Refreshing…</p>
           )}
-          {series.length === 0 ? (
+          {!refreshing && series.length === 0 ? (
             <div className="border border-border bg-card p-10 text-center font-mono text-xs uppercase text-foreground/40">
               No activity recorded in this range
             </div>
@@ -269,6 +441,75 @@ function AdminPage() {
         </section>
 
         <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="border border-border bg-card p-4 space-y-4">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Session funnel</p>
+            {funnel ? (
+              <>
+                <div>
+                  <p className="font-display text-5xl italic text-volt">{funnel.completion_rate ?? 0}%</p>
+                  <p className="font-mono text-[10px] uppercase text-foreground/50 mt-1">
+                    of {funnel.total_sessions.toLocaleString()} sessions reached end
+                  </p>
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-3 border-t border-border">
+                  <div>
+                    <p className="font-mono text-[10px] uppercase text-foreground/50">Abandoned</p>
+                    <p className="font-display text-2xl italic text-pink-shock mt-1">{funnel.abandoned_sessions.toLocaleString()}</p>
+                  </div>
+                  <div>
+                    <p className="font-mono text-[10px] uppercase text-foreground/50">Avg players</p>
+                    <p className="font-display text-2xl italic text-cyan-jolt mt-1">{funnel.avg_session_size ?? "—"}</p>
+                  </div>
+                  <div>
+                    <p className="font-mono text-[10px] uppercase text-foreground/50">Avg duration</p>
+                    <p className="font-display text-2xl italic text-amber-spark mt-1">{formatDuration(funnel.avg_duration_seconds)}</p>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">Loading…</div>
+            )}
+          </div>
+
+          <div className="border border-border bg-card p-4 space-y-4">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Question-type accuracy</p>
+            {questionTypes.length === 0 ? (
+              <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No answers yet</div>
+            ) : (
+              questionTypes.map((qt) => (
+                <div key={qt.question_type}>
+                  <div className="flex justify-between gap-3 font-mono text-[10px] uppercase tracking-widest">
+                    <span className="text-foreground/70 truncate">{qt.question_type.replace(/_/g, " ")}</span>
+                    <span className="text-foreground/50 shrink-0">
+                      {qt.answers.toLocaleString()} · {qt.accuracy == null ? "—" : `${qt.accuracy}%`}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 bg-background">
+                    <div
+                      className="h-full bg-volt"
+                      style={{ width: `${Math.min(100, Math.max(0, qt.accuracy ?? 0))}%` }}
+                    />
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </section>
+
+        <section className="space-y-3">
+          <h2 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Peak hours · {range}d</h2>
+          {hours.length === 0 ? (
+            <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
+              No data in this range
+            </div>
+          ) : (
+            <div className="border border-border bg-card p-4">
+              <HoursChart data={hours} />
+            </div>
+          )}
+        </section>
+
+        <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <div className="border border-border bg-card">
             <div className="p-4 border-b border-border">
               <p className="font-mono text-[10px] uppercase text-volt">Leaderboard</p>
@@ -278,10 +519,15 @@ function AdminPage() {
               <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">No plays yet</div>
             ) : (
               topQuizzes.map((q, i) => (
-                <div key={q.title} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0">
+                <div key={q.id} className="flex items-center gap-3 px-4 py-3 border-b border-border last:border-b-0">
                   <span className="font-display text-xl italic text-volt w-6 shrink-0">{i + 1}</span>
                   <div className="flex-1 min-w-0">
                     <p className="font-display text-sm italic uppercase truncate">{q.title}</p>
+                    {(q.avg_score != null || q.avg_accuracy != null) && (
+                      <p className="font-mono text-[10px] uppercase text-foreground/50 truncate">
+                        avg {q.avg_score ?? "—"} pts · {q.avg_accuracy ?? "—"}% acc
+                      </p>
+                    )}
                   </div>
                   {q.is_arena && (
                     <span className="font-mono text-[9px] uppercase border border-volt/30 text-volt px-1.5 py-0.5">Arena</span>
@@ -411,7 +657,9 @@ function AnswersChart({ data }: { data: DailyStat[] }) {
           content={
             <ChartTooltipContent
               labelFormatter={(l) => formatDay(String(l))}
-              formatter={(value, name) => (name === "avg_accuracy" ? `${value}%` : Number(value).toLocaleString())}
+              formatter={(value, name) =>
+                value == null ? "—" : name === "avg_accuracy" ? `${value}%` : Number(value).toLocaleString()
+              }
             />
           }
         />
@@ -451,7 +699,7 @@ function ResponseChart({ data }: { data: DailyStat[] }) {
           content={
             <ChartTooltipContent
               labelFormatter={(l) => formatDay(String(l))}
-              formatter={(value) => `${Number(value).toLocaleString()} ms`}
+              formatter={(value) => (value == null ? "—" : `${Number(value).toLocaleString()} ms`)}
             />
           }
         />
@@ -463,6 +711,67 @@ function ResponseChart({ data }: { data: DailyStat[] }) {
 
 function formatDay(day: string) {
   return new Date(`${day}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function timeAgo(iso: string) {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ${m % 60}m ago`;
+}
+
+function formatDuration(seconds: number | null) {
+  if (seconds == null) return "—";
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return m > 0 ? `${m}m ${s}s` : `${s}s`;
+}
+
+const hoursConfig = {
+  sessions: { label: "Sessions", color: "var(--volt)" },
+  answers: { label: "Answers", color: "var(--cyan-jolt)" },
+} satisfies ChartConfig;
+
+function HoursChart({ data }: { data: HourStat[] }) {
+  return (
+    <ChartContainer config={hoursConfig} className="aspect-auto h-44">
+      <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
+        <XAxis
+          dataKey="hour"
+          tickLine={false}
+          axisLine={false}
+          tickMargin={8}
+          tick={axisTick}
+          tickFormatter={(v) => `${Number(v) < 12 ? "am" : "pm"} ${Number(v) % 12 || 12}`}
+          minTickGap={8}
+        />
+        <YAxis yAxisId="sessions" tickLine={false} axisLine={false} width={36} tick={axisTick} />
+        <YAxis
+          yAxisId="answers"
+          orientation="right"
+          tickLine={false}
+          axisLine={false}
+          width={36}
+          tick={axisTick}
+        />
+        <ChartTooltip
+          cursor={{ stroke: gridStroke }}
+          content={
+            <ChartTooltipContent
+              labelFormatter={(l) => `${Number(l) < 12 ? "am" : "pm"} ${Number(l) % 12 || 12}`}
+              formatter={(value, name) =>
+                value == null ? "—" : `${Number(value).toLocaleString()} ${name === "sessions" ? "sessions" : "answers"}`
+              }
+            />
+          }
+        />
+        <Bar yAxisId="sessions" dataKey="sessions" fill="var(--volt)" fillOpacity={0.8} radius={[2, 2, 0, 0]} />
+        <Line yAxisId="answers" dataKey="answers" type="monotone" stroke="var(--cyan-jolt)" strokeWidth={2} dot={false} />
+      </ComposedChart>
+    </ChartContainer>
+  );
 }
 
 function UserRow({
