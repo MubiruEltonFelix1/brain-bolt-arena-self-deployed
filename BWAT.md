@@ -61,7 +61,7 @@ This file provides guidance to Bwat when working with code in this repository.
 - `bun run build` (production) / `bun run build:dev` (development-mode build)
 - `bun run lint` / `bun run format`
 - No test suite script is defined.
-- DB schema lives in `supabase/migrations/*.sql` — applied through Lovable Cloud/Supabase (no local migration command).
+- DB schema lives in `supabase/migrations/*.sql`. Apply it with `bun scripts/migrate.mjs` (connects via `DATABASE_URL` from `.env` using psql; reports applied/pending and applies pending ones automatically, each in its own transaction, in filename order, stopping on the first failure). `bun scripts/migrate.mjs --dry-run` reports only. `bun scripts/check-migrations.mjs` is the read-only status report.
 
 ## Gotchas
 
@@ -71,3 +71,4 @@ This file provides guidance to Bwat when working with code in this repository.
 - Both `bun.lock` and `package-lock.json` exist — always use `bun`; running npm installs can drift the lockfiles.
 - README says "Vite 7" but package.json pins `vite: ^8.0.16` — package.json is authoritative.
 - `#lovable-badge` is intentionally hidden in styles.css — don't remove that rule.
+- **Migration markers are mandatory**: the live DB has no `supabase_migrations` ledger, so applied/pending is judged by schema markers — every migration in `supabase/migrations/` needs a probe entry in `scripts/migration-markers.mjs` (single source of truth for `migrate.mjs` and `check-migrations.mjs`). A migration without an entry is never auto-applied (the runner blocks with exit 1).
