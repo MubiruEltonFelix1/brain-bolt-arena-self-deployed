@@ -133,8 +133,8 @@ way to write a question that the app's own validation would reject.
   separate edit restriction on archived quizzes).
 - `archive_quiz` is idempotent: archiving an already-archived quiz is a no-op
   with a warning.
-- **No unarchive tool exists**, so archived quizzes never silently reappear as
-  active content.
+- **No unarchive tool exists in the MCP toolset** — an archived quiz can only
+  be brought back through the web app's own edit surface, never through MCP.
 
 ## 6. Idempotency model
 
@@ -206,9 +206,10 @@ database: **no SQL errors, stack traces, service-role details, secrets, RPC
 names, or internal table structure** reach the agent. This follows the same
 safe-presentation principles as Phase 10A (`src/lib/errors.ts` classification:
 unauthorized / auth-required / host-access / not-found / validation /
-temporary / unknown), applied to the MCP surface. The full technical error is
-available to operators in the server log; the agent only ever sees the safe
-message.
+temporary / unknown), applied to the MCP surface. The raw database error is
+discarded at the tool layer — this server does not persist technical error
+details — so the agent only ever sees the safe message, and any diagnosis of a
+failed call happens through the MCP client's own error output.
 
 Validation failures state exactly what was wrong and that **nothing was
 written** — a failed operation never leaves a partial write behind
@@ -219,7 +220,8 @@ written** — a failed operation never leaves a partial write behind
 - **MCP can now safely manage the Quiz lifecycle, but it does not yet
   orchestrate Competitions or Leagues.**
 - No hard delete — archiving is the only removal path (by design).
-- No unarchive tool (by design: archived quizzes must not silently reappear).
+- No unarchive tool in the MCP surface — archived quizzes can only be brought
+  back through the web app, never through MCP (by design).
 - No ownership transfer (by design: ownership stays in the Principal system).
 - Schema gaps, surfaced in `get_capabilities` rather than invented by MCP:
   `quizzes` has no `visibility`, `published`, `category`, `branding` or
