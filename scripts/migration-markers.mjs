@@ -36,13 +36,15 @@ import { fileURLToPath } from "node:url";
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Reads KEY=VALUE lines from a .env-style file; missing file → {}. */
+/** Reads KEY=VALUE lines from a .env-style file; missing file → {}.
+ *  Surrounding double or single quotes on values are stripped
+ *  (e.g. DATABASE_URL="postgresql://..." — psql cannot parse quoted URIs). */
 export function loadEnv(file) {
   const vars = {};
   if (!existsSync(file)) return vars;
   for (const line of readFileSync(file, "utf8").split(/\r?\n/)) {
     const m = line.match(/^\s*([A-Z_]+)\s*=\s*(.*?)\s*$/);
-    if (m) vars[m[1]] = m[2];
+    if (m) vars[m[1]] = m[2].replace(/^["']|["']$/g, "");
   }
   return vars;
 }
@@ -61,6 +63,55 @@ export function findPsql() {
   return candidates.find((p) => p === "psql" || existsSync(p)) ?? null;
 }
 
+function sleepSync(ms) {
+  if (typeof Bun !== "undefined") {
+    Bun.sleepSync(ms);
+  } else {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  }
+}
+
+/** True for psql failures that are transient connection drops (pooler blips). */
+function isTransientConnectionError(r) {
+  const err = `${r.stderr || ""} ${r.error?.message || ""}`;
+  return /closed the connection|terminated abnormally|connection reset|broken pipe|ECONNRESET|ETIMEDOUT|EPIPE/i.test(
+    err,
+  );
+}
+
+/**
+ * Shared psql runner: `run(args, opts)` spawns psql (64MB buffer, UTF-8).
+ * Read probes (q/yes) retry transient connection failures with backoff (up to
+ * 3 retries after the first attempt) — the Supabase pooler occasionally drops
+ * a session mid-burst. Callers that MUST NOT auto-retry (the migration apply
+ * path — atomic per file) pass `{ retry: false }`.
+ */
+export function createPsqlRunner(psql, conn) {
+  const run = (args, { retry = true } = {}) => {
+    for (let attempt = 0; ; attempt++) {
+      const r = spawnSync(psql, args, {
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
+        env: { ...process.env, PGCLIENTENCODING: "UTF8" },
+      });
+      if (r.status === 0 || !retry || attempt >= 3 || !isTransientConnectionError(r)) return r;
+      sleepSync(500 * (attempt + 1));
+    }
+  };
+  const q = (sql) => {
+    const r = run([conn, "-t", "-A", "-c", sql]);
+    const err = (r.stderr || "").trim();
+    // Without ON_ERROR_STOP psql still exits 0 on a plain SQL error — surface
+    // those as probe failures instead of a silent "marker absent".
+    if (r.status !== 0 || /(^|\n)ERROR:|psql: error:/.test(err)) {
+      throw new Error(`psql failed: ${err.slice(0, 300)}`);
+    }
+    return r.stdout.trim();
+  };
+  const yes = (sql) => q(sql) === "t";
+  return { run, q, yes };
+}
+
 /**
  * Builds the marker list. `q(sql)` runs a query and returns trimmed stdout;
  * `yes(sql)` returns q(sql) === "t". Both are provided by the caller so the
@@ -71,8 +122,7 @@ export function createMarkers({ q, yes }) {
     yes(
       `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name = '${table}' AND column_name = '${column}')`,
     );
-  const tableExists = (table) =>
-    yes(`SELECT to_regclass('public.${table}') IS NOT NULL`);
+  const tableExists = (table) => yes(`SELECT to_regclass('public.${table}') IS NOT NULL`);
   const fnExists = (name) =>
     yes(
       `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${name}')`,
@@ -86,9 +136,10 @@ export function createMarkers({ q, yes }) {
     yes(
       `SELECT (pg_get_constraintdef(oid) LIKE '%${needle}%') FROM pg_constraint WHERE conname = '${conname}'`,
     );
+  // pg_policies is a view: qual/with_check are the policy expressions as text.
   const policyLike = (table, policy, needle) =>
     yes(
-      `SELECT (pg_get_expr(polqual, polrelid) LIKE '%${needle}%') FROM pg_policies WHERE schemaname = 'public' AND tablename = '${table}' AND policyname = '${policy}'`,
+      `SELECT (qual LIKE '%${needle}%') FROM pg_policies WHERE schemaname = 'public' AND tablename = '${table}' AND policyname = '${policy}'`,
     );
   const indexExists = (table, index) =>
     yes(
@@ -108,9 +159,7 @@ export function createMarkers({ q, yes }) {
   // (the presence of principal_for_user alone is true from 7K onward).
   const canPrincipalOnly = () => {
     const body = q(`SELECT prosrc FROM pg_proc WHERE proname = 'can' AND pronargs = 3`);
-    return (
-      body.includes("principal_for_user") && !body.includes("owner_id = v_user")
-    );
+    return body.includes("principal_for_user") && !body.includes("owner_id = v_user");
   };
 
   return [
@@ -121,8 +170,9 @@ export function createMarkers({ q, yes }) {
     },
     {
       file: "20260616133217_1983c462-9eff-42f6-a24c-a7ed95420491.sql",
-      marker: "anon cannot EXECUTE handle_new_user (REVOKE)",
-      applied: () => yes(`SELECT NOT has_function_privilege('anon', 'public.handle_new_user()', 'EXECUTE')`),
+      marker: "anon cannot EXECUTE handle_new_user (REVOKE incl. PUBLIC — effective)",
+      applied: () =>
+        yes(`SELECT NOT has_function_privilege('anon', 'public.handle_new_user()', 'EXECUTE')`),
     },
     {
       file: "20260617071325_9ad4f034-ca23-409b-a0d7-d0b18967afcd.sql",
@@ -137,25 +187,24 @@ export function createMarkers({ q, yes }) {
     {
       file: "20260618091140_447bbbe6-267a-4a27-a400-c1108ce4e9b3.sql",
       marker: "submit_answer rewritten (superseded — final 2-col version present)",
+      chain: true,
       applied: finalSubmitAnswer,
     },
     {
       file: "20260619203013_28ec30ed-f4cd-4f21-9aca-f1f18cdd7a82.sql",
       marker: "submit_answer body locks participants FOR UPDATE",
-      applied: () =>
-        fnBodyLike(
-          "submit_answer",
-          "FOR UPDATE",
-        ),
+      applied: () => fnBodyLike("submit_answer", "FOR UPDATE"),
     },
     {
       file: "20260619203510_eef5bce1-385d-400b-b280-2a820624b32a.sql",
       marker: "submit_answer rewritten (superseded — final 2-col version present)",
+      chain: true,
       applied: finalSubmitAnswer,
     },
     {
       file: "20260619203734_950e0edd-937d-4a1e-913e-d5e9028b347c.sql",
       marker: "submit_answer rewritten (superseded — final 2-col version present)",
+      chain: true,
       applied: finalSubmitAnswer,
     },
     {
@@ -342,8 +391,16 @@ export function createMarkers({ q, yes }) {
     },
     {
       file: "20260808063412_bbb901a5-2bc4-4a27-b28c-e4f91f427076.sql",
-      marker: "anon cannot EXECUTE is_session_host (REVOKE)",
-      applied: () => yes(`SELECT NOT has_function_privilege('anon', 'public.is_session_host(uuid)', 'EXECUTE')`),
+      // The file REVOKEs FROM anon only — it does NOT revoke the default
+      // PUBLIC grant, so anon's effective EXECUTE survives (via PUBLIC).
+      // The verifiable effect is the direct grant's removal (proacl), and
+      // that is what the marker tracks.
+      marker:
+        "anon direct EXECUTE grant on is_session_host removed (proacl; PUBLIC grant may remain)",
+      applied: () =>
+        yes(
+          `SELECT (proacl::text NOT LIKE '%anon=X%') FROM pg_proc WHERE proname = 'is_session_host'`,
+        ),
     },
     {
       file: "20260810193537_f38379d7-afb4-4c0e-bfc4-06693f6e665a.sql",
@@ -353,8 +410,7 @@ export function createMarkers({ q, yes }) {
     {
       file: "20260812153611_1a313580-b6e4-449d-9704-67614c75459e.sql",
       marker: "'Admin can view all competitions' policy uses is_admin()",
-      applied: () =>
-        policyLike("competitions", "Admin can view all competitions", "is_admin()"),
+      applied: () => policyLike("competitions", "Admin can view all competitions", "is_admin()"),
     },
     {
       file: "20260812153755_ff44b989-74a4-4dd8-82a9-22d470177d06.sql",
@@ -369,18 +425,20 @@ export function createMarkers({ q, yes }) {
     {
       file: "20260812154453_c7029788-5833-4f10-b62f-a85766ea5798.sql",
       marker: "authenticated cannot EXECUTE can(uuid,text,uuid) (REVOKE)",
-      applied: () => yes(`SELECT NOT has_function_privilege('authenticated', 'public.can(uuid,text,uuid)', 'EXECUTE')`),
+      applied: () =>
+        yes(
+          `SELECT NOT has_function_privilege('authenticated', 'public.can(uuid,text,uuid)', 'EXECUTE')`,
+        ),
     },
     {
       file: "20260812154514_64d7f7c8-86cc-4308-8c7d-d6421ac9aebc.sql",
-      marker: "supabase_read_only_user can EXECUTE can(uuid,text,uuid) (GRANT)",
+      marker:
+        "GRANT can() to supabase_read_only_user — superseded by the M51 REVOKE; assumed applied via chain",
+      chain: true,
       applied: () =>
         yes(
           `SELECT COALESCE(has_function_privilege('supabase_read_only_user', 'public.can(uuid,text,uuid)', 'EXECUTE'), false)`,
         ),
-      guard: () => roleExists("supabase_read_only_user"),
-      guardNote:
-        "the supabase_read_only_user role does not exist in this DB — GRANTing to it would error. Skipped.",
     },
     {
       file: "20260812154527_5af190a4-7214-402c-a475-aaf83538fd8e.sql",

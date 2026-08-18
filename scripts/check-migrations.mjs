@@ -16,10 +16,8 @@
 // 7 most recent migrations; it now reports all of them (superset — same
 // format).
 
-import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { ROOT, createMarkers, findPsql, loadEnv } from "./migration-markers.mjs";
+import { ROOT, createMarkers, createPsqlRunner, findPsql, loadEnv } from "./migration-markers.mjs";
 
 const migVars = loadEnv(join(ROOT, ".env.migration"));
 const appVars = loadEnv(join(ROOT, ".env"));
@@ -40,44 +38,60 @@ if (!PSQL) {
   console.error("psql not found. Install PostgreSQL or point PSQL_PATH at psql.exe.");
   process.exit(2);
 }
-function q(sql) {
-  const r = spawnSync(PSQL, [CONN, "-t", "-A", "-c", sql], {
-    encoding: "utf8",
-    maxBuffer: 16 * 1024 * 1024,
-    env: { ...process.env, PGCLIENTENCODING: "UTF8" },
-  });
-  if (r.status !== 0) throw new Error(`psql failed: ${(r.stderr || "").slice(0, 300)}`);
-  return r.stdout.trim();
-}
-const yes = (sql) => q(sql) === "t";
+const { q, yes } = createPsqlRunner(PSQL, CONN);
 
 const markers = createMarkers({ q, yes });
 
+const results = [];
 let failures = 0;
+let assumed = 0;
 let latestApplied = null;
 for (const p of markers) {
   let ok = false;
+  let probeFailed = false;
   let note = "";
   try {
     ok = p.applied();
     note = ok ? p.marker : `not applied — marker absent (${p.marker})`;
   } catch (e) {
+    probeFailed = true;
     note = `probe failed: ${e.message}`;
   }
-  if (ok) latestApplied = p.file;
-  else failures++;
-  console.log(`  [${ok ? "APPLIED" : "PENDING "}] ${p.file}  — ${note}`);
+  results.push({ p, ok, probeFailed });
+  if (ok) {
+    latestApplied = p.file;
+  } else if (probeFailed) {
+    // A probe error is never an assumption — count it as a failure.
+    failures++;
+  } else if (p.chain) {
+    // Chain-implied: the file ran but a later migration superseded its
+    // effect (e.g. the final submit_answer implies the earlier rewrites).
+    assumed++;
+    note = `assumed applied via chain — marker absent (${p.marker})`;
+  } else {
+    failures++;
+  }
+  const tag = ok
+    ? "APPLIED"
+    : !probeFailed && p.chain
+      ? "ASSUMED"
+      : probeFailed
+        ? "PROBE ERR"
+        : "PENDING ";
+  console.log(`  [${tag}] ${p.file}  — ${note}`);
 }
 
 console.log("");
 if (latestApplied) console.log(`Latest APPLIED migration: ${latestApplied}`);
-console.log(`${markers.length - failures}/${markers.length} markers present`);
+console.log(
+  `${markers.length - failures}/${markers.length} markers present` +
+    (assumed > 0 ? ` · ${assumed} assumed via chain` : ""),
+);
 if (failures > 0) {
-  console.log("PENDING migrations (markers missing on the live DB):");
-  for (const p of markers) {
-    try {
-      if (!p.applied()) console.log(`  - ${p.file}`);
-    } catch {}
+  console.log("PENDING / probe-failed migrations:");
+  for (const { p, ok, probeFailed } of results) {
+    if (!ok && !probeFailed && !p.chain) console.log(`  - ${p.file}`);
+    else if (probeFailed) console.log(`  ! ${p.file} (probe error)`);
   }
   process.exitCode = 1;
 } else {

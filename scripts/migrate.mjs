@@ -38,14 +38,14 @@
 //    alter_job may error if job 1 does not exist. Both are already applied on
 //    the live DB; if they ever show PENDING, review before applying.
 //
-// Exit codes: 0 = everything applied · 1 = pending/unknown (dry-run) or
-// unknown blocks · 2 = no connection string / psql missing / cannot connect ·
-// 3 = apply or post-apply confirmation failure.
+// Exit codes: 0 = everything applied · 1 = pending/unknown (dry-run), unknown
+// blocks, or guard-skipped migrations remain pending · 2 = no connection
+// string / psql missing / cannot connect · 3 = apply or post-apply
+// confirmation failure.
 
 import { readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
-import { ROOT, createMarkers, findPsql, loadEnv } from "./migration-markers.mjs";
+import { ROOT, createMarkers, createPsqlRunner, findPsql, loadEnv } from "./migration-markers.mjs";
 
 const MIGRATIONS_DIR = join(ROOT, "supabase", "migrations");
 const DRY_RUN = process.argv.includes("--dry-run");
@@ -77,9 +77,7 @@ if (!CONN) {
 }
 const PSQL = findPsql();
 if (!PSQL) {
-  console.error(
-    "psql not found. Install PostgreSQL or point PSQL_PATH at psql.exe.",
-  );
+  console.error("psql not found. Install PostgreSQL or point PSQL_PATH at psql.exe.");
   process.exit(2);
 }
 try {
@@ -89,19 +87,7 @@ try {
   console.log(`Connected via DATABASE_URL (psql: ${PSQL})`);
 }
 
-function run(args) {
-  return spawnSync(PSQL, args, {
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, PGCLIENTENCODING: "UTF8" },
-  });
-}
-function q(sql) {
-  const r = run([CONN, "-t", "-A", "-c", sql]);
-  if (r.status !== 0) throw new Error(`psql failed: ${(r.stderr || "").slice(0, 300)}`);
-  return r.stdout.trim();
-}
-const yes = (sql) => q(sql) === "t";
+const { run, q, yes } = createPsqlRunner(PSQL, CONN);
 
 // Pre-flight: prove we can actually reach the DB before touching anything.
 try {
@@ -123,26 +109,38 @@ for (const s of staleEntries) {
   console.warn(`[WARN] marker entry for missing file: ${s.file}`);
 }
 
-const statuses = new Map(); // file -> { state, detail }
+const statuses = new Map(); // file -> { state, detail, entry? }
 for (const file of files) {
   const entry = byFile.get(file);
   if (!entry) {
-    statuses.set(file, { state: "UNKNOWN", detail: "no marker entry in scripts/migration-markers.mjs" });
+    statuses.set(file, {
+      state: "UNKNOWN",
+      detail: "no marker entry in scripts/migration-markers.mjs",
+    });
     continue;
   }
   try {
     const applied = entry.applied();
-    statuses.set(file, {
-      state: applied ? "APPLIED" : "PENDING",
-      detail: entry.marker,
-      entry,
-    });
+    if (applied) {
+      statuses.set(file, { state: "APPLIED", detail: entry.marker, entry });
+    } else if (entry.chain) {
+      // Chain-implied: the file ran but a later migration reverted its effect
+      // (e.g. CREATE OR REPLACE re-grants EXECUTE). Never applied, not pending.
+      statuses.set(file, {
+        state: "ASSUMED",
+        detail: `assumed applied via chain — marker absent (${entry.marker})`,
+        entry,
+      });
+    } else {
+      statuses.set(file, { state: "PENDING", detail: entry.marker, entry });
+    }
   } catch (e) {
     statuses.set(file, { state: "PROBE ERROR", detail: e.message, entry });
   }
 }
 
 let applied = 0;
+let assumed = 0;
 let pending = 0;
 let unknown = 0;
 let errors = 0;
@@ -150,15 +148,24 @@ console.log("");
 for (const file of files) {
   const s = statuses.get(file);
   const tag =
-    s.state === "APPLIED" ? "APPLIED" : s.state === "PENDING" ? "PENDING " : s.state.padEnd(7, " ");
+    s.state === "APPLIED"
+      ? "APPLIED"
+      : s.state === "ASSUMED"
+        ? "ASSUMED"
+        : s.state === "PENDING"
+          ? "PENDING "
+          : s.state.padEnd(7, " ");
   console.log(`  [${tag}] ${file}  — ${s.detail}`);
   if (s.state === "APPLIED") applied++;
+  else if (s.state === "ASSUMED") assumed++;
   else if (s.state === "PENDING") pending++;
   else if (s.state === "UNKNOWN") unknown++;
   else errors++;
 }
 console.log("");
-console.log(`${applied}/${files.length} applied · ${pending} pending · ${unknown} unknown · ${errors} probe errors`);
+console.log(
+  `${applied}/${files.length} applied · ${assumed} assumed via chain · ${pending} pending · ${unknown} unknown · ${errors} probe errors`,
+);
 
 const blocking = errors > 0 || unknown > 0;
 if (blocking) {
@@ -186,6 +193,7 @@ if (blocking || pending === 0) {
 // --- apply -----------------------------------------------------------------
 console.log(`\nApplying ${pending} pending migration(s) in filename order...`);
 let appliedNow = 0;
+let skippedByGuard = 0;
 for (const file of files) {
   const s = statuses.get(file);
   if (s.state !== "PENDING") continue;
@@ -202,13 +210,24 @@ for (const file of files) {
     process.exit(3);
   }
 
-  if (s.entry.guard && !s.entry.guard()) {
-    console.log(`  [SKIP ] ${file}  — guard: ${s.entry.guardNote}`);
-    continue;
+  if (s.entry.guard) {
+    try {
+      if (!s.entry.guard()) {
+        skippedByGuard++;
+        console.log(`  [SKIP ] ${file}  — guard: ${s.entry.guardNote}`);
+        continue;
+      }
+    } catch (e) {
+      skippedByGuard++;
+      console.log(`  [SKIP ] ${file}  — guard probe errored (${e.message}); ${s.entry.guardNote}`);
+      continue;
+    }
   }
 
   const filePath = join(MIGRATIONS_DIR, file);
-  const r = run([CONN, "-1", "-v", "ON_ERROR_STOP=1", "-q", "-f", filePath]);
+  // retry: false — an apply must never auto-retry; a dropped connection during
+  // an apply is surfaced as a failure (the file's transaction rolled back).
+  const r = run([CONN, "-1", "-v", "ON_ERROR_STOP=1", "-q", "-f", filePath], { retry: false });
   if (r.status !== 0) {
     const stderr = (r.stderr || "").trim().split(/\r?\n/).slice(-15).join("\n");
     console.error(`  [FAIL ] ${file}`);
@@ -242,5 +261,16 @@ for (const file of files) {
   console.log(`  [OK   ] ${file}  — ${s.entry.marker}`);
 }
 
-console.log(`\nDone: ${appliedNow} migration(s) applied this run; ${applied}/${files.length} total applied.`);
+console.log(
+  `\nDone: ${appliedNow} migration(s) applied this run; ${applied}/${files.length} applied` +
+    (assumed > 0 ? ` (+${assumed} assumed via chain)` : "") +
+    ".",
+);
+if (skippedByGuard > 0) {
+  console.warn(
+    `\n${skippedByGuard} migration(s) were skipped by their guard and remain PENDING. ` +
+      "Re-run after fixing the guard condition.",
+  );
+  process.exit(1);
+}
 process.exit(0);
