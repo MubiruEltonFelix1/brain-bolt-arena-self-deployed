@@ -919,7 +919,7 @@ export async function reorderQuestions(
 /* Idempotency wrapper                                                  */
 /* ------------------------------------------------------------------ */
 
-function wrapIdempotent<T extends LifecycleEnvelope>(
+export function wrapIdempotent<T extends LifecycleEnvelope>(
   client: SupabaseClient,
   operation: string,
   idempotencyKey: string | undefined,

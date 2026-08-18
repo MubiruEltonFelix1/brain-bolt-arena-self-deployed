@@ -1,7 +1,7 @@
 {
   "name": "@brainbolt/mcp",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MCP server that connects Brain Bolt Arena to any LLM (OpenAI-compatible) to generate quizzes in the app's native format.",
   "type": "module",
   "bin": {

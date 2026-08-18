@@ -7,7 +7,8 @@ An [MCP](https://modelcontextprotocol.io) server that connects Brain Bolt Arena 
 - `to_csv` — serializes quiz JSON to the editor's CSV import template (validates first).
 - `save_quiz` — writes a generated quiz straight into the app's Supabase database (opt-in).
 - `get_capabilities` — returns the supported question types, limits, media URL policy, CSV template, lifecycle tools, ownership rules and idempotency requirements.
-- **Lifecycle (Phase 8B)** — `list_quizzes`, `get_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions`: inspect, update and safely manage existing quizzes. No competition/league orchestration yet.
+- **Lifecycle (Phase 8B)** — `list_quizzes`, `get_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions`: inspect, update and safely manage existing quizzes.
+- **Competitions (Phase 8C)** — `list_competitions`, `get_competition`, `create_competition`, `update_competition`, `schedule_competition`, `cancel_competition`: create, configure, schedule, inspect and cancel competitions on the existing Brain Bolt Competition engine. No competition/league orchestration yet.
 
 It runs locally as a stdio server. **Bwat is the only client connected to it for now** — exercised through the SDK test client in this repo (`bun run smoke`).
 
@@ -100,6 +101,32 @@ Schema gaps (exposed in `get_capabilities`, not invented by MCP): `quizzes` has 
 #### Idempotency
 
 All write tools (`save_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions`) accept `idempotencyKey`. The key is claimed as a row in `mcp_idempotency_keys` (migration `20260817060000_...sql`); a repeated request with the same key and an **identical** payload replays the stored result instead of re-running the write — safe across server restarts, which is exactly the timeout/retry scenario this protects against. Reusing a key with a **different** payload is rejected with a precise error; failed runs free the key so a retry can succeed; keys expire after 24h.
+
+### Competition tools (Phase 8C)
+
+The competition tools manage the **Competition business object** on the existing engine. They never read or write sessions — the `status` column is the safe summarized state (draft/scheduled/lobby_open/running/completed/cancelled), and the existing pg_cron scheduler (not MCP) turns a scheduled competition into a session at lobby time.
+
+Every competition tool:
+
+- takes an optional `actorId` (defaults to `BRAINBOLT_DEFAULT_OWNER_ID`), resolves the acting principal through `principals`, and enforces the app's existing `can(...)` resolver: `competition.create` (host capability) for creation, `competition.manage` (own **and** host — no admin bypass) for everything else,
+- validates that quiz, league and branding references are the actor's own (league additionally not archived),
+- returns a structured envelope `{ ok, action, competitionId, status, changed, warnings, errors, replayed }` on success — and, unlike the 8B quiz tools, failures come back as **normal results** `{ ok:false, action, error:{code,message} }` with codes `unauthorized | not-found | validation | conflict | unknown` (never raw SQL/stack traces),
+- never accepts an arbitrary owner: `owner_principal_id` always comes from the resolved actor.
+
+| Tool | Purpose |
+| ---- | ------- |
+| `list_competitions` | Compact metadata for the actor's own competitions (no session state). Filters: `quizId`, `leagueId`, `status`, `mode`, `visibility`, `scheduledFrom`/`scheduledTo` (ISO), `limit` (1-100). |
+| `get_competition` | Full business state: identity, owner, quiz, mode, visibility, scheduling, league/branding refs, lifecycle status, participant limits. No session runtime fields. |
+| `create_competition` | Creates a **draft** from an owned, non-archived quiz. Requires explicit `mode` (`hosted`/`arena`/`scheduled` — the app's enum), explicit `visibility` (`private`/`unlisted`/`public`) and a future `scheduledStartAt`. Optional `leagueId`/`brandingProfileId`/`maxParticipants`/`lobbyDurationSeconds` (30-3600, default 300). |
+| `update_competition` | Patch-style, **draft/scheduled only** (lobby_open has a session linked; running/completed/cancelled are protected). `null` detaches league/branding and clears description/maxParticipants. `scheduledStartAt` must stay in the future. |
+| `schedule_competition` | The handoff: sets `status='scheduled'` + a future `scheduled_start_at` (argument or stored — never coerced). Only `mode='scheduled'` competitions can be scheduled (the tick opens lobbies for that mode only). The pg_cron scheduler opens the lobby at start − lobby duration; MCP never creates sessions. |
+| `cancel_competition` | The app's exact cancellation (`status='cancelled'` + `cancelled_at`). Completed competitions are protected; re-cancelling is a no-op. Sessions are never touched — the autonomous tick cleans up sessions of cancelled competitions; hosted/arena sessions are left alone, like the app. |
+
+There is **no** `delete_competition` — cancellation is the retirement path (the app's hard delete stays app-only).
+
+#### Idempotency
+
+`create_competition`, `update_competition`, `schedule_competition` and `cancel_competition` accept `idempotencyKey` with the exact same semantics as the quiz tools (shared `mcp_idempotency_keys` table, 24h expiry): a repeated create replays the same `competitionId` and never duplicates the row; repeated schedule/cancel never repeat side effects.
 
 ## Question types
 

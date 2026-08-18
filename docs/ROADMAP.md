@@ -113,11 +113,9 @@ We hardened the existing MCP quiz generator.
 
 List, inspect, update, archive, question management, idempotency. All tools implemented in `mcp/src/lifecycle.ts`, gated through `can(...)`, suite green (124 tests).
 
-#### 8C — MCP Competition Lifecycle ⬜ PLANNED
+#### 8C — MCP Competition Lifecycle & Scheduling ✅ COMPLETE
 
-The AI should eventually be able to:
-
-Create Competition → configure → schedule → publish/cancel → inspect status.
+Create (draft) → configure → schedule → inspect → cancel, on the existing Competition engine. All tools implemented in `mcp/src/competition.ts`, gated through `can(...)` (`competition.create` / `competition.manage`), idempotent via the shared key table, structured failure envelopes, Session boundary enforced (scheduling hands off to the existing pg_cron tick — MCP never touches sessions).
 
 #### 8D — MCP League & Results Orchestration ⬜ PLANNED
 

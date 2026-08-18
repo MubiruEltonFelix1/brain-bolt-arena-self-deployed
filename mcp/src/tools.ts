@@ -36,6 +36,21 @@ import {
   updateQuestion,
   updateQuiz,
 } from "./lifecycle";
+import {
+  cancelCompetition,
+  COMPETITION_MODES,
+  COMPETITION_STATUSES,
+  COMPETITION_VISIBILITIES,
+  createCompetition,
+  getCompetition,
+  listCompetitions,
+  scheduleCompetition,
+  toErrorEnvelope,
+  updateCompetition,
+  type CompetitionMode,
+  type CompetitionStatus,
+  type CompetitionVisibility,
+} from "./competition";
 import { createSupabaseClient, saveQuiz } from "./supabase";
 import { formatIssues, MEDIA_URL_POLICY, validateQuiz } from "./validate";
 
@@ -171,6 +186,85 @@ export function registerTools(server: McpServer, config: AppConfig): void {
             lastQuestionProtected: "remove_question refuses to remove a quiz's last question",
             validation: "every question write (add/update) runs the same zod + semantic validation as quiz generation: media URLs, answer ranges, duplicate options, semicolon-free fields",
             answerKeys: "get_quiz returns answer keys only to the acting owner; includeAnswers=false strips them",
+          },
+        },
+        competitions: {
+          tools: [
+            "list_competitions",
+            "get_competition",
+            "create_competition",
+            "update_competition",
+            "schedule_competition",
+            "cancel_competition",
+          ],
+          modes: [...COMPETITION_MODES],
+          statuses: {
+            values: [...COMPETITION_STATUSES],
+            mutable: ["draft", "scheduled"],
+            note: "lobby_open/running/completed/cancelled are protected — no MCP tool writes them",
+          },
+          visibility: {
+            values: [...COMPETITION_VISIBILITIES],
+            note: "always explicit (create requires it, update patches it) — MCP never changes visibility implicitly",
+          },
+          filters: {
+            owner: "list/get scope to the acting principal (owner_principal_id)",
+            quizId: "uuid filter on the competition's quiz",
+            leagueId: "uuid filter on the attached league",
+            status: "draft | scheduled | lobby_open | running | completed | cancelled",
+            mode: "hosted | arena | scheduled",
+            visibility: "private | unlisted | public",
+            scheduledFrom: "ISO timestamp — competitions scheduled at or after",
+            scheduledTo: "ISO timestamp — competitions scheduled at or before",
+            limit: "1-100, default 50",
+          },
+          mutableFields: {
+            title: "non-empty string",
+            description: "string or null (clears)",
+            visibility: "private | unlisted | public (explicit)",
+            scheduledStartAt: "ISO timestamp in the future",
+            lobbyDurationSeconds: "integer 30-3600 (lobby opens start − duration)",
+            leagueId: "uuid or null (null detaches; must be a league the actor owns)",
+            brandingProfileId: "uuid or null (null detaches; must be a branding profile the actor owns)",
+            maxParticipants: "positive integer or null (null clears)",
+          },
+          authorization: {
+            create: "can(principal, 'competition.create') — host capability (admin, host role, or active host authorization)",
+            manage: "can(principal, 'competition.manage', id) — the principal must own the competition (owner_principal_id) AND hold the host capability; admins do not bypass ownership",
+            leagueAndBranding: "references must belong to the acting principal (league additionally not archived) — same rule as the app form",
+            ownerResolution: "owner_principal_id always comes from the resolved actor — an agent can never assign an arbitrary owner",
+          },
+          idempotency: {
+            mechanism:
+              "Same mcp_idempotency_keys mechanism as the quiz tools: create/update/schedule/cancel accept idempotencyKey; a repeated request with the same key and identical payload replays the stored result. Keys expire after 24h.",
+            tools: ["create_competition", "update_competition", "schedule_competition", "cancel_competition"],
+            recommendation: "Always pass idempotencyKey for writes that may be retried after a timeout.",
+          },
+          sessionBoundary: {
+            rule: "MCP never reads or writes the sessions table — no question progression, reveal timing, pause state, answers, scoring or autonomous tick internals",
+            safeState: "the competition status IS the safe summarized state (draft/scheduled/lobby_open/running/completed/cancelled), maintained by the existing engine",
+            cancelCleanup: "cancelling never touches sessions — the existing autonomous tick ends sessions of cancelled competitions; hosted/arena sessions are left alone, exactly like the app",
+          },
+          scheduling: {
+            handoff: "schedule_competition sets status='scheduled' + scheduled_start_at — the existing pg_cron scheduler (list_due_competitions → run_autonomous_tick → prepare_competition_session_internal) opens the lobby at start − lobby_duration_seconds",
+            modes: "only mode 'scheduled' competitions can be scheduled (the tick opens lobbies for mode 'scheduled' only)",
+            futureTime: "scheduledStartAt must be a future ISO-8601 timestamp; invalid or past times are rejected, never coerced",
+            statuses: "draft → scheduled on schedule; rescheduling a scheduled competition moves its start time",
+            sessionCreation: "MCP never creates sessions — the engine does, at lobby time",
+          },
+          visibilityRules: {
+            public: "public competitions are discoverable through the app's public surfaces per app rules",
+            private: "private/unlisted competitions are only visible to their owner through MCP (owner-scoped list/get)",
+            changes: "visibility changes are explicit patch operations — nothing ever flips visibility implicitly",
+          },
+          noDelete: {
+            rule: "cancel_competition is the only retirement tool — there is no delete_competition; the app's hard delete stays app-only",
+            terminal: "completed competitions cannot be cancelled; cancelling an already-cancelled competition is a no-op",
+          },
+          errorContract: {
+            rule: "competition tools return { ok:false, action, error:{code,message} } as normal results (unlike the 8B quiz tools, which throw)",
+            codes: ["unauthorized", "not-found", "validation", "conflict", "unknown"],
+            sanitization: "messages never contain SQL, stack traces, service-role details or table names",
           },
         },
         ownerRequirements: {
@@ -616,6 +710,275 @@ export function registerTools(server: McpServer, config: AppConfig): void {
           actorId: args.actorId ?? config.defaultOwnerId ?? "",
           quizId: args.quizId,
           questionIds: args.questionIds,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Phase 8C competition lifecycle tools                                */
+  /* ------------------------------------------------------------------ */
+
+  const COMPETITION_MODE = z.enum([...COMPETITION_MODES] as [CompetitionMode, ...CompetitionMode[]]);
+  const COMPETITION_STATUS = z.enum([...COMPETITION_STATUSES] as [CompetitionStatus, ...CompetitionStatus[]]);
+  const COMPETITION_VISIBILITY = z.enum([
+    ...COMPETITION_VISIBILITIES,
+  ] as [CompetitionVisibility, ...CompetitionVisibility[]]);
+
+  /** Wraps a competition call so failures become structured envelopes. */
+  async function competitionResult(
+    action: string,
+    run: () => Promise<unknown>,
+  ): Promise<ReturnType<typeof text>> {
+    try {
+      return text(await run());
+    } catch (err) {
+      return text(toErrorEnvelope(action, err));
+    }
+  }
+
+  server.registerTool(
+    "list_competitions",
+    {
+      title: "List competitions",
+      description:
+        "Lists compact metadata for competitions owned by the acting principal (no session runtime state). " +
+        "Filters: quizId, leagueId, status, mode, visibility, scheduledFrom/scheduledTo (ISO timestamps), limit.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        quizId: z.string().optional().describe("Only competitions using this quiz"),
+        leagueId: z.string().optional().describe("Only competitions attached to this league"),
+        status: COMPETITION_STATUS.optional(),
+        mode: COMPETITION_MODE.optional(),
+        visibility: COMPETITION_VISIBILITY.optional(),
+        scheduledFrom: z
+          .string()
+          .optional()
+          .describe("ISO-8601 — competitions scheduled at or after this time"),
+        scheduledTo: z
+          .string()
+          .optional()
+          .describe("ISO-8601 — competitions scheduled at or before this time"),
+        limit: z.number().int().min(1).max(100).default(50),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("list_competitions");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return competitionResult("list_competitions", async () => {
+        const { items, count } = await listCompetitions(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          quizId: args.quizId,
+          leagueId: args.leagueId,
+          status: args.status,
+          mode: args.mode,
+          visibility: args.visibility,
+          scheduledFrom: args.scheduledFrom,
+          scheduledTo: args.scheduledTo,
+          limit: args.limit,
+        });
+        return { ok: true, action: "list_competitions", count, items, warnings: [], errors: [] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "get_competition",
+    {
+      title: "Get one competition",
+      description:
+        "Retrieves one competition's full business state (identity, owner, quiz, mode, visibility, scheduling, " +
+        "league/branding references, lifecycle status, participant limits). The status column IS the safe " +
+        "summarized state (draft/scheduled/lobby_open/running/completed/cancelled) — no session runtime fields " +
+        "are exposed.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the competition"),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("get_competition");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return competitionResult("get_competition", async () => {
+        const { competition } = await getCompetition(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
+        });
+        return { ok: true, action: "get_competition", id: competition.id, competition, warnings: [], errors: [] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "create_competition",
+    {
+      title: "Create a competition (draft)",
+      description:
+        "Creates a draft competition from an existing quiz owned by the acting principal. The quiz must exist, " +
+        "be owned by the actor and not be archived. Requires an explicit mode (hosted|arena|scheduled), explicit " +
+        "visibility (private|unlisted|public) and a future scheduledStartAt. League and branding references are " +
+        "optional and must be owned by the actor. The owner is always the acting principal — no arbitrary owner " +
+        "assignment. The competition is created as status 'draft'; call schedule_competition to activate it for " +
+        "the existing autonomous scheduler.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        quizId: z.string().describe("The uuid of the quiz the competition runs"),
+        title: z.string().min(1).describe("Competition title"),
+        mode: COMPETITION_MODE.describe("hosted | arena | scheduled — the app's mode enum, not invented by MCP"),
+        visibility: COMPETITION_VISIBILITY.describe(
+          "private | unlisted | public — explicit; MCP never defaults visibility",
+        ),
+        scheduledStartAt: z.string().describe("ISO-8601 start time — must be in the future"),
+        lobbyDurationSeconds: z
+          .number()
+          .int()
+          .min(30)
+          .max(3600)
+          .optional()
+          .describe("Lobby duration (30-3600s, default 300) — the lobby opens at start − duration"),
+        description: z.string().nullable().optional(),
+        leagueId: z.string().nullable().optional().describe("A league owned by the actor (optional)"),
+        brandingProfileId: z
+          .string()
+          .nullable()
+          .optional()
+          .describe("A branding profile owned by the actor (optional)"),
+        maxParticipants: z.number().int().min(1).nullable().optional(),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("create_competition");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return competitionResult("create_competition", () =>
+        createCompetition(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          quizId: args.quizId,
+          title: args.title,
+          mode: args.mode,
+          visibility: args.visibility,
+          scheduledStartAt: args.scheduledStartAt,
+          lobbyDurationSeconds: args.lobbyDurationSeconds,
+          description: args.description,
+          leagueId: args.leagueId,
+          brandingProfileId: args.brandingProfileId,
+          maxParticipants: args.maxParticipants,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "update_competition",
+    {
+      title: "Update a competition (patch-style)",
+      description:
+        "Patches a competition owned by the acting principal. Only the supplied fields change. Mutable only in " +
+        "draft/scheduled state — lobby_open/running/completed/cancelled competitions are protected. null detaches " +
+        "leagueId/brandingProfileId and clears description/maxParticipants. scheduledStartAt must stay in the future.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the competition"),
+        patch: z
+          .object({
+            title: z.string().min(1).optional(),
+            description: z.string().nullable().optional(),
+            visibility: COMPETITION_VISIBILITY.optional(),
+            scheduledStartAt: z.string().optional().describe("ISO-8601 — must be in the future"),
+            lobbyDurationSeconds: z.number().int().min(30).max(3600).optional(),
+            leagueId: z.string().nullable().optional().describe("null detaches the league"),
+            brandingProfileId: z.string().nullable().optional().describe("null detaches the branding profile"),
+            maxParticipants: z.number().int().min(1).nullable().optional().describe("null clears the limit"),
+          })
+          .refine((p) => Object.keys(p).length > 0, {
+            message: "update_competition needs at least one field to change",
+          }),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("update_competition");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return competitionResult("update_competition", () =>
+        updateCompetition(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
+          patch: args.patch,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "schedule_competition",
+    {
+      title: "Schedule a competition",
+      description:
+        "Activates a draft (or reschedules a scheduled) competition for the existing autonomous scheduler: sets " +
+        "status='scheduled' with a future scheduledStartAt. Only mode 'scheduled' competitions can be scheduled — " +
+        "the engine's tick opens lobbies for mode 'scheduled' only. The lobby opens automatically at " +
+        "scheduledStartAt − lobbyDurationSeconds via the existing pg_cron scheduler. MCP never creates sessions.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the competition"),
+        scheduledStartAt: z
+          .string()
+          .optional()
+          .describe("ISO-8601 start time (must be future) — defaults to the stored scheduled start"),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("schedule_competition");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return competitionResult("schedule_competition", () =>
+        scheduleCompetition(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
+          scheduledStartAt: args.scheduledStartAt,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "cancel_competition",
+    {
+      title: "Cancel a competition",
+      description:
+        "Cancels a competition using the app's exact semantics: status='cancelled' + cancelled_at. Rejects " +
+        "completed competitions; cancelling an already-cancelled competition is a no-op. Sessions are never " +
+        "touched — the existing autonomous tick ends sessions of cancelled competitions; hosted/arena sessions " +
+        "are left alone, exactly like the app.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the competition"),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("cancel_competition");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return competitionResult("cancel_competition", () =>
+        cancelCompetition(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
           idempotencyKey: args.idempotencyKey,
         }),
       );

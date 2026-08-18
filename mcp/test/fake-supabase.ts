@@ -21,6 +21,9 @@ export type FakeDb = {
   principals: Row[];
   userRoles: Array<{ user_id: string; role: "admin" | "host" }>;
   mcp_idempotency_keys: Row[];
+  competitions: Row[];
+  leagues: Row[];
+  branding_profiles: Row[];
 };
 
 export function createFakeDb(): FakeDb {
@@ -30,6 +33,9 @@ export function createFakeDb(): FakeDb {
     principals: [],
     userRoles: [],
     mcp_idempotency_keys: [],
+    competitions: [],
+    leagues: [],
+    branding_profiles: [],
   };
 }
 
@@ -50,6 +56,9 @@ const PK_COLUMNS: Record<string, string> = {
   questions: "id",
   principals: "id",
   mcp_idempotency_keys: "key",
+  competitions: "id",
+  leagues: "id",
+  branding_profiles: "id",
 };
 
 type Filter =
@@ -58,6 +67,8 @@ type Filter =
   | { kind: "not_is"; col: string }
   | { kind: "ilike"; col: string; value: string }
   | { kind: "in"; col: string; values: unknown[] }
+  | { kind: "gte"; col: string; value: unknown }
+  | { kind: "lte"; col: string; value: unknown }
   | { kind: "or"; predicate: (row: Row) => boolean };
 
 function escapeRegExp(s: string): string {
@@ -148,6 +159,19 @@ function matches(row: Row, filters: Filter[]): boolean {
       case "in":
         if (!f.values.includes(row[f.col])) return false;
         break;
+      case "gte":
+      case "lte": {
+        // ISO-8601 timestamps compare numerically when both sides parse;
+        // otherwise fall back to native value comparison (numbers).
+        const a = row[f.col];
+        const b = f.value;
+        if (a == null || b == null) return false;
+        const ta = typeof a === "string" ? Date.parse(a) : NaN;
+        const tb = typeof b === "string" ? Date.parse(b) : NaN;
+        const cmp = !Number.isNaN(ta) && !Number.isNaN(tb) ? ta - tb : (a as number) - (b as number);
+        if (f.kind === "gte" ? cmp < 0 : cmp > 0) return false;
+        break;
+      }
       case "or":
         if (!f.predicate(row)) return false;
         break;
@@ -246,6 +270,16 @@ class FakeBuilder {
     return this;
   }
 
+  gte(col: string, value: unknown): this {
+    this.filters.push({ kind: "gte", col, value });
+    return this;
+  }
+
+  lte(col: string, value: unknown): this {
+    this.filters.push({ kind: "lte", col, value });
+    return this;
+  }
+
   or(filter: string): this {
     this.filters.push({ kind: "or", predicate: parseOrFilter(filter) });
     return this;
@@ -296,7 +330,11 @@ class FakeBuilder {
     }
     if (this.mode === "update") {
       for (const row of table) {
-        if (matches(row, this.filters)) Object.assign(row, this.payload as Record<string, unknown>);
+        if (matches(row, this.filters)) {
+          Object.assign(row, this.payload as Record<string, unknown>);
+          // Mirror the set_updated_at() trigger on competitions.
+          if (this.table === "competitions") row.updated_at = new Date().toISOString();
+        }
       }
       return { data: null, error: null };
     }
@@ -403,6 +441,30 @@ class FakeBuilder {
         if (row.time_per_question == null) row.time_per_question = 20;
       }
 
+      // Competitions column defaults (20260724054750 CREATE TABLE).
+      if (this.table === "competitions") {
+        if (row.status == null) row.status = "draft";
+        if (row.mode == null) row.mode = "scheduled";
+        if (row.visibility == null) row.visibility = "private";
+        if (row.lobby_duration_seconds == null) row.lobby_duration_seconds = 300;
+        if (row.autonomous == null) row.autonomous = true;
+        if (row.metadata == null) row.metadata = {};
+        if (row.session_id == null) row.session_id = null;
+        if (row.started_at == null) row.started_at = null;
+        if (row.completed_at == null) row.completed_at = null;
+        if (row.cancelled_at == null) row.cancelled_at = null;
+        if (row.updated_at == null) row.updated_at = new Date().toISOString();
+      }
+      // Leagues / branding_profiles minimal defaults.
+      if (this.table === "leagues") {
+        if (row.status == null) row.status = "draft";
+        if (row.visibility == null) row.visibility = "private";
+        if (row.updated_at == null) row.updated_at = new Date().toISOString();
+      }
+      if (this.table === "branding_profiles" && row.updated_at == null) {
+        row.updated_at = new Date().toISOString();
+      }
+
       table.push(row);
       inserted.push(row);
     }
@@ -465,6 +527,24 @@ export class FakeSupabase {
     if (action === "quiz.edit" || action === "quiz.delete") {
       const owned = this.db.quizzes.some(
         (q) => q.id === resource && q.owner_principal_id === ownerPrincipal,
+      );
+      return owned && host;
+    }
+    if (action === "competition.manage") {
+      const owned = this.db.competitions.some(
+        (c) => c.id === resource && c.owner_principal_id === ownerPrincipal,
+      );
+      return owned && host;
+    }
+    if (action === "league.manage") {
+      const owned = this.db.leagues.some(
+        (l) => l.id === resource && l.owner_principal_id === ownerPrincipal,
+      );
+      return owned && host;
+    }
+    if (action === "branding.manage") {
+      const owned = this.db.branding_profiles.some(
+        (b) => b.id === resource && b.owner_principal_id === ownerPrincipal,
       );
       return owned && host;
     }

@@ -2,18 +2,24 @@
 // Bwat's test client for the Brain Bolt MCP server.
 //
 // Boots the server as a child process over stdio and exercises every tool:
-//   get_capabilities, validate_quiz, to_csv, save_quiz, and the Phase 8B
+//   get_capabilities, validate_quiz, to_csv, save_quiz, the Phase 8B
 //   lifecycle tools (list_quizzes, get_quiz, update_quiz, archive_quiz,
-//   question management), plus generate_quiz when an LLM provider is
-//   configured in mcp/.env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
+//   question management), the Phase 8C competition tools (list_competitions,
+//   get_competition, create_competition, update_competition,
+//   schedule_competition, cancel_competition), plus generate_quiz when an LLM
+//   provider is configured in mcp/.env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
 //
-// Discovery is dynamic: the core + lifecycle tool names are asserted against
-// the server's own listTools() so future tools don't break the smoke test.
+// Discovery is dynamic: the core + lifecycle + competition tool names are
+// asserted against the server's own listTools() so future tools don't break
+// the smoke test.
 //
 // With SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY + BRAINBOLT_DEFAULT_OWNER_ID
 // set, the smoke runs a full lifecycle against the real database:
 //   create (idempotent) → list → get → update → get → archive → verify
-//   + repeated idempotent create/update replay.
+//   + repeated idempotent create/update replay,
+//   + competition create (idempotent) → get → update → schedule → get →
+//     cancel → get (the scheduled handoff is verified by state: the pg_cron
+//     tick cannot be driven from the client).
 // Without them, every Supabase-backed tool is gate-checked instead.
 //
 // Run with: bun run smoke   (from mcp/)
@@ -73,6 +79,14 @@ const LIFECYCLE_TOOLS = [
   "update_question",
   "remove_question",
   "reorder_questions",
+];
+const COMPETITION_TOOLS = [
+  "list_competitions",
+  "get_competition",
+  "create_competition",
+  "update_competition",
+  "schedule_competition",
+  "cancel_competition",
 ];
 
 let passed = 0;
@@ -138,10 +152,10 @@ async function main() {
   // --- Dynamic tool discovery ---------------------------------------------
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  const required = [...CORE_TOOLS, ...LIFECYCLE_TOOLS];
+  const required = [...CORE_TOOLS, ...LIFECYCLE_TOOLS, ...COMPETITION_TOOLS];
   const missing = required.filter((r) => !names.includes(r));
   if (missing.length === 0) {
-    ok(`all ${required.length} core + lifecycle tools registered (${names.length} total)`);
+    ok(`all ${required.length} core + lifecycle + competition tools registered (${names.length} total)`);
   } else {
     bad(`missing tools: ${missing.join(", ")} — got ${names.join(", ")}`);
   }
@@ -169,6 +183,18 @@ async function main() {
     ok("get_capabilities: lifecycle section (tools + filters + idempotency + ownership)");
   } else {
     bad("get_capabilities lifecycle section", caps.text.slice(0, 400));
+  }
+
+  const competitionsOk =
+    capsData.competitions?.tools?.length === COMPETITION_TOOLS.length &&
+    capsData.competitions?.authorization?.create?.includes("competition.create") &&
+    capsData.competitions?.authorization?.manage?.includes("competition.manage") &&
+    capsData.competitions?.sessionBoundary?.rule?.includes("sessions") &&
+    capsData.competitions?.idempotency?.tools?.includes("schedule_competition");
+  if (competitionsOk) {
+    ok("get_capabilities: competitions section (tools + authorization + session boundary + idempotency)");
+  } else {
+    bad("get_capabilities competitions section", caps.text.slice(0, 400));
   }
 
   // --- validate_quiz ------------------------------------------------------
@@ -209,21 +235,45 @@ async function main() {
     }
 
     let gatesOk = true;
-    for (const tool of LIFECYCLE_TOOLS) {
+    const gatedTools = [...LIFECYCLE_TOOLS, ...COMPETITION_TOOLS];
+    for (const tool of gatedTools) {
       const zeroUuid = "00000000-0000-0000-0000-000000000000";
-      const actorAndQuiz = { actorId: zeroUuid, quizId: zeroUuid };
-      const args: Record<string, unknown> =
-        tool === "list_quizzes"
-          ? { actorId: zeroUuid }
-          : tool === "reorder_questions"
-            ? { ...actorAndQuiz, questionIds: [zeroUuid] }
-            : tool === "update_quiz"
-              ? { ...actorAndQuiz, patch: { title: "x" } }
-              : tool === "add_questions"
-                ? { ...actorAndQuiz, questions: [{ type: "mcq", text: "x", options: ["a", "b"], correctIndex: 0 }] }
-                : tool === "update_question"
-                  ? { ...actorAndQuiz, questionId: zeroUuid, patch: { text: "x" } }
-                  : { ...actorAndQuiz, questionId: zeroUuid };
+      const args: Record<string, unknown> = (() => {
+        switch (tool) {
+          case "list_quizzes":
+          case "list_competitions":
+            return { actorId: zeroUuid };
+          case "get_competition":
+          case "schedule_competition":
+          case "cancel_competition":
+            return { actorId: zeroUuid, competitionId: zeroUuid };
+          case "create_competition":
+            return {
+              actorId: zeroUuid,
+              quizId: zeroUuid,
+              title: "x",
+              mode: "scheduled",
+              visibility: "private",
+              scheduledStartAt: new Date(Date.now() + 3600_000).toISOString(),
+            };
+          case "update_competition":
+            return { actorId: zeroUuid, competitionId: zeroUuid, patch: { title: "x" } };
+          case "reorder_questions":
+            return { actorId: zeroUuid, quizId: zeroUuid, questionIds: [zeroUuid] };
+          case "update_quiz":
+            return { actorId: zeroUuid, quizId: zeroUuid, patch: { title: "x" } };
+          case "add_questions":
+            return {
+              actorId: zeroUuid,
+              quizId: zeroUuid,
+              questions: [{ type: "mcq", text: "x", options: ["a", "b"], correctIndex: 0 }],
+            };
+          case "update_question":
+            return { actorId: zeroUuid, quizId: zeroUuid, questionId: zeroUuid, patch: { text: "x" } };
+          default:
+            return { actorId: zeroUuid, quizId: zeroUuid, questionId: zeroUuid };
+        }
+      })();
       const res = await callTool(client, tool, args);
       if (res.isError && /not configured/.test(res.text)) {
         ok(`${tool}: correctly gated (not configured)`);
@@ -232,7 +282,7 @@ async function main() {
         bad(`${tool} gate`, res.text.slice(0, 200));
       }
     }
-    if (gatesOk) ok(`all ${LIFECYCLE_TOOLS.length} lifecycle tools gated without Supabase config`);
+    if (gatesOk) ok(`all ${gatedTools.length} quiz + competition tools gated without Supabase config`);
   } else if (!ownerId) {
     bad("lifecycle smoke needs BRAINBOLT_DEFAULT_OWNER_ID (a host-capable auth user uuid) when Supabase is configured");
   } else {
@@ -343,6 +393,126 @@ async function main() {
           ok("get_quiz: reflects the update");
         } else {
           bad("get_quiz after update", get2.text.slice(0, 400));
+        }
+
+        // --- competition lifecycle: create (draft) → replay → get → update → schedule → get (handoff) → cancel → get ---
+        const compKey = `smoke-comp-${Date.now()}`;
+        const compStart = new Date(Date.now() + 24 * 3600 * 1000).toISOString();
+        const comp1 = await callTool(client, "create_competition", {
+          actorId: ownerId,
+          quizId,
+          title: "MCP Competition Smoke",
+          mode: "scheduled",
+          visibility: "private",
+          scheduledStartAt: compStart,
+          idempotencyKey: compKey,
+        });
+        const comp1Data = JSON.parse(comp1.text) as { ok?: boolean; competitionId?: string; status?: string };
+        const competitionId = comp1Data.competitionId;
+        if (comp1Data.ok === true && competitionId && comp1Data.status === "draft") {
+          ok(`create_competition: draft ${competitionId} scheduled for ${compStart}`);
+        } else {
+          bad("create_competition", comp1.text.slice(0, 400));
+        }
+
+        if (competitionId) {
+          // Idempotent replay of the SAME create call.
+          const comp2 = await callTool(client, "create_competition", {
+            actorId: ownerId,
+            quizId,
+            title: "MCP Competition Smoke",
+            mode: "scheduled",
+            visibility: "private",
+            scheduledStartAt: compStart,
+            idempotencyKey: compKey,
+          });
+          const comp2Data = JSON.parse(comp2.text) as { competitionId?: string; replayed?: boolean };
+          if (!comp2.isError && comp2Data.competitionId === competitionId && comp2Data.replayed === true) {
+            ok("create_competition: idempotent replay returned the same competitionId (no duplicate)");
+          } else {
+            bad("create_competition idempotent replay", comp2.text.slice(0, 300));
+          }
+
+          // get_competition (draft)
+          const cget1 = await callTool(client, "get_competition", { actorId: ownerId, competitionId });
+          const cget1Data = JSON.parse(cget1.text) as { ok?: boolean; competition?: { status?: string } };
+          if (cget1Data.ok === true && cget1Data.competition?.status === "draft") {
+            ok("get_competition: draft state");
+          } else {
+            bad("get_competition", cget1.text.slice(0, 400));
+          }
+
+          // update_competition (patch)
+          const cupd = await callTool(client, "update_competition", {
+            actorId: ownerId,
+            competitionId,
+            patch: { title: "MCP Competition Smoke (Updated)", visibility: "unlisted" },
+          });
+          const cupdData = JSON.parse(cupd.text) as { ok?: boolean; changed?: Record<string, boolean> };
+          if (cupdData.ok === true && cupdData.changed?.title === true && cupdData.changed?.visibility === true) {
+            ok("update_competition: patch applied (title + visibility)");
+          } else {
+            bad("update_competition", cupd.text.slice(0, 400));
+          }
+
+          // schedule_competition (handoff to the existing autonomous scheduler)
+          const csched = await callTool(client, "schedule_competition", {
+            actorId: ownerId,
+            competitionId,
+            scheduledStartAt: compStart,
+            idempotencyKey: `smoke-comp-sched-${Date.now()}`,
+          });
+          const cschedData = JSON.parse(csched.text) as { ok?: boolean; status?: string; scheduledStartAt?: string };
+          if (cschedData.ok === true && cschedData.status === "scheduled" && cschedData.scheduledStartAt === compStart) {
+            ok("schedule_competition: status=scheduled (autonomous scheduler handoff configured)");
+          } else {
+            bad("schedule_competition", csched.text.slice(0, 400));
+          }
+
+          // get_competition — verify the tick feed precondition (status='scheduled' + future start).
+          // The pg_cron scheduler cannot be driven from the client; this asserts the state it consumes.
+          const cget2 = await callTool(client, "get_competition", { actorId: ownerId, competitionId });
+          const cget2Data = JSON.parse(cget2.text) as {
+            competition?: { status?: string; scheduledStartAt?: string | null };
+          };
+          const handoffReady =
+            cget2Data.competition?.status === "scheduled" &&
+            !!cget2Data.competition?.scheduledStartAt &&
+            Date.parse(cget2Data.competition.scheduledStartAt) > Date.now();
+          if (handoffReady) {
+            ok("get_competition: scheduled state satisfies the tick feed precondition (status + future start)");
+          } else {
+            bad("scheduled handoff verification", cget2.text.slice(0, 400));
+          }
+
+          // cancel_competition
+          const ccancel = await callTool(client, "cancel_competition", {
+            actorId: ownerId,
+            competitionId,
+            idempotencyKey: `smoke-comp-cancel-${Date.now()}`,
+          });
+          const ccancelData = JSON.parse(ccancel.text) as { ok?: boolean; status?: string };
+          if (ccancelData.ok === true && ccancelData.status === "cancelled") {
+            ok("cancel_competition: cancelled");
+          } else {
+            bad("cancel_competition", ccancel.text.slice(0, 400));
+          }
+
+          // get_competition (cancelled)
+          const cget3 = await callTool(client, "get_competition", { actorId: ownerId, competitionId });
+          const cget3Data = JSON.parse(cget3.text) as {
+            competition?: { status?: string; cancelledAt?: string | null };
+          };
+          if (cget3Data.competition?.status === "cancelled" && cget3Data.competition?.cancelledAt) {
+            ok("get_competition: cancelled state verified");
+          } else {
+            bad("cancelled state verification", cget3.text.slice(0, 400));
+          }
+
+          console.log(
+            `ℹ Competition smoke fixture left in the database: competition ${competitionId} (cancelled). ` +
+              "It is safe to remove via the app.",
+          );
         }
 
         // --- archive_quiz ----------------------------------------------------
