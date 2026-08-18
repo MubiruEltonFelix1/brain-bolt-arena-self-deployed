@@ -42,3 +42,5 @@ migration-data/
 *.njsproj
 *.sln
 *.sw?
+# Bwat per-workspace permission allowlist
+.bwat/
