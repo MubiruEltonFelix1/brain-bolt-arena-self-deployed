@@ -26,6 +26,7 @@ const OWNER = "11111111-1111-1111-1111-111111111111";
 const OTHER_HOST = "22222222-2222-2222-2222-222222222222";
 const NO_ROLE_USER = "33333333-3333-3333-3333-333333333333";
 const GHOST = "44444444-4444-4444-4444-444444444444";
+const ADMIN = "55555555-5555-5555-5555-555555555555";
 const MISSING = "99999999-9999-9999-9999-999999999999";
 
 const QUIZ: BrainBoltQuiz = {
@@ -704,6 +705,83 @@ describe("reorder_questions", () => {
     await expect(
       reorderQuestions(client, { actorId: OTHER_HOST, quizId, questionIds: ids }),
     ).rejects.toThrow("not authorized");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* admin principal (Phase 8B §14: admin retains capabilities)           */
+/* ------------------------------------------------------------------ */
+
+describe("admin principal", () => {
+  test("an admin who owns a quiz retains full lifecycle capability", async () => {
+    const { db, client } = makeEnv();
+    seedUser(db, ADMIN, ["admin"]);
+
+    // save_quiz: admin holds the host capability (admin implies host in can()).
+    const { quizId } = await saveQuizWithClient(
+      client,
+      { ...QUIZ, title: "Admin's quiz" },
+      { ownerId: ADMIN },
+    );
+
+    // list + get
+    const list = await listQuizzes(client, { actorId: ADMIN });
+    expect(list.items.map((i) => i.id)).toEqual([quizId]);
+    const { quiz, questions } = await getQuiz(client, { actorId: ADMIN, quizId });
+    expect(quiz.title).toBe("Admin's quiz");
+    expect(questions).toHaveLength(2);
+
+    // update
+    const upd = await updateQuiz(client, { actorId: ADMIN, quizId, patch: { difficulty: "hard" } });
+    expect(upd.changed).toEqual({ difficulty: true });
+
+    // question management: add → update → reorder
+    const added = await addQuestions(client, {
+      actorId: ADMIN,
+      quizId,
+      questions: [{ type: "mcq", text: "Extra", options: ["a", "b"], correctIndex: 0 }],
+    });
+    expect(added.changed).toEqual({ added: 1, questionCount: 3 });
+    const extraId = questionIdsOf(db, quizId)[2]!;
+    const updated = await updateQuestion(client, {
+      actorId: ADMIN,
+      quizId,
+      questionId: extraId,
+      patch: { text: "Extra (edited)" },
+    });
+    expect(updated.changed).toEqual({ text: true });
+    const reordered = await reorderQuestions(client, {
+      actorId: ADMIN,
+      quizId,
+      questionIds: [...questionIdsOf(db, quizId).reverse()],
+    });
+    expect(reordered.changed).toEqual(expect.objectContaining({ changed: true }));
+
+    // archive + archived read
+    const archived = await archiveQuiz(client, { actorId: ADMIN, quizId });
+    expect(archived.changed).toEqual({ archived: true, archivedAt: expect.any(String) });
+    const after = await getQuiz(client, { actorId: ADMIN, quizId });
+    expect(after.quiz.archived).toBe(true);
+  });
+
+  test("admin capability does not bypass quiz ownership", async () => {
+    const { db, client } = makeEnv();
+    seedUser(db, ADMIN, ["admin"]);
+    const { quizId } = await saveOwnedQuiz(client); // owned by OWNER, not ADMIN
+
+    await expect(
+      updateQuiz(client, { actorId: ADMIN, quizId, patch: { title: "Hijack" } }),
+    ).rejects.toThrow("not authorized to update");
+    await expect(archiveQuiz(client, { actorId: ADMIN, quizId })).rejects.toThrow(
+      "not authorized to archive",
+    );
+    await expect(getQuiz(client, { actorId: ADMIN, quizId })).rejects.toThrow(
+      "not authorized to read",
+    );
+
+    // The owner's quiz is untouched.
+    const { quiz } = await getQuiz(client, { actorId: OWNER, quizId });
+    expect(quiz.title).toBe(QUIZ.title);
   });
 });
 
