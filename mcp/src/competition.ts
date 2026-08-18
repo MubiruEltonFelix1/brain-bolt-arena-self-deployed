@@ -12,7 +12,8 @@
 // existing engine maintains (prepare_competition_session_internal sets
 // lobby_open; the sessions-side sync trigger sets running/completed). The
 // autonomous handoff is: status='scheduled' + scheduled_start_at → the
-// existing pg_cron scheduler (list_due_competitions → run_autonomous_tick →
+// existing pg_cron scheduler (run_autonomous_scheduler → run_autonomous_tick,
+// whose due-competition predicate matches list_due_competitions() →
 // prepare_competition_session_internal). MCP only ever configures the
 // competition business object.
 //
@@ -705,7 +706,10 @@ export async function updateCompetition(
     if ("scheduledStartAt" in patch) {
       const scheduledStartAt = assertFutureIso(patch.scheduledStartAt, "scheduledStartAt");
       update.scheduled_start_at = scheduledStartAt;
-      changed.scheduledStartAt = scheduledStartAt !== row.scheduled_start_at;
+      // Compare semantically (Date.parse), not lexically: the DB stores
+      // TIMESTAMPTZ-normalized text, the client may pass +00:00 offsets.
+      const before = row.scheduled_start_at;
+      changed.scheduledStartAt = before === null || Date.parse(scheduledStartAt) !== Date.parse(before);
     }
     if ("lobbyDurationSeconds" in patch) {
       const lobbyDurationSeconds = assertLobbyDuration(patch.lobbyDurationSeconds, "lobbyDurationSeconds");

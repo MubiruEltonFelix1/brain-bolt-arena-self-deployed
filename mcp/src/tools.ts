@@ -246,7 +246,7 @@ export function registerTools(server: McpServer, config: AppConfig): void {
             cancelCleanup: "cancelling never touches sessions — the existing autonomous tick ends sessions of cancelled competitions; hosted/arena sessions are left alone, exactly like the app",
           },
           scheduling: {
-            handoff: "schedule_competition sets status='scheduled' + scheduled_start_at — the existing pg_cron scheduler (list_due_competitions → run_autonomous_tick → prepare_competition_session_internal) opens the lobby at start − lobby_duration_seconds",
+            handoff: "schedule_competition sets status='scheduled' + scheduled_start_at — the existing pg_cron scheduler (run_autonomous_scheduler → run_autonomous_tick, due-competition predicate matching list_due_competitions()) opens the lobby at start − lobby_duration_seconds via prepare_competition_session_internal",
             modes: "only mode 'scheduled' competitions can be scheduled (the tick opens lobbies for mode 'scheduled' only)",
             futureTime: "scheduledStartAt must be a future ISO-8601 timestamp; invalid or past times are rejected, never coerced",
             statuses: "draft → scheduled on schedule; rescheduling a scheduled competition moves its start time",

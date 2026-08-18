@@ -7,7 +7,8 @@
 //   - PK unique-violation errors carry code "23505" (idempotency claim)
 //   - insert auto-assigns id + created_at (gen_random_uuid()/now() defaults)
 //   - can(principal, action, resource) implements the app's resolver rules
-//     (host/admin roles, principal-aware ownership with legacy fallback)
+//     (host/admin roles, active host authorizations, principal-aware
+//     ownership with legacy fallback)
 //   - or() filters parse the PostgREST-style filter strings we emit
 
 import { randomUUID } from "node:crypto";
@@ -20,6 +21,14 @@ export type FakeDb = {
   questions: Row[];
   principals: Row[];
   userRoles: Array<{ user_id: string; role: "admin" | "host" }>;
+  host_authorizations: Array<{
+    profile_id: string;
+    status: string;
+    authorization_type: string;
+    starts_at: string | null;
+    expires_at: string | null;
+    remaining_sessions: number | null;
+  }>;
   mcp_idempotency_keys: Row[];
   competitions: Row[];
   leagues: Row[];
@@ -32,6 +41,7 @@ export function createFakeDb(): FakeDb {
     questions: [],
     principals: [],
     userRoles: [],
+    host_authorizations: [],
     mcp_idempotency_keys: [],
     competitions: [],
     leagues: [],
@@ -49,6 +59,22 @@ export function seedUser(
   for (const role of roles) {
     db.userRoles.push({ user_id: userId, role });
   }
+}
+
+/**
+ * An active time-based host authorization for a user (the real resolver's
+ * third host source — `has_active_host_authorization`). Mirrors the minimal
+ * active state: status 'active', no start gate, never expires.
+ */
+export function seedHostAuthorization(db: FakeDb, userId: string): void {
+  db.host_authorizations.push({
+    profile_id: userId,
+    status: "active",
+    authorization_type: "time",
+    starts_at: null,
+    expires_at: null,
+    remaining_sessions: null,
+  });
 }
 
 const PK_COLUMNS: Record<string, string> = {
@@ -162,15 +188,24 @@ function matches(row: Row, filters: Filter[]): boolean {
       case "gte":
       case "lte": {
         // ISO-8601 timestamps compare numerically when both sides parse;
-        // otherwise fall back to native value comparison (numbers).
+        // numbers compare natively; anything non-comparable excludes the row
+        // (never silently passes it).
         const a = row[f.col];
         const b = f.value;
         if (a == null || b == null) return false;
-        const ta = typeof a === "string" ? Date.parse(a) : NaN;
-        const tb = typeof b === "string" ? Date.parse(b) : NaN;
-        const cmp = !Number.isNaN(ta) && !Number.isNaN(tb) ? ta - tb : (a as number) - (b as number);
-        if (f.kind === "gte" ? cmp < 0 : cmp > 0) return false;
-        break;
+        if (typeof a === "string" && typeof b === "string") {
+          const ta = Date.parse(a);
+          const tb = Date.parse(b);
+          if (!Number.isNaN(ta) && !Number.isNaN(tb)) {
+            if (f.kind === "gte" ? ta - tb < 0 : ta - tb > 0) return false;
+            break;
+          }
+        }
+        if (typeof a === "number" && typeof b === "number") {
+          if (f.kind === "gte" ? a - b < 0 : a - b > 0) return false;
+          break;
+        }
+        return false; // mixed or non-comparable — exclude rather than pass
       }
       case "or":
         if (!f.predicate(row)) return false;
@@ -332,8 +367,15 @@ class FakeBuilder {
       for (const row of table) {
         if (matches(row, this.filters)) {
           Object.assign(row, this.payload as Record<string, unknown>);
-          // Mirror the set_updated_at() trigger on competitions.
-          if (this.table === "competitions") row.updated_at = new Date().toISOString();
+          // Mirror the set_updated_at() / tg_touch_updated_at() triggers on
+          // competitions, leagues and branding_profiles.
+          if (
+            this.table === "competitions" ||
+            this.table === "leagues" ||
+            this.table === "branding_profiles"
+          ) {
+            row.updated_at = new Date().toISOString();
+          }
         }
       }
       return { data: null, error: null };
@@ -497,6 +539,21 @@ export class FakeSupabase {
     return Promise.resolve({ data: this.can(args), error: null });
   }
 
+  /** Mirrors public.has_active_host_authorization() — the third host source. */
+  private hasActiveHostAuthorization(user: string): boolean {
+    const now = Date.now();
+    return this.db.host_authorizations.some(
+      (h) =>
+        h.profile_id === user &&
+        h.status === "active" &&
+        (h.starts_at == null || Date.parse(h.starts_at) <= now) &&
+        ((h.authorization_type === "time" &&
+          (h.expires_at == null || Date.parse(h.expires_at) > now)) ||
+          ((h.authorization_type === "single" || h.authorization_type === "bundle") &&
+            (h.remaining_sessions ?? 0) > 0)),
+    );
+  }
+
   /** Mirrors public.can(principal, action, resource) — the app's resolver. */
   private can(args: Record<string, unknown>): boolean {
     const principal = args.p_principal as string | null;
@@ -514,7 +571,7 @@ export class FakeSupabase {
     const admin = hasRole("admin");
     if (action.startsWith("admin.")) return admin;
 
-    const host = admin || hasRole("host");
+    const host = admin || hasRole("host") || this.hasActiveHostAuthorization(user);
     if (["quiz.create", "competition.create", "league.create", "branding.create", "session.host"].includes(action)) {
       return host;
     }

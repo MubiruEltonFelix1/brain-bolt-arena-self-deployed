@@ -21,13 +21,14 @@ import {
 } from "../src/competition";
 import { saveQuizWithClient } from "../src/supabase";
 import type { BrainBoltQuestion, BrainBoltQuiz } from "../src/schema";
-import { asClient, createFakeDb, FakeSupabase, seedUser, type FakeDb } from "./fake-supabase";
+import { asClient, createFakeDb, FakeSupabase, seedHostAuthorization, seedUser, type FakeDb } from "./fake-supabase";
 
 const OWNER = "11111111-1111-1111-1111-111111111111";
 const OTHER_HOST = "22222222-2222-2222-2222-222222222222";
 const NO_ROLE_USER = "33333333-3333-3333-3333-333333333333";
 const GHOST = "44444444-4444-4444-4444-444444444444";
 const ADMIN = "55555555-5555-5555-5555-555555555555";
+const HOST_AUTH_USER = "66666666-6666-6666-6666-666666666666";
 const MISSING = "99999999-9999-9999-9999-999999999999";
 
 const QUIZ: BrainBoltQuiz = {
@@ -240,6 +241,26 @@ describe("create_competition", () => {
     expect((error as CompetitionError).code).toBe("unauthorized");
     expect((error as CompetitionError).message).toContain("host capability");
     expect(db.competitions).toHaveLength(0);
+  });
+
+  test("an active host authorization grants the host capability without a role", async () => {
+    const { db, client } = makeEnv();
+    // A real user principal, but NO admin/host role — the host capability
+    // comes solely from the active host authorization (third resolver source).
+    seedUser(db, HOST_AUTH_USER);
+    seedHostAuthorization(db, HOST_AUTH_USER);
+    const { quizId } = await saveOwnedQuiz(client, QUIZ.questions, HOST_AUTH_USER);
+    const result = await makeCompetition(client, { actorId: HOST_AUTH_USER, quizId, title: "Auth'd host's" });
+    expect(result.ok).toBe(true);
+    expect(competitionRowOf(db, result.competitionId).owner_principal_id).toBe(HOST_AUTH_USER);
+
+    // And they can manage their own competition (competition.manage gate).
+    const updated = await updateCompetition(client, {
+      actorId: HOST_AUTH_USER,
+      competitionId: result.competitionId,
+      patch: { title: "Auth'd host's (updated)" },
+    });
+    expect(updated.ok).toBe(true);
   });
 
   test("rejects an actor without a principal", async () => {

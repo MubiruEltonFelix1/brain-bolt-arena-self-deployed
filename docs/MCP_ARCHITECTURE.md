@@ -187,8 +187,11 @@ existing autonomous engine
 
 `schedule_competition` only configures the competition row
 (`status='scheduled'`, `scheduled_start_at`). From there the existing,
-frozen engine takes over: `list_due_competitions()` feeds the pg_cron tick,
-which opens the lobby at `scheduled_start_at − lobby_duration_seconds` via
+frozen engine takes over: the pg_cron job
+(`run_autonomous_scheduler` → `run_autonomous_tick`, whose due-competition
+predicate — `status='scheduled'`, no linked session, lobby window reached —
+is the same one `list_due_competitions()` exposes) opens the lobby at
+`scheduled_start_at − lobby_duration_seconds` via
 `prepare_competition_session_internal` (creating the session with a join
 code), and the sessions-side sync trigger moves the competition to
 `running`/`completed` as the session advances. MCP does not create sessions
