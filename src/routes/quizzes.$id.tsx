@@ -1,10 +1,11 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { EmptyState } from "@/components/EmptyState";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { MapPicker } from "@/components/MapPicker";
+import { toastError, safeErrorMessage, resourceNotFoundMessage, logActionError } from "@/lib/errors";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/quizzes/$id")({
@@ -109,24 +110,84 @@ function QuizEditor() {
   const [questions, setQuestions] = useState<Question[]>([]);
   const [saving, setSaving] = useState(false);
   const [csvErrors, setCsvErrors] = useState<string[]>([]);
+  const [missing, setMissing] = useState(false);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  // Guards against a stale in-flight load (e.g. a failure-path reload for the
+  // previous quiz id) overwriting newer state after navigation.
+  const loadSeq = useRef(0);
 
   async function load() {
-    const { data: q } = await supabase.from("quizzes").select("*").eq("id", id).maybeSingle();
-    if (!q) return navigate({ to: "/dashboard" });
+    const seq = ++loadSeq.current;
+    setMissing(false);
+    setLoadError(null);
+    const { data: q, error } = await supabase.from("quizzes").select("*").eq("id", id).maybeSingle();
+    if (seq !== loadSeq.current) return; // superseded by a newer load
+    if (error) {
+      setLoadError(error);
+      return;
+    }
+    if (!q) {
+      setMissing(true);
+      return;
+    }
     setQuiz(q as Quiz);
     const { data: qs } = await supabase.from("questions").select("*").eq("quiz_id", id).order("position");
+    if (seq !== loadSeq.current) return;
     setQuestions((qs as Question[] | null) ?? []);
   }
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [id]);
 
+  if (loadError) {
+    return (
+      <HostShell>
+        <div className="max-w-3xl mx-auto px-6 py-10 space-y-4">
+          <p className="font-mono text-xs uppercase tracking-widest text-pink-shock">Quiz unavailable</p>
+          <p className="text-foreground/70">{safeErrorMessage(loadError)}</p>
+          <button onClick={load} className="bg-volt text-background font-display text-base px-5 py-2.5 skew-cta active:scale-95">
+            TRY AGAIN
+          </button>
+        </div>
+      </HostShell>
+    );
+  }
+  if (missing) {
+    return (
+      <HostShell>
+        <div className="max-w-3xl mx-auto px-6 py-10 space-y-4">
+          <p className="font-mono text-xs uppercase tracking-widest text-pink-shock">Quiz unavailable</p>
+          <p className="text-foreground/70">{resourceNotFoundMessage("quiz")}</p>
+          <div className="flex gap-3 flex-wrap">
+            <button onClick={load} className="bg-volt text-background font-display text-base px-5 py-2.5 skew-cta active:scale-95">
+              TRY AGAIN
+            </button>
+            <Link to="/dashboard" className="inline-block border border-border px-4 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors">
+              Back to dashboard
+            </Link>
+          </div>
+        </div>
+      </HostShell>
+    );
+  }
   if (!quiz) return <HostShell><div className="p-12 font-mono text-sm text-foreground/40">LOADING...</div></HostShell>;
-  if (user && quiz.owner_principal_id !== user.id) return <HostShell><div className="p-12">Not your quiz.</div></HostShell>;
+  if (user && quiz.owner_principal_id !== user.id) {
+    return (
+      <HostShell>
+        <div className="max-w-3xl mx-auto px-6 py-10 space-y-4">
+          <p className="font-mono text-xs uppercase tracking-widest text-pink-shock">Quiz locked</p>
+          <p className="text-foreground/70">You don't have permission to edit this quiz.</p>
+          <Link to="/dashboard" className="inline-block border border-border px-4 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors">
+            Back to dashboard
+          </Link>
+        </div>
+      </HostShell>
+    );
+  }
 
   async function saveQuiz(patch: Partial<Quiz>) {
     setSaving(true);
     const { error } = await supabase.from("quizzes").update(patch).eq("id", id);
     setSaving(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "save quiz" });
     setQuiz({ ...quiz!, ...patch });
   }
 
@@ -148,22 +209,32 @@ function QuizEditor() {
       })
       .select("*")
       .single();
-    if (error || !data) return toast.error(error?.message ?? "Failed");
+    if (error || !data) return toastError(error, { context: "add question", fallback: "Could not add the question." });
     setQuestions([...questions, data as Question]);
   }
 
   async function updateQuestion(qid: string, patch: Partial<Question>) {
     setQuestions((prev) => prev.map((q) => (q.id === qid ? { ...q, ...patch } : q)));
     const { error } = await supabase.from("questions").update(patch as any).eq("id", qid);
-    if (error) toast.error(error.message);
+    if (error) toastError(error, { context: "update question" });
   }
 
   async function deleteQuestion(qid: string) {
     const next = questions.filter((q) => q.id !== qid).map((q, i) => ({ ...q, position: i }));
     setQuestions(next);
-    await supabase.from("questions").delete().eq("id", qid);
+    const { error } = await supabase.from("questions").delete().eq("id", qid);
+    if (error) {
+      toastError(error, { context: "delete question" });
+      load();
+      return;
+    }
     // re-persist positions
-    await Promise.all(next.map((q) => supabase.from("questions").update({ position: q.position }).eq("id", q.id)));
+    const results = await Promise.all(next.map((q) => supabase.from("questions").update({ position: q.position }).eq("id", q.id)));
+    const failed = results.find((r) => r.error);
+    if (failed) {
+      toastError(failed.error, { context: "reposition questions after delete" });
+      load();
+    }
   }
 
   async function moveQuestion(qid: string, dir: -1 | 1) {
@@ -174,10 +245,15 @@ function QuizEditor() {
     [next[idx], next[swap]] = [next[swap], next[idx]];
     const reposed = next.map((q, i) => ({ ...q, position: i }));
     setQuestions(reposed);
-    await Promise.all([
+    const results = await Promise.all([
       supabase.from("questions").update({ position: idx }).eq("id", next[idx].id),
       supabase.from("questions").update({ position: swap }).eq("id", next[swap].id),
     ]);
+    const failed = results.find((r) => r.error);
+    if (failed) {
+      toastError(failed.error, { context: "reorder questions" });
+      load();
+    }
   }
 
   // ---- CSV import ----
@@ -482,8 +558,7 @@ function QuizEditor() {
 
 
     if (toInsert.length === 0) {
-      setCsvErrors(errors);
-      toast.error(`No valid rows. ${errors.length} error(s).`);
+      setCsvErrors(errors.length ? errors : ["No valid rows found in that file."]);
       return;
     }
 
@@ -491,8 +566,8 @@ function QuizEditor() {
     const payload = toInsert.map((r) => ({ ...r, quiz_id: id, position: pos++ }));
     const { error } = await supabase.from("questions").insert(payload);
     if (error) {
-      setCsvErrors([...errors, `Database error: ${error.message}`]);
-      toast.error("Import failed: " + error.message);
+      logActionError(error, "CSV import");
+      setCsvErrors([...errors, `Import failed: ${safeErrorMessage(error)}`]);
       return;
     }
     setCsvErrors(errors);
@@ -514,7 +589,8 @@ function QuizEditor() {
 
   async function deleteQuiz() {
     if (!confirm("Delete this quiz and all its questions?")) return;
-    await supabase.from("quizzes").delete().eq("id", id);
+    const { error } = await supabase.from("quizzes").delete().eq("id", id);
+    if (error) return toastError(error, { context: "delete quiz" });
     navigate({ to: "/dashboard" });
   }
 
@@ -708,9 +784,9 @@ function QuestionEditor({ index, total, question, quizDefaultTime, onChange, onD
     const ext = file.name.split(".").pop() || "jpg";
     const path = `${local.id}-${Date.now()}.${ext}`;
     const { error } = await supabase.storage.from("quiz-images").upload(path, file, { upsert: true, contentType: file.type });
-    if (error) { toast.error("Upload failed: " + error.message); return; }
+    if (error) { toastError(error, { context: "image upload", fallback: "Couldn't upload that image." }); return; }
     const { data: signed, error: sErr } = await supabase.storage.from("quiz-images").createSignedUrl(path, 60 * 60 * 24 * 365 * 10);
-    if (sErr || !signed?.signedUrl) { toast.error("Couldn't get image URL"); return; }
+    if (sErr || !signed?.signedUrl) { toastError(sErr, { context: "image signed URL", fallback: "Couldn't get image URL" }); return; }
     setLocal({ ...local, image_url: signed.signedUrl });
     onChange({ image_url: signed.signedUrl });
     toast.success("Image uploaded");
@@ -725,9 +801,9 @@ function QuestionEditor({ index, total, question, quizDefaultTime, onChange, onD
     const ext = file.name.split(".").pop() || "mp3";
     const path = `${local.id}-audio-${Date.now()}.${ext}`;
     const { error } = await supabase.storage.from("quiz-images").upload(path, file, { upsert: true, contentType: file.type });
-    if (error) { toast.error("Upload failed: " + error.message); return; }
+    if (error) { toastError(error, { context: "audio upload", fallback: "Couldn't upload that audio." }); return; }
     const { data: signed, error: sErr } = await supabase.storage.from("quiz-images").createSignedUrl(path, 60 * 60 * 24 * 365 * 10);
-    if (sErr || !signed?.signedUrl) { toast.error("Couldn't get audio URL"); return; }
+    if (sErr || !signed?.signedUrl) { toastError(sErr, { context: "audio signed URL", fallback: "Couldn't get audio URL" }); return; }
     setLocal({ ...local, audio_url: signed.signedUrl });
     onChange({ audio_url: signed.signedUrl } as Partial<Question>);
     toast.success("Audio uploaded");
@@ -1140,7 +1216,7 @@ function CsvButton({ onImport }: { onImport: (text: string) => void }) {
         onChange={(e) => {
           const f = e.target.files?.[0];
           if (!f) return;
-          f.text().then(onImport).catch((err) => toast.error("Couldn't read file: " + (err?.message ?? err)));
+          f.text().then(onImport).catch((err) => toastError(err, { context: "CSV file read", fallback: "Couldn't read that file." }));
           e.target.value = "";
         }}
       />

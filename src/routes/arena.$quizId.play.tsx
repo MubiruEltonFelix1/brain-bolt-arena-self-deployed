@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
@@ -93,7 +93,7 @@ function ArenaPlay() {
         setQuestions(qs);
       })
       .catch((e) => {
-        toast.error(e.message ?? "Could not load this challenge");
+        toastError(e, { context: "challenge play", fallback: "Could not load this challenge" });
         navigate({ to: "/arena" });
       });
   }, [quizId, navigate]);

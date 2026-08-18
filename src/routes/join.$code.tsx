@@ -8,6 +8,7 @@ import { AvatarPicker } from "@/components/AvatarPicker";
 import { DEFAULT_AVATAR_ID } from "@/lib/avatar";
 import type { BrandingProfile } from "@/lib/branding";
 import { toast } from "sonner";
+import { toastError, logActionError } from "@/lib/errors";
 import { LiveScreenState } from "@/components/ConnectionState";
 import { describeGameCode, lookupGameCode, type GameCodeLookup } from "@/lib/game-code";
 
@@ -112,7 +113,12 @@ function JoinPage() {
     setBusy(false);
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row) {
-      toast.error(error?.message?.includes("not accepting") ? "Session not joinable" : error?.message || "Could not join");
+      if (error?.message?.includes("not accepting")) {
+        logActionError(error, "join game (session not accepting)");
+        toast.error("Session not joinable");
+      } else {
+        toastError(error, { context: "join game", fallback: "Could not join this session." });
+      }
       return;
     }
     saveParticipant({

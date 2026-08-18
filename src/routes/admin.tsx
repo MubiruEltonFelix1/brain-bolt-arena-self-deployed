@@ -21,6 +21,7 @@ import {
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useHostStatus } from "@/hooks/use-host-status";
+import { toastError, logActionError } from "@/lib/errors";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/admin")({
@@ -201,8 +202,9 @@ function AdminPage() {
       supabase.rpc("admin_session_funnel" as never),
       supabase.rpc("admin_question_type_stats" as never),
     ]).then(([{ data: fn, error: e6 }, { data: qt, error: e7 }]) => {
-      if (e6) toast.error(e6.message);
-      if (e7) toast.error(e7.message);
+      if (e6) logActionError(e6, "admin_session_funnel");
+      if (e7) logActionError(e7, "admin_question_type_stats");
+      if (e6 || e7) toastError(e6 ?? e7, { context: "admin insights load" });
       setFunnel(((fn as unknown as FunnelStats[] | null) ?? [])[0] ?? null);
       setQuestionTypes(
         ((qt as unknown as QuestionTypeStat[] | null) ?? []).filter((row) => row.question_type),
@@ -234,12 +236,10 @@ function AdminPage() {
         supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
       ]);
       if (seq !== loadSeq.current) return; // superseded by a newer load
-      if (e1) toast.error(e1.message);
-      if (e2) toast.error(e2.message);
-      if (e3) toast.error(e3.message);
-      if (e4) toast.error(e4.message);
-      if (e5) toast.error(e5.message);
-      if (e8) toast.error(e8.message);
+      const loadErrors = [e1, e2, e3, e4, e5, e8];
+      for (const e of loadErrors) if (e) logActionError(e, "admin stats load");
+      const firstError = loadErrors.find(Boolean);
+      if (firstError) toastError(firstError, { context: "admin stats load" });
       setUsers((list as AdminUser[] | null) ?? []);
       setStats(((st as Stats[] | null) ?? [])[0] ?? null);
       setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
@@ -273,7 +273,7 @@ function AdminPage() {
       p_notes: undefined,
     });
     setBusy(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin grant host authorization" });
     toast.success("Authorization granted");
     load();
   }
@@ -281,7 +281,7 @@ function AdminPage() {
   async function revoke(authId: string) {
     if (!confirm("Revoke this hosting authorization?")) return;
     const { error } = await supabase.rpc("admin_revoke_host_authorization", { p_auth_id: authId });
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin revoke host authorization" });
     toast.success("Revoked");
     load();
   }
@@ -296,7 +296,7 @@ function AdminPage() {
       p_add_sessions: addSessions ?? undefined,
       p_new_expires_at: newExpires ?? undefined,
     });
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin extend host authorization" });
     toast.success("Updated");
     load();
   }
@@ -313,7 +313,7 @@ function AdminPage() {
       p_sessions: sessions ?? undefined,
       p_expires_at: expiresAt ?? undefined,
     });
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin convert host authorization" });
     toast.success("Converted");
     load();
   }
@@ -1340,7 +1340,7 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
         p_status: filter === "all" ? null : filter,
       } as never,
     );
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin list host requests" });
     setItems((data as HostRequest[] | null) ?? []);
   }
 
@@ -1355,7 +1355,7 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
       { p_request_id: id } as never,
     );
     setBusyId(null);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin approve host request" });
     toast.success("Approved · 90-day access granted");
     load();
     onChange();
@@ -1369,7 +1369,7 @@ function HostRequestsPanel({ onChange }: { onChange: () => void }) {
       { p_request_id: id } as never,
     );
     setBusyId(null);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "admin reject host request" });
     toast.success("Rejected");
     load();
   }

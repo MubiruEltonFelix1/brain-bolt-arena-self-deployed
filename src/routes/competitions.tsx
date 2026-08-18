@@ -5,6 +5,7 @@ import { HostShell } from "@/components/host-shell";
 import { EmptyState, SkeletonList } from "@/components/EmptyState";
 import { useHostStatus } from "@/hooks/use-host-status";
 import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 
 
 export const Route = createFileRoute("/competitions")({
@@ -97,7 +98,7 @@ function CompetitionsPage() {
       p_force: force,
     });
     setPreparingId(null);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "prepare session" });
     const row = Array.isArray(data) ? data[0] : null;
     if (!row) return toast.error("Could not prepare the session");
     toast.success(row.created ? `Lobby open · code ${row.code}` : `Lobby already open · code ${row.code}`);
@@ -111,7 +112,7 @@ function CompetitionsPage() {
       .from("competitions")
       .update({ status: "cancelled", cancelled_at: new Date().toISOString() })
       .eq("id", id);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "cancel competition" });
     toast.success("Cancelled");
     load();
   }
@@ -119,7 +120,7 @@ function CompetitionsPage() {
   async function deleteCompetition(id: string) {
     if (!confirm("Delete this competition permanently?")) return;
     const { error } = await supabase.from("competitions").delete().eq("id", id);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "delete competition" });
     toast.success("Deleted");
     load();
   }
@@ -296,7 +297,7 @@ function CreateCompetitionForm({ quizzes, leagues, onCreated }: { quizzes: Quiz[
       lobby_duration_seconds: Math.max(30, Math.min(3600, Math.round(lobbyMin * 60))),
     } as never);
     setSaving(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "create competition" });
     toast.success("Competition scheduled");
     onCreated();
   }

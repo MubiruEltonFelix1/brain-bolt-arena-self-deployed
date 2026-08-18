@@ -12,6 +12,7 @@ import { Toaster } from "sonner";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
+import { safeErrorMessage } from "../lib/errors";
 import { supabase } from "@/integrations/supabase/client";
 import { ClaimRedeemer } from "@/components/ClaimRedeemer";
 
@@ -47,7 +48,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
           System fault
         </h1>
         <p className="mt-2 text-sm text-foreground/60">
-          {error.message || "Unexpected error."}
+          {safeErrorMessage(error)}
         </p>
         <button
           onClick={() => { router.invalidate(); reset(); }}

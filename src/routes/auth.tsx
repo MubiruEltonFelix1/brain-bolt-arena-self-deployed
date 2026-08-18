@@ -1,6 +1,7 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { toastError } from "@/lib/errors";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/auth")({
@@ -49,7 +50,7 @@ function AuthPage() {
         goNext();
       }
     } catch (err) {
-      toast.error((err as Error).message);
+      toastError(err, { context: "sign in", fallback: "Could not sign in. Please try again." });
     } finally {
       setBusy(false);
     }
@@ -67,7 +68,7 @@ function AuthPage() {
       },
     });
     if (error) {
-      toast.error(error.message);
+      toastError(error, { context: "google sign in", fallback: "Could not start Google sign-in." });
       setBusy(false);
     }
     // On success the browser is redirected to Google and back — no post-call navigation.

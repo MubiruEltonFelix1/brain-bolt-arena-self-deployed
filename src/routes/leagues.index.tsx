@@ -1,10 +1,10 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { EmptyState } from "@/components/EmptyState";
 import { useHostStatus } from "@/hooks/use-host-status";
-import { toast } from "sonner";
+import { toastError, toastHostAccessError } from "@/lib/errors";
 
 export const Route = createFileRoute("/leagues/")({
   component: LeaguesPage,
@@ -33,6 +33,7 @@ const STATUS_LABEL: Record<LeagueStatus, string> = {
 };
 
 function LeaguesPage() {
+  const navigate = useNavigate();
   const { user, canHost } = useHostStatus();
   const [leagues, setLeagues] = useState<League[]>([]);
   const [name, setName] = useState("");
@@ -58,7 +59,7 @@ function LeaguesPage() {
   async function createLeague(e: React.FormEvent) {
     e.preventDefault();
     if (!user || !name.trim()) return;
-    if (!canHost) return toast.error("Hosting not authorized");
+    if (!canHost) return toastHostAccessError({ context: "create league pre-check", requestHostAccess: () => navigate({ to: "/request-hosting" }) });
     setBusy(true);
     const { error } = await supabase.from("leagues").insert({
       owner_principal_id: user.id,
@@ -70,7 +71,7 @@ function LeaguesPage() {
       cover_image_url: coverUrl.trim() || null,
     } as never);
     setBusy(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "create league" });
     setName(""); setDescription(""); setStartDate(""); setEndDate(""); setCoverUrl(""); setVisibility("private");
     setShowForm(false);
     load();

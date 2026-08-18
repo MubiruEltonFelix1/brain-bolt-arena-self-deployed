@@ -12,6 +12,7 @@ import { NumberGuess } from "@/components/NumberGuess";
 import { OrderingBoard } from "@/components/OrderingBoard";
 import { formatNumber, getNumberFormat } from "@/lib/number-format";
 import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 import { QuestionIntro } from "@/components/QuestionIntro";
 import { getQuestionIntroTiming } from "@/lib/question-intro-timing";
 import { getServerAdjustedNow, syncServerClock } from "@/lib/server-clock";
@@ -415,7 +416,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
   // A timeout can hide a write that actually landed. Re-read the server before
   // releasing the local lock so a retry can never record the same answer twice.
-  async function handleSubmitFailure(questionId: string, message?: string) {
+  async function handleSubmitFailure(questionId: string, error?: unknown) {
     const { data } = await supabase
       .from("answers").select("question_id,selected_index,is_correct,points")
       .eq("session_id", sessionId).eq("participant_id", identity!.id);
@@ -427,7 +428,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     }
     answeredQuestionId.current = null;
     setSelectedIndex(null);
-    toast.error(message ?? "Answer didn't send. Tap again to retry.");
+    toastError(error, { context: "submit answer", fallback: "Answer didn't send. Tap again to retry." });
   }
 
   async function submitAnswer(originalIndex: number) {
@@ -447,7 +448,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row?.accepted) {
-      await handleSubmitFailure(currentQuestion.id, error?.message);
+      await handleSubmitFailure(currentQuestion.id, error);
       return;
     }
     setMyAnswers((prev) => [
@@ -468,7 +469,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row?.accepted) {
-      await handleSubmitFailure(currentQuestion.id, error?.message); return;
+      await handleSubmitFailure(currentQuestion.id, error); return;
     }
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: false, points: 0 }]);
@@ -485,7 +486,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row?.accepted) {
-      await handleSubmitFailure(currentQuestion.id, error?.message); return;
+      await handleSubmitFailure(currentQuestion.id, error); return;
     }
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: false, points: 0 }]);
@@ -502,7 +503,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row?.accepted) {
-      await handleSubmitFailure(currentQuestion.id, error?.message); return;
+      await handleSubmitFailure(currentQuestion.id, error); return;
     }
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: !!row.is_correct, points: row.points ?? 0 }]);
@@ -519,7 +520,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     });
     const row = Array.isArray(data) ? data[0] : data;
     if (error || !row?.accepted) {
-      await handleSubmitFailure(currentQuestion.id, error?.message); return;
+      await handleSubmitFailure(currentQuestion.id, error); return;
     }
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: !!row.correct_positions && row.correct_positions === currentQuestion.options.length, points: row.points ?? 0 }]);
@@ -1266,7 +1267,7 @@ function FinalView({
                 typeof window !== "undefined" ? window.location.pathname : "/"
               )}`;
             } catch (e) {
-              toast.error((e as Error).message ?? "Could not prepare this result");
+              toastError(e, { context: "prepare result", fallback: "Could not prepare this result" });
               setClaiming(false);
             }
           }}

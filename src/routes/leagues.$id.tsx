@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 
 export const Route = createFileRoute("/leagues/$id")({
   component: LeagueDetail,
@@ -131,7 +132,7 @@ function LeagueDetail() {
 
   async function changeStatus(next: LeagueStatus) {
     const { error } = await supabase.from("leagues").update({ status: next } as never).eq("id", id);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "change status" });
     toast.success(`Status → ${STATUS_LABEL[next]}`);
     load();
   }
@@ -143,7 +144,7 @@ function LeagueDetail() {
     const { error } = await supabase.from("league_quizzes").insert({
       league_id: id, quiz_id: addQuizId, position: nextPos,
     } as never);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "add quiz" });
     setAddQuizId("");
     load();
   }
@@ -151,7 +152,7 @@ function LeagueDetail() {
   async function removeQuiz(lqId: string) {
     if (!confirm("Remove this quiz from the league? The original quiz is not deleted.")) return;
     const { error } = await supabase.from("league_quizzes").delete().eq("id", lqId);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "remove quiz" });
     load();
   }
 
@@ -163,7 +164,7 @@ function LeagueDetail() {
     // Two-step swap to avoid unique-index conflicts if you ever add one on position
     const { error: e1 } = await supabase.from("league_quizzes").update({ position: b.position } as never).eq("id", a.id);
     const { error: e2 } = await supabase.from("league_quizzes").update({ position: a.position } as never).eq("id", b.id);
-    if (e1 || e2) return toast.error((e1 || e2)!.message);
+    if (e1 || e2) return toastError(e1 || e2, { context: "move quiz" });
     load();
   }
 
@@ -174,14 +175,15 @@ function LeagueDetail() {
       .from("leagues")
       .update({ archived_at: next, ...(next ? { status: "completed" as const } : {}) } as never)
       .eq("id", id);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "archive season" });
     toast.success(next ? "Season archived" : "Season reopened");
     load();
   }
 
   async function deleteLeague() {
     if (!confirm("Delete this league? All standings and quiz attachments will be removed.")) return;
-    await supabase.from("leagues").delete().eq("id", id);
+    const { error } = await supabase.from("leagues").delete().eq("id", id);
+    if (error) return toastError(error, { context: "delete league" });
     navigate({ to: "/leagues" });
   }
 
@@ -441,7 +443,7 @@ function EditLeagueForm({ league, onSaved }: { league: League; onSaved: () => vo
       points_participation: Math.max(0, pp),
     } as never).eq("id", league.id);
     setBusy(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "save league" });
     toast.success("League updated");
     onSaved();
   }

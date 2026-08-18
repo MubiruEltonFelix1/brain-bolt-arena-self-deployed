@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useHostStatus } from "@/hooks/use-host-status";
 import { generateGameCode, seededShuffle } from "@/lib/game";
+import { toastError, toastHostAccessError } from "@/lib/errors";
 import { toast } from "sonner";
 import { HostAuthorizationCard } from "@/components/HostAuthorizationCard";
 import { EmptyState, SkeletonList } from "@/components/EmptyState";
@@ -57,7 +58,7 @@ function Dashboard() {
       .from("quizzes")
       .update({ archived_at: new Date().toISOString() } as never)
       .eq("id", quizId);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "archive quiz" });
     toast.success("Quiz deleted");
     setQuizzes((qs) => qs.filter((q) => q.id !== quizId));
   }
@@ -71,14 +72,14 @@ function Dashboard() {
       .insert({ owner_principal_id: user.id, title: "Untitled Quiz" } as never)
       .select("id")
       .single();
-    if (error || !data) return toast.error(error?.message ?? "Failed");
+    if (error || !data) return toastError(error, { context: "create quiz", fallback: "Could not create the quiz.", retry: () => createQuiz() });
     navigate({ to: "/quizzes/$id", params: { id: data.id } });
   }
 
   async function startSession(quizId: string, opts: { teamMode: boolean; leagueId: string | null; brandingProfileId: string | null }) {
     if (!user) return;
     if (!canHost) {
-      toast.error("Hosting not authorized. Contact the administrator.");
+      toastHostAccessError({ context: "start session pre-check", requestHostAccess: () => navigate({ to: "/request-hosting" }) });
       return;
     }
     setCreatingId(quizId);
@@ -105,8 +106,12 @@ function Dashboard() {
       .single();
     setCreatingId(null);
     if (error || !data) {
-      const msg = error?.message ?? "Failed to start";
-      toast.error(/Hosting not authorized/i.test(msg) ? "Hosting not authorized. Contact the administrator." : msg);
+      toastError(error, {
+        context: "start session",
+        fallback: "Could not start the session.",
+        retry: () => startSession(quizId, opts),
+        onHostAccess: () => navigate({ to: "/request-hosting" }),
+      });
       await refreshHost();
       return;
     }

@@ -6,6 +6,7 @@ import { useHostStatus } from "@/hooks/use-host-status";
 import { BrandBanner } from "@/components/BrandBanner";
 import type { BrandingProfile } from "@/lib/branding";
 import { toast } from "sonner";
+import { toastError, toastHostAccessError } from "@/lib/errors";
 
 export const Route = createFileRoute("/branding")({
   component: BrandingPage,
@@ -61,7 +62,7 @@ function BrandingPage() {
   async function save(e: React.FormEvent) {
     e.preventDefault();
     if (!user) return;
-    if (!canHost) return toast.error("Hosting not authorized");
+    if (!canHost) return toastHostAccessError({ context: "save branding pre-check" });
     const name = draft.organization_name.trim();
     if (name.length < 2) return toast.error("Organization name required");
 
@@ -78,7 +79,7 @@ function BrandingPage() {
       ? await supabase.from("branding_profiles").update(payload).eq("id", draft.id)
       : await supabase.from("branding_profiles").insert(payload as never);
     setSaving(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "save branding" });
     toast.success(draft.id ? "Branding updated" : "Branding created");
     setDraft(EMPTY);
     load();
@@ -87,7 +88,7 @@ function BrandingPage() {
   async function remove(id: string) {
     if (!confirm("Delete this branding profile? Existing sessions using it will fall back to BrainBolt defaults.")) return;
     const { error } = await supabase.from("branding_profiles").delete().eq("id", id);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "delete branding" });
     toast.success("Deleted");
     if (draft.id === id) setDraft(EMPTY);
     load();

@@ -8,6 +8,7 @@ import { HostShell } from "@/components/host-shell";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { TEAM_COLORS } from "@/lib/game";
 import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 import { QRCodeSVG } from "qrcode.react";
 import { QuestionIntro } from "@/components/QuestionIntro";
 import { getQuestionIntroTiming } from "@/lib/question-intro-timing";
@@ -261,7 +262,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       // Use DB's now() so host + players share the exact same start timestamp
       // delivered via the same Realtime event.
       const { error } = await supabase.rpc("advance_question", { p_session_id: sessionId });
-      if (error) toast.error(error.message);
+      if (error) toastError(error, { context: "startGame (advance_question)" });
     });
   }
 
@@ -269,7 +270,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   async function revealRound() {
     await runControl(async () => {
       const { error } = await supabase.rpc("reveal_current_question", { p_session_id: sessionId });
-      if (error) { toast.error(error.message); return; }
+      if (error) { toastError(error, { context: "revealRound (reveal_current_question)" }); return; }
       // Fetch stats
       if (currentQuestion) {
         const { data } = await supabase.rpc("get_round_stats", { p_session_id: sessionId, p_question_id: currentQuestion.id });
@@ -284,7 +285,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       setAnswersForRound([]);
       setRoundStats([]);
       const { data, error } = await supabase.rpc("advance_question", { p_session_id: sessionId });
-      if (error) { toast.error(error.message); return; }
+      if (error) { toastError(error, { context: "nextRound (advance_question)" }); return; }
       const row = Array.isArray(data) ? data[0] : data;
       if (row?.ended) {
         await finalizeLeague();
@@ -297,7 +298,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     await runControl(async () => {
       const rpc = isPaused ? "resume_session" : "pause_session";
       const { error } = await supabase.rpc(rpc, { p_session_id: sessionId });
-      if (error) { toast.error(error.message); return; }
+      if (error) { toastError(error, { context: "togglePause (pause/resume_session)" }); return; }
       toast.success(isPaused ? "Session resumed" : "Session paused");
     });
   }
@@ -305,7 +306,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   async function addTime(seconds: number) {
     await runControl(async () => {
       const { error } = await supabase.rpc("add_question_time", { p_session_id: sessionId, p_seconds: seconds });
-      if (error) { toast.error(error.message); return; }
+      if (error) { toastError(error, { context: "addTime (add_question_time)" }); return; }
       toast.success(`+${seconds}s added to the current question`);
       setMoreOpen(false);
     });
@@ -319,7 +320,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       setAnswersForRound([]);
       setRoundStats([]);
       const { data, error } = await supabase.rpc("skip_current_question", { p_session_id: sessionId });
-      if (error) { toast.error(error.message); return; }
+      if (error) { toastError(error, { context: "doSkipQuestion (skip_current_question)" }); return; }
       const row = Array.isArray(data) ? data[0] : data;
       toast.success("Question skipped — no points awarded");
       if (row?.ended) await finalizeLeague();
@@ -333,7 +334,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
         await supabase.rpc("resume_session", { p_session_id: sessionId });
       }
       const { error } = await supabase.rpc("end_question_early", { p_session_id: sessionId });
-      if (error) { toast.error(error.message); return; }
+      if (error) { toastError(error, { context: "doEndEarly (end_question_early)" }); return; }
       if (currentQuestion) {
         const { data } = await supabase.rpc("get_round_stats", { p_session_id: sessionId, p_question_id: currentQuestion.id });
         setRoundStats((data as Array<{ selected_index: number; vote_count: number }> | null) ?? []);

@@ -4,6 +4,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { useHostStatus } from "@/hooks/use-host-status";
 import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 
 export const Route = createFileRoute("/request-hosting")({
   component: RequestHosting,
@@ -63,7 +64,7 @@ function RequestHosting() {
       p_message: message,
     } as never);
     setBusy(false);
-    if (error) return toast.error(error.message);
+    if (error) return toastError(error, { context: "submit host request" });
     toast.success("Request submitted");
     await refresh();
     navigate({ to: "/dashboard" });

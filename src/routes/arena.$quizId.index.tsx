@@ -4,7 +4,7 @@ import { fetchArenaDetail, fetchPersonalBest, readPersonalBest, type ArenaQuizDe
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { difficultyTheme, isOfficial } from "@/lib/arena-visuals";
 import { ArenaArtwork, DifficultyChip, OfficialBadge } from "@/components/arena/ArenaVisuals";
-import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 
 export const Route = createFileRoute("/arena/$quizId/")({
   head: () => ({
@@ -46,7 +46,7 @@ function ArenaDetail() {
     fetchArenaDetail(quizId)
       .then((d) => setDetail(d ?? "missing"))
       .catch((e) => {
-        toast.error(e.message ?? "Could not load this challenge");
+        toastError(e, { context: "challenge load", fallback: "Could not load this challenge" });
         setDetail("missing");
       });
   }, [quizId, user]);

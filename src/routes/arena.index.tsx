@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { fetchArenaList, fetchCompletedArenaQuizIds, type ArenaListItem } from "@/lib/arena";
 import { ArenaCard, ArenaEmptyState, ArenaHero } from "@/components/arena/ArenaVisuals";
@@ -29,7 +29,7 @@ function Arena() {
     fetchArenaList()
       .then(setItems)
       .catch((e) => {
-        toast.error(e.message ?? "Could not load the Arena");
+        toastError(e, { context: "arena load", fallback: "Could not load the Arena" });
         setItems([]);
       });
   }, []);

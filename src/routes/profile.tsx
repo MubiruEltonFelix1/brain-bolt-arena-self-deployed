@@ -16,6 +16,14 @@ import {
   type PlayerStats,
 } from "@/lib/player-stats";
 import { toast } from "sonner";
+import { toastError } from "@/lib/errors";
+
+/** Field-level validation copy that must surface verbatim (not masked by the generic layer). */
+function validationError(message: string): Error {
+  const err = new Error(message);
+  err.name = "ValidationError";
+  return err;
+}
 
 export const Route = createFileRoute("/profile")({
   component: ProfilePage,
@@ -188,7 +196,7 @@ function ProfilePage() {
       if (nextUsername !== profile.username) {
         if (nextUsername) {
           if (!/^[a-zA-Z0-9_]{3,20}$/.test(nextUsername)) {
-            throw new Error("Username: 3–20 chars, letters/numbers/underscore only.");
+            throw validationError("Username: 3–20 chars, letters/numbers/underscore only.");
           }
           const { data: taken } = await supabase
             .from("profiles")
@@ -196,7 +204,7 @@ function ProfilePage() {
             .ilike("username", nextUsername)
             .neq("id", user.id)
             .maybeSingle();
-          if (taken) throw new Error("Username already taken.");
+          if (taken) throw validationError("Username already taken.");
         }
         patch.username = nextUsername;
         patch.username_updated_at = new Date().toISOString();
@@ -216,7 +224,11 @@ function ProfilePage() {
       toast.success("Profile updated");
       setEditing(false);
     } catch (err) {
-      toast.error((err as Error).message);
+      if (err instanceof Error && err.name === "ValidationError") {
+        toast.error(err.message);
+      } else {
+        toastError(err, { context: "update profile", fallback: "Could not update your profile." });
+      }
     } finally {
       setSaving(false);
     }
