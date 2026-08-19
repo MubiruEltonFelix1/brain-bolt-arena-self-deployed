@@ -1,28 +1,31 @@
-// Static avatar catalog. Selection logic will be added later.
-import owl from "./owl.webp.asset.json";
-import panther from "./panther.webp.asset.json";
-import phoenix from "./phoenix.webp.asset.json";
-import rhino from "./rhino.webp.asset.json";
-import fox from "./fox.webp.asset.json";
-import octopus from "./octopus.webp.asset.json";
-import panda from "./panda.webp.asset.json";
-import robot from "./robot.webp.asset.json";
-import wolf from "./wolf.webp.asset.json";
-import falcon from "./falcon.webp.asset.json";
+// Static avatar catalog. Assets are bundled with the application: importing the
+// .webp files directly lets Vite emit them as versioned static assets, so the
+// URLs work on any self-hosted origin (no dependency on the Lovable __l5e
+// asset proxy that only existed on the old hosted deployment).
+import owl from "./owl.webp";
+import panther from "./panther.webp";
+import phoenix from "./phoenix.webp";
+import rhino from "./rhino.webp";
+import fox from "./fox.webp";
+import octopus from "./octopus.webp";
+import panda from "./panda.webp";
+import robot from "./robot.webp";
+import wolf from "./wolf.webp";
+import falcon from "./falcon.webp";
 
 export type Avatar = { id: string; name: string; url: string };
 
 export const AVATARS: Avatar[] = [
-  { id: "owl", name: "Owl", url: owl.url },
-  { id: "panther", name: "Panther", url: panther.url },
-  { id: "phoenix", name: "Phoenix", url: phoenix.url },
-  { id: "rhino", name: "Rhino", url: rhino.url },
-  { id: "fox", name: "Fox", url: fox.url },
-  { id: "octopus", name: "Octopus", url: octopus.url },
-  { id: "panda", name: "Panda", url: panda.url },
-  { id: "robot", name: "Robot", url: robot.url },
-  { id: "wolf", name: "Wolf", url: wolf.url },
-  { id: "falcon", name: "Falcon", url: falcon.url },
+  { id: "owl", name: "Owl", url: owl },
+  { id: "panther", name: "Panther", url: panther },
+  { id: "phoenix", name: "Phoenix", url: phoenix },
+  { id: "rhino", name: "Rhino", url: rhino },
+  { id: "fox", name: "Fox", url: fox },
+  { id: "octopus", name: "Octopus", url: octopus },
+  { id: "panda", name: "Panda", url: panda },
+  { id: "robot", name: "Robot", url: robot },
+  { id: "wolf", name: "Wolf", url: wolf },
+  { id: "falcon", name: "Falcon", url: falcon },
 ];
 
 export const AVATARS_BY_ID: Record<string, Avatar> = Object.fromEntries(
