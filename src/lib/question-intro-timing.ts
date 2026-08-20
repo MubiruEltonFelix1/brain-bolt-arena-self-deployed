@@ -51,7 +51,7 @@ export function getQuestionIntroTiming({
     introRemainingMs,
     introElapsedMs,
     introProgress: INTRO_DURATION_MS > 0 ? introElapsedMs / INTRO_DURATION_MS : 1,
-    introCountdown: Math.max(1, Math.min(3, Math.ceil(introRemainingMs / 1000))),
+    introCountdown: Math.max(1, Math.ceil(introRemainingMs / 1000)),
     showIntroGo: introRemainingMs > 0 && introRemainingMs <= 350,
     inIntro,
     isPaused,

@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLiveChannel, type LiveStatus } from "@/hooks/use-live-channel";
 import { ConnectionBanner, LiveScreenState } from "@/components/ConnectionState";
+import { Confetti } from "@/components/Confetti";
 
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
@@ -1052,38 +1053,6 @@ function RoundResultsView({
         })}
       </div>
 
-    </div>
-  );
-}
-
-function Confetti() {
-  const pieces = Array.from({ length: 60 });
-  const colors = ["#CCFF00", "#FF2D55", "#7CE7FF", "#FFC857", "#F4F4F5"];
-  return (
-    <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-      {pieces.map((_, i) => {
-        const left = Math.random() * 100;
-        const delay = Math.random() * 3;
-        const duration = 3 + Math.random() * 3;
-        const size = 6 + Math.random() * 8;
-        const rotate = Math.random() * 360;
-        const color = colors[i % colors.length];
-        return (
-          <span
-            key={i}
-            className="absolute top-[-20px] block opacity-80"
-            style={{
-              left: `${left}%`,
-              width: `${size}px`,
-              height: `${size * 0.4}px`,
-              background: color,
-              transform: `rotate(${rotate}deg)`,
-              animation: `confetti-fall ${duration}s linear ${delay}s infinite`,
-            }}
-          />
-        );
-      })}
-      <style>{`@keyframes confetti-fall { 0% { transform: translateY(-20px) rotate(0deg); opacity: 0; } 10% { opacity: 1; } 100% { transform: translateY(720px) rotate(720deg); opacity: 0.9; } } @keyframes podium-rise { from { transform: translateY(40px); opacity: 0; } to { transform: translateY(0); opacity: 1; } } @keyframes badge-pop { 0% { transform: scale(0.5); opacity: 0; } 60% { transform: scale(1.15); } 100% { transform: scale(1); opacity: 1; } }`}</style>
     </div>
   );
 }

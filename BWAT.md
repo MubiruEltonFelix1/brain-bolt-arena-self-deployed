@@ -61,6 +61,7 @@ This file provides guidance to Bwat when working with code in this repository.
 - `bun run build` (production) / `bun run build:dev` (development-mode build)
 - `bun run lint` / `bun run format`
 - No test suite script is defined.
+- Load test: `bun scripts/load-test.mjs --code <GAME_CODE> [--players 100] [--burst 25]` — spawns fake players against a live session (must be in LOBBY; you press START when prompted) and measures join/answer latency + realtime delivery, then auto-cleans the bots via the service role. Use a scratch quiz, never the launch quiz.
 - DB schema lives in `supabase/migrations/*.sql`. Apply it with `bun scripts/migrate.mjs` (connects via `DATABASE_URL` from `.env` using psql; reports applied/pending and applies pending ones automatically, each in its own transaction, in filename order, stopping on the first failure). `bun scripts/migrate.mjs --dry-run` reports only. `bun scripts/check-migrations.mjs` is the read-only status report.
 
 ## Gotchas

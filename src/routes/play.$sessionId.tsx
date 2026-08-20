@@ -21,6 +21,9 @@ import { BrandBanner } from "@/components/BrandBanner";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { useCoalescedCallback } from "@/hooks/use-coalesced-callback";
 import { liveRevealBlur } from "@/lib/question-registry";
+import { playSound, haptic, isSoundMuted, toggleSoundMuted, unlockAudio } from "@/lib/sound";
+import { Confetti } from "@/components/Confetti";
+import { Volume2, VolumeX } from "lucide-react";
 
 
 export const Route = createFileRoute("/play/$sessionId")({
@@ -129,6 +132,18 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [roundResult, setRoundResult] = useState<{ answered: boolean; selected_index: number | null; is_correct: boolean; points: number; correct_index: number; total_score: number; answer_value?: any; correct_lat?: number | null; correct_lng?: number | null; correct_number?: number | null; correct_text?: string | null; text_submission?: string | null } | null>(null);
   const answeredQuestionId = useRef<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
+  const [soundOn, setSoundOn] = useState(() => !isSoundMuted());
+
+  // AudioContext must be created/resumed after a user gesture (autoplay policy).
+  useEffect(() => {
+    const unlock = () => unlockAudio();
+    window.addEventListener("pointerdown", unlock, { once: true });
+    window.addEventListener("keydown", unlock, { once: true });
+    return () => {
+      window.removeEventListener("pointerdown", unlock);
+      window.removeEventListener("keydown", unlock);
+    };
+  }, []);
 
 
   useEffect(() => {
@@ -237,6 +252,22 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const onParticipantsChanged = useCoalescedCallback(refetchParticipants);
 
   // Realtime: session updates + participants updates, with automatic recovery.
+  // Every answer updates the participants row, so each participants UPDATE
+  // event is also one "answered" tick — the live counter below replaces the
+  // old 1.5s get_round_progress poll (66 req/s at 100 players).
+  const seenAnsweredRef = useRef<Set<string>>(new Set());
+  const progressSeedRef = useRef(0);
+  const progressQidRef = useRef<string | null>(null);
+  const countAnsweredEvent = useCallback((payload: { old?: { score?: number; streak?: number } | null; new?: { id?: string; score?: number; streak?: number } | null }) => {
+    const pid = payload?.new?.id;
+    if (!pid) return;
+    // Real answers always change score (correct) or streak (wrong resets it);
+    // other participant updates (e.g. profile claims) must not tick the counter.
+    if (payload.new?.score === payload.old?.score && payload.new?.streak === payload.old?.streak) return;
+    seenAnsweredRef.current.add(pid);
+    setProgress((prev) => ({ answered: Math.max(prev.answered, seenAnsweredRef.current.size), total: prev.total }));
+  }, []);
+
   const { status: connStatus, recovered: connRecovered } = useLiveChannel({
     enabled: !!identity,
     name: `play:${sessionId}`,
@@ -246,7 +277,9 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
           (payload) => setSession((prev) => ({ ...(prev as Session), ...(payload.new as Partial<Session>) } as Session))
         )
         .on("postgres_changes", { event: "*", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
-          onParticipantsChanged),
+          onParticipantsChanged)
+        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
+          countAnsweredEvent),
     onResync: loadState,
   });
 
@@ -284,19 +317,31 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentIdx]);
 
-  // Poll progress while in waiting state
+  // Round progress: seed once per question with an authoritative count, then
+  // live-increment via countAnsweredEvent. Re-seeds on reconnect (connStatus
+  // transition) so a dropped connection never leaves a stale counter.
   useEffect(() => {
-    if (!session || session.status !== "active" || !currentQId || revealed || !hasAnswered) return;
-    let cancelled = false;
-    async function tick() {
-      const { data } = await supabase.rpc("get_round_progress", { p_session_id: sessionId, p_question_id: currentQId as string });
-      const row = Array.isArray(data) ? data[0] : data;
-      if (!cancelled && row) setProgress({ answered: row.answered_count, total: row.total_count });
+    if (session?.status !== "active" || !currentQId) return;
+    if (progressQidRef.current !== currentQId) {
+      progressQidRef.current = currentQId;
+      seenAnsweredRef.current = new Set();
+      progressSeedRef.current = 0;
+      setProgress({ answered: 0, total: participants.length });
     }
-    tick();
-    const id = setInterval(tick, 1500);
-    return () => { cancelled = true; clearInterval(id); };
-  }, [sessionId, session?.status, currentQId, revealed, hasAnswered]);
+    let cancelled = false;
+    supabase.rpc("get_round_progress", { p_session_id: sessionId, p_question_id: currentQId }).then(({ data }) => {
+      if (cancelled) return;
+      const row = Array.isArray(data) ? data[0] : data;
+      if (row) {
+        progressSeedRef.current = Number(row.answered_count) || 0;
+        setProgress((prev) => ({
+          answered: Math.max(prev.answered, progressSeedRef.current),
+          total: Number(row.total_count) || prev.total || participants.length,
+        }));
+      }
+    });
+    return () => { cancelled = true; };
+  }, [currentQId, sessionId, session?.status, participants.length, connStatus]);
 
   // When round revealed: fetch result + correct index
   useEffect(() => {
@@ -451,6 +496,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       await handleSubmitFailure(currentQuestion.id, error);
       return;
     }
+    playSound("lock");
     setMyAnswers((prev) => [
       ...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: originalIndex, is_correct: false, points: 0 },
@@ -471,6 +517,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (error || !row?.accepted) {
       await handleSubmitFailure(currentQuestion.id, error); return;
     }
+    playSound("lock");
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: false, points: 0 }]);
   }
@@ -488,6 +535,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (error || !row?.accepted) {
       await handleSubmitFailure(currentQuestion.id, error); return;
     }
+    playSound("lock");
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: false, points: 0 }]);
   }
@@ -505,6 +553,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (error || !row?.accepted) {
       await handleSubmitFailure(currentQuestion.id, error); return;
     }
+    playSound("lock");
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: !!row.is_correct, points: row.points ?? 0 }]);
   }
@@ -522,6 +571,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (error || !row?.accepted) {
       await handleSubmitFailure(currentQuestion.id, error); return;
     }
+    playSound("lock");
     setMyAnswers((prev) => [...prev.filter((a) => a.question_id !== currentQuestion.id),
       { question_id: currentQuestion.id, selected_index: -1, is_correct: !!row.correct_positions && row.correct_positions === currentQuestion.options.length, points: row.points ?? 0 }]);
   }
@@ -554,6 +604,14 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             <span className="sr-only">Score: </span>{me?.score.toLocaleString() ?? 0}
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setSoundOn(toggleSoundMuted())}
+          aria-label={soundOn ? "Mute sounds" : "Unmute sounds"}
+          className="size-10 shrink-0 grid place-items-center border border-border bg-card text-foreground/70 hover:text-volt hover:border-volt/40 transition-colors"
+        >
+          {soundOn ? <Volume2 className="size-4" /> : <VolumeX className="size-4" />}
+        </button>
       </div>
       {session.branding && (
         <div className="px-6 py-2 border-b border-border">
@@ -578,6 +636,8 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             roundNumber={currentIdx + 1}
             totalRounds={orderedQuestionIds.length}
             doublePoints={currentQuestion.double_points}
+            introCountdown={timing.introCountdown}
+            showIntroGo={timing.showIntroGo}
           />
         )}
 
@@ -726,6 +786,12 @@ function QuestionView({
   const elapsedMs = Math.max(0, totalMs - remainingMs);
   const { stage: stageIdx, stages: revealStages, blurPx } = liveRevealBlur(elapsedMs, totalMs, question.reveal_stages);
 
+  // Instant tactile + audio feedback the moment a player commits their answer.
+  const tapFeedback = () => {
+    haptic(15);
+    playSound("select");
+  };
+
   return (
     <div className="space-y-6 animate-float">
       <div className="flex items-center justify-between">
@@ -788,7 +854,7 @@ function QuestionView({
           </p>
           <button
             disabled={!pin}
-            onClick={() => pin && onSubmitGeo(pin.lat, pin.lng)}
+            onClick={() => { tapFeedback(); if (pin) onSubmitGeo(pin.lat, pin.lng); }}
             className="w-full bg-volt text-background font-display text-xl py-3 skew-cta disabled:opacity-30 disabled:cursor-not-allowed"
           >
             LOCK IN PIN
@@ -798,7 +864,7 @@ function QuestionView({
         <div className="space-y-4 bg-card border border-border p-5">
           <NumberGuess min={nMin} max={nMax} value={num} onChange={setNum} format={getNumberFormat(question.options)} />
           <button
-            onClick={() => onSubmitNumber(num)}
+            onClick={() => { tapFeedback(); onSubmitNumber(num); }}
             className="w-full bg-volt text-background font-display text-xl py-3 skew-cta"
           >
             LOCK IN {formatNumber(num, getNumberFormat(question.options))}
@@ -810,6 +876,7 @@ function QuestionView({
           onSubmit={(e) => {
             e.preventDefault();
             if (submittedText || timedOut || !typed.trim()) return;
+            tapFeedback();
             setSubmittedText(true);
             onSubmitText(typed);
           }}
@@ -849,7 +916,7 @@ function QuestionView({
           <button
             type="button"
             disabled={orderingSubmitted || timedOut}
-            onClick={() => { if (orderingSubmitted || timedOut) return; setOrderingSubmitted(true); onSubmitOrdering(orderItems.map((it) => it.orig)); }}
+            onClick={() => { if (orderingSubmitted || timedOut) return; tapFeedback(); setOrderingSubmitted(true); onSubmitOrdering(orderItems.map((it) => it.orig)); }}
             className="w-full bg-volt text-background font-display text-xl py-3 skew-cta disabled:opacity-30 disabled:cursor-not-allowed"
           >
             LOCK IN ORDER
@@ -857,11 +924,11 @@ function QuestionView({
         </div>
       ) : isTrueFalse ? (
         <div className="grid grid-cols-2 gap-3">
-          <button onClick={() => onAnswer(0)}
+          <button onClick={() => { tapFeedback(); onAnswer(0); }}
             className="p-6 border-2 border-volt/40 bg-volt/5 hover:bg-volt/15 active:scale-[0.98] transition-all">
             <p className="font-display text-3xl italic text-volt">TRUE</p>
           </button>
-          <button onClick={() => onAnswer(1)}
+          <button onClick={() => { tapFeedback(); onAnswer(1); }}
             className="p-6 border-2 border-pink-shock/40 bg-pink-shock/5 hover:bg-pink-shock/15 active:scale-[0.98] transition-all">
             <p className="font-display text-3xl italic text-pink-shock">FALSE</p>
           </button>
@@ -872,7 +939,7 @@ function QuestionView({
             const color = COLORS[displayIdx % COLORS.length];
             const letter = ["A", "B", "C", "D", "E", "F"][displayIdx];
             return (
-              <button key={originalIdx} onClick={() => onAnswer(originalIdx)}
+              <button key={originalIdx} onClick={() => { tapFeedback(); onAnswer(originalIdx); }}
                 className="w-full p-4 border border-border bg-card text-left flex items-center gap-4 transition-all hover:border-volt active:scale-[0.98]">
                 <div className={`size-8 grid place-items-center text-xs font-bold shrink-0 bg-${color}/20 text-${color}`}>{letter}</div>
                 <span className="font-medium">{question.options[originalIdx]}</span>
@@ -901,7 +968,7 @@ function WaitingView({ answered, total, remainingSec, roundNumber, totalRounds }
         <span className="font-mono text-[10px] uppercase tracking-widest text-volt">Answer submitted</span>
       </div>
       <h2 className="font-display text-4xl italic uppercase leading-none">
-        Waiting for<br /><span className="text-volt">other players</span>
+        Locked in.<br /><span className="text-volt">Waiting…</span>
       </h2>
       <div className="space-y-2">
         <div className="h-2 bg-border relative overflow-hidden">
@@ -957,6 +1024,24 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
   const onPodium = myCurrentRank >= 1 && myCurrentRank <= 3;
   const aheadOfMe = myCurrentRank > 1 ? participants[myCurrentRank - 2] : null;
   const gapToAhead = aheadOfMe && me ? aheadOfMe.score - me.score : 0;
+
+  // One-shot payoff feedback per round (this view remounts each round).
+  const playedRoundRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (playedRoundRef.current === question.id) return;
+    playedRoundRef.current = question.id;
+    if (question.question_type === "feedback") {
+      playSound("reveal");
+    } else if (correct) {
+      playSound("correct");
+      haptic([30, 40, 60]);
+    } else if (result.answered) {
+      playSound("wrong");
+      haptic(60);
+    } else {
+      playSound("reveal");
+    }
+  }, [question.id, correct, result.answered, question.question_type]);
 
   const isMap = question.question_type === "map_pin";
   const isNum = question.question_type === "number";
@@ -1017,7 +1102,7 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
       </div>
 
       {/* Result card */}
-      <div role="status" aria-live="polite" className={`border-2 ${correct ? "border-volt bg-volt/5" : "border-pink-shock/60 bg-pink-shock/5"} p-6 text-center space-y-3`}>
+      <div role="status" aria-live="polite" className={`border-2 ${correct ? "border-volt bg-volt/5 animate-burst" : "border-pink-shock/60 bg-pink-shock/5 animate-wrong"} p-6 text-center space-y-3`}>
         <p className={`font-display text-5xl italic ${correct ? "text-volt" : "text-pink-shock"}`}>
           {!result.answered ? "✗ NO ANSWER" : correct ? "✓ CORRECT" : (isMap || isNum || isOrdering) ? "◐ CLOSE" : "✗ INCORRECT"}
         </p>
@@ -1097,6 +1182,12 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
             <p className="font-display text-2xl italic text-volt">{result.total_score.toLocaleString()}</p>
           </div>
         </div>
+
+        {correct && me && me.streak >= 2 && (
+          <p className="font-mono text-[10px] uppercase tracking-widest text-amber-spark pt-2">
+            🔥 ×{(1 + Math.min(me.streak - 1, 5) * 0.1).toFixed(1)} streak bonus
+          </p>
+        )}
       </div>
 
 
@@ -1112,6 +1203,9 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
                 <p className="text-xl">{medal}</p>
                 <PlayerAvatar avatarId={p.avatar_id} seed={p.id} size={40} className="mx-auto my-1" />
                 <p className="font-bold text-sm truncate">{p.nickname}</p>
+                {p.id === myId && (
+                  <p className="font-mono text-[8px] uppercase tracking-widest text-volt">you</p>
+                )}
                 <p className="font-mono text-xs text-foreground/60">{p.score.toLocaleString()}</p>
                 <RankDelta nowRank={i + 1} prevRank={prevRanks.get(p.id)} />
               </div>
@@ -1126,6 +1220,9 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
                 <span className="font-mono text-xs text-foreground/40 w-6">{String(rank).padStart(2, "0")}</span>
                 <PlayerAvatar avatarId={p.avatar_id} seed={p.id} size={20} />
                 <span className="font-medium text-sm grow truncate">{p.nickname}</span>
+                {p.id === myId && (
+                  <span className="font-mono text-[8px] uppercase tracking-widest text-volt shrink-0">you</span>
+                )}
                 <RankDelta nowRank={rank} prevRank={prevRanks.get(p.id)} inline />
                 <span className="font-display text-sm italic">{p.score.toLocaleString()}</span>
               </div>
@@ -1195,6 +1292,15 @@ function FinalView({
   const [claiming, setClaiming] = useState(false);
   const [busy, setBusy] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
+
+  // Celebration moment — one fanfare per final screen mount.
+  const fanfarePlayedRef = useRef(false);
+  useEffect(() => {
+    if (fanfarePlayedRef.current) return;
+    fanfarePlayedRef.current = true;
+    playSound("fanfare");
+    if (myRank <= 3) haptic([40, 60, 80]);
+  }, [myRank]);
   const podium = participants.slice(0, 3);
   const ordered = orderedIds.map((id) => questions.find((q) => q.id === id)).filter(Boolean) as Question[];
   const ansByQ = new Map(myAnswers.map((a) => [a.question_id, a]));
@@ -1243,10 +1349,12 @@ function FinalView({
 
   return (
     <div className="space-y-6 animate-float">
-      <div className="text-center">
-        <p className="font-mono text-xs uppercase tracking-widest text-foreground/60">Final standings</p>
-        <h2 className="font-display text-5xl italic uppercase mt-2">GG WP</h2>
-      </div>
+      <div className="relative overflow-hidden">
+        <Confetti loop={false} className="opacity-60" />
+        <div className="text-center">
+          <p className="font-mono text-xs uppercase tracking-widest text-foreground/60">Final standings</p>
+          <h2 className="font-display text-5xl italic uppercase mt-2">GG WP</h2>
+        </div>
 
       {isGuest ? (
         <button
@@ -1300,6 +1408,9 @@ function FinalView({
               <span className={`font-display text-2xl italic text-${accent} w-8 text-left`}>0{i + 1}</span>
               <PlayerAvatar avatarId={p.avatar_id} seed={p.id} size={32} />
               <span className="font-bold grow text-left truncate">{p.nickname}</span>
+              {p.id === myId && (
+                <span className="font-mono text-[9px] uppercase tracking-widest text-volt shrink-0">you</span>
+              )}
               <span className="font-display text-lg italic">{p.score.toLocaleString()}</span>
             </div>
           );
@@ -1325,6 +1436,7 @@ function FinalView({
           <SummaryStat label="Correct" value={`${correctCount}/${scored.length}`} />
           <SummaryStat label="Streak" value={String(longestStreak)} />
         </div>
+      </div>
       </div>
 
       {/* Share card — inline, mobile-first, ~92vw */}

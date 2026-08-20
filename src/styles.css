@@ -102,6 +102,10 @@
   60% { transform: translateX(-4px); }
   80% { transform: translateX(4px); }
 }
+@keyframes scale-in {
+  from { transform: scale(0.8); opacity: 0; }
+  to   { transform: scale(1); opacity: 1; }
+}
 
 @utility animate-join { animation: join-pulse 2s infinite ease-in-out; }
 @utility animate-float { animation: float-up 0.5s cubic-bezier(0.32, 0.72, 0, 1) both; }

@@ -1,4 +1,6 @@
+import { useEffect } from "react";
 import { getQuestionMeta } from "@/lib/question-meta";
+import { playSound, haptic } from "@/lib/sound";
 
 type Props = {
   questionType: string;
@@ -10,6 +12,10 @@ type Props = {
   doublePoints?: boolean;
   playersReady?: number;
   playersTotal?: number;
+  /** Server-timeline countdown (seconds left in the intro window). */
+  introCountdown?: number;
+  /** True during the final ~350ms — render GO. */
+  showIntroGo?: boolean;
 };
 
 const ACCENT_VAR: Record<string, string> = {
@@ -29,9 +35,24 @@ export function QuestionIntro({
   doublePoints,
   playersReady,
   playersTotal,
+  introCountdown,
+  showIntroGo,
 }: Props) {
   const meta = getQuestionMeta(questionType);
   const clampedProgress = Math.max(0, Math.min(1, progress));
+
+  // Game-show tick on the last three countdown numerals (player variant only).
+  useEffect(() => {
+    if (variant !== "player") return;
+    if (showIntroGo) {
+      playSound("go");
+      return;
+    }
+    if (introCountdown !== undefined && introCountdown >= 1 && introCountdown <= 3) {
+      playSound("tick");
+      haptic(10);
+    }
+  }, [variant, introCountdown, showIntroGo]);
 
   const color = ACCENT_VAR[meta.accent] ?? "var(--volt)";
   const tint = `color-mix(in oklab, ${color} 12%, transparent)`;
@@ -92,12 +113,21 @@ export function QuestionIntro({
       )}
 
       {variant === "player" && (
-        <p
-          className="mt-8 font-display text-3xl sm:text-4xl uppercase italic animate-pulse"
-          style={{ color }}
-        >
-          Get Ready...
-        </p>
+        <div className="mt-8 text-center" aria-live="polite">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/60 mb-2">
+            Get ready
+          </p>
+          <p
+            key={showIntroGo ? "go" : `n-${introCountdown}`}
+            className="font-display text-8xl sm:text-9xl italic leading-none"
+            style={{
+              color: showIntroGo ? "var(--volt)" : color,
+              animation: "scale-in 250ms cubic-bezier(0.32,0.72,0,1) both",
+            }}
+          >
+            {showIntroGo ? "GO" : introCountdown ?? "..."}
+          </p>
+        </div>
       )}
 
       <div className="absolute bottom-0 left-0 h-1 bg-border w-full">
