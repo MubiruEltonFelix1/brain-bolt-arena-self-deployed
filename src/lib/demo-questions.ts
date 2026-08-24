@@ -1,6 +1,9 @@
 // Static, self-contained dataset for the Training Arena demo.
 // No backend, no persistence — edit freely to change the demo experience.
 
+import type { GeoRegion } from "@/lib/question-registry";
+import { KENYA_LABEL, KENYA_REGION } from "@/lib/geo/kenya-demo";
+
 export type DemoQuestion =
   | {
       type: "mcq";
@@ -48,6 +51,9 @@ export type DemoQuestion =
       prompt: string;
       correct: { lat: number; lng: number };
       toleranceKm?: number;
+      /** Accepted region polygon — any click inside scores full marks. */
+      region?: GeoRegion;
+      regionLabel?: string;
       timeLimitMs?: number;
       doublePoints?: boolean;
     }
@@ -105,9 +111,18 @@ export const DEMO_QUESTIONS: DemoQuestion[] = [
     type: "map_pin",
     prompt: "Drop a pin on Tokyo, Japan",
     correct: { lat: 35.6762, lng: 139.6503 },
-    toleranceKm: 400,
+    toleranceKm: 1000,
     timeLimitMs: 20000,
     doublePoints: true,
+  },
+  {
+    type: "map_pin",
+    prompt: "M-Pesa was founded in which country? Tap anywhere inside it.",
+    correct: KENYA_LABEL,
+    toleranceKm: 300,
+    region: KENYA_REGION,
+    regionLabel: "Kenya",
+    timeLimitMs: 20000,
   },
   {
     type: "number",
@@ -126,6 +141,3 @@ export const DEMO_QUESTIONS: DemoQuestion[] = [
     timeLimitMs: 12000,
   },
 ];
-
-// Geo distance lives in the shared question registry.
-export { haversineKm } from "./question-registry";

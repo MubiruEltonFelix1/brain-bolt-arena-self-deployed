@@ -117,11 +117,11 @@ List, inspect, update, archive, question management, idempotency. All tools impl
 
 Create (draft) → configure → schedule → inspect → cancel, on the existing Competition engine. All tools implemented in `mcp/src/competition.ts`, gated through `can(...)` (`competition.create` / `competition.manage`), idempotent via the shared key table, structured failure envelopes, Session boundary enforced (scheduling hands off to the existing pg_cron tick — MCP never touches sessions).
 
-#### 8D — MCP League & Results Orchestration ⬜ PLANNED
+#### 8D — MCP League, Results & Multi-Step Orchestration ✅ COMPLETE
 
-AI can connect:
+AI can connect: Quiz → Competition → League → Results → Standings.
 
-Quiz → Competition → League → Results → Standings.
+League discovery/inspection (`list_leagues`, `get_league`), authoritative standings via the app's existing `get_league_standings` database function (service-role wrappers `mcp_league_standings` / `mcp_league_overview`, no points logic recreated in MCP), permanent-result inspection (`get_competition_results`, `get_player_league_history`), safe league mutations (`attach_competition_to_league`, `detach_competition_from_league` — draft/scheduled only, idempotent) and the first bounded workflow (`orchestrate_competition_workflow`: create → attach → schedule / create → schedule) with per-step derived idempotency keys, preflight validation and explicit partial-failure reporting. All gated through `can(...)` (league reads: owner-or-public, matching the app's `can_view_league`); session boundary unchanged — MCP never touches sessions.
 
 #### 8E — Brain Bolt AI Foundation ⬜ PLANNED
 

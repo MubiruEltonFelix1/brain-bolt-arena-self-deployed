@@ -23,6 +23,10 @@ const TYPE_REFERENCE = `TYPE REFERENCE (exact JSON field requirements):
            optionally "format" ("general"|"year"|"decimal"|"percentage"|"currency"),
            optionally "unit".
 - map_pin — "lat" (-90..90), "lng" (-180..180), optionally "maxDistanceKm" (default 5000).
+           For "which country/region" questions, add "region" (a GeoJSON Polygon/MultiPolygon
+           of the accepted area, coordinates [lng, lat]) + "regionLabel" (the country name,
+           e.g. "Kenya"): any click inside the region scores full marks. Prefer country
+           questions for map_pin over city-pin questions when the topic fits.
 - type — "acceptedAnswers": [>= 1 accepted phrasings].
 - feedback — NO answer fields at all; an opinion question with no correct answer.
 - ordering — "items": [2-8 strings in CORRECT order, first = position 1].
@@ -55,6 +59,7 @@ const FEW_SHOT = `EXAMPLE (correct output shape):
     { "type": "ordering", "text": "Arrange these planets from closest to the Sun to farthest", "items": ["Mercury", "Venus", "Earth", "Mars"] },
     { "type": "type", "text": "Which fruit keeps the doctor away?", "acceptedAnswers": ["apple", "an apple", "apples"] },
     { "type": "map_pin", "text": "Drop a pin on Tokyo, Japan", "lat": 35.6762, "lng": 139.6503, "maxDistanceKm": 400 },
+    { "type": "map_pin", "text": "M-Pesa was founded in which country? Tap anywhere inside it.", "lat": 0.947, "lng": 38.237, "maxDistanceKm": 300, "region": { "type": "Polygon", "coordinates": [[[33.904, -0.95], [34.005, 4.25], [39.855, 3.839], [41.855, 3.919], [40.638, -2.5], [39.202, -4.677], [33.904, -0.95]]] }, "regionLabel": "Kenya" },
     { "type": "feedback", "text": "What did you enjoy most about this quiz?" }
   ]
 }`;

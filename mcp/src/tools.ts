@@ -53,6 +53,28 @@ import {
 } from "./competition";
 import { createSupabaseClient, saveQuiz } from "./supabase";
 import { formatIssues, MEDIA_URL_POLICY, validateQuiz } from "./validate";
+import {
+  attachCompetitionToLeague,
+  detachCompetitionFromLeague,
+  getCompetitionResults,
+  getLeague,
+  getLeagueStandings,
+  getPlayerLeagueHistory,
+  LEAGUE_STATUSES,
+  LEAGUE_VISIBILITIES,
+  listLeagueCompetitions,
+  listLeagues,
+  toLeagueEnvelope,
+  type LeagueStatus,
+  type LeagueVisibility,
+} from "./league";
+import {
+  orchestrateCompetitionWorkflow,
+  toOrchestrationEnvelope,
+  WORKFLOWS,
+  type OrchestrationPlan,
+  type WorkflowId,
+} from "./orchestrate";
 
 const QUESTION_TYPE_TUPLE = QUESTION_TYPES as [QuestionTypeId, ...QuestionTypeId[]];
 
@@ -262,10 +284,73 @@ export function registerTools(server: McpServer, config: AppConfig): void {
             terminal: "completed competitions cannot be cancelled; cancelling an already-cancelled competition is a no-op",
           },
           errorContract: {
-            rule: "competition tools return { ok:false, action, error:{code,message} } as normal results (unlike the 8B quiz tools, which throw)",
-            codes: ["unauthorized", "not-found", "validation", "conflict", "unknown"],
+            rule: "competition tools return { ok:false, action, error:{code,message} } as normal results (unlike the 8B quiz tools, which throw); league and orchestration tools use the same envelope style",
+            codes: ["unauthorized", "not-found", "validation", "conflict", "unknown", "dependency-failed", "partial-failure"],
+            orchestration: "orchestrate_competition_workflow adds phase:\"preflight\" on { ok:false } envelopes (nothing was mutated) and status:\"completed\"|\"partial\" on { ok:true } envelopes (per-step outcomes inside steps[]); partial-failure is the status of a workflow whose later step failed after earlier steps succeeded",
             sanitization: "messages never contain SQL, stack traces, service-role details or table names",
           },
+        },
+        leagues: {
+          tools: [
+            "list_leagues",
+            "get_league",
+            "get_league_standings",
+            "list_league_competitions",
+            "attach_competition_to_league",
+            "detach_competition_from_league",
+          ],
+          statuses: [...LEAGUE_STATUSES],
+          visibilities: [...LEAGUE_VISIBILITIES],
+          filters: {
+            list: "search (name substring), archived (true/false), visibility, status, ownerOnly (owned leagues only), limit",
+            owner: "every league read resolves the acting principal — the base scope is owned OR public, exactly like the app's can_view_league",
+          },
+          authorization: {
+            read: "can(principal, 'league.manage', id) OR league.visibility='public' — matches the app's can_view_league; the app's admin view-all branch is deliberately excluded (the agent never sees more than the acting principal)",
+            attachDetach: "the acting principal must own the competition (can(principal,'competition.manage',id), owner AND host) AND the league (can(principal,'league.manage',league)); league must not be archived; competition must be draft or scheduled — completed competitions are locked so their results cannot retroactively enter a league's standings",
+            ownerResolution: "owner_principal_id always comes from the resolved actor — an agent can never assign an arbitrary owner",
+          },
+          standings: {
+            source: "get_league_standings delegates to the app's existing database function get_league_standings(league_id) via the service-role wrapper mcp_league_standings — no points logic is recreated in MCP, the database remains the source of truth, tie-break order is preserved",
+            scope: "owners can read standings for their own private/unlisted leagues; anyone can read public-league standings",
+            noStandingsTable: "no standings table is created or written — the computation is live",
+          },
+          attachDetach: {
+            idempotent: "attaching an already-attached competition (same league) and detaching an unattached one are harmless no-ops with a warning; attach/detach accept idempotencyKey (24h replay)",
+            lifecycle: "only draft/scheduled competitions can be attached or detached; lobby_open/running/completed/cancelled are protected",
+          },
+          noCreate: "there is no create_league tool in this phase — league creation stays app-side; MCP mutates leagues only through competition attachment",
+        },
+        results: {
+          tools: ["get_competition_results", "get_player_league_history"],
+          source: "permanent results are read from the app's competition_results store (written by the existing engine at competition end) — no second result store is created",
+          rules: {
+            completedOnly: "get_competition_results requires a completed competition (permanent results exist only after completion)",
+            gate: "competition results are gated on can(principal,'competition.manage',competition) — the owner+host; a non-owner can never read another owner's competition results",
+            history: "get_player_league_history answers 'how has this player performed in this league' from permanent results; cumulative points/rank come from the authoritative standings function; the player themselves may read their own history",
+            noAnswerData: "result rows expose rank, score, accuracy, completion and context only — never answer keys or per-question data",
+          },
+        },
+        orchestration: {
+          tool: "orchestrate_competition_workflow",
+          workflows: {
+            create_attach_schedule: ["create_competition", "attach_competition_to_league", "schedule_competition"],
+            create_schedule: ["create_competition", "schedule_competition"],
+          },
+          contract: {
+            bounded: "the tool executes ONE explicit declarative plan supplied by the caller — no loops, no self-modifying plans, no autonomous retrying, no Session control; step sequences are fixed and validated before anything is written",
+            preflight: "the complete plan is validated before any mutation (workflow shape, actor capability, quiz and league existence/ownership, future start, mode 'scheduled'); preflight failures return { ok:false, phase:\"preflight\", error } with nothing mutated",
+            steps: "steps run in deterministic order using the existing competition/league tools internally; each step reports { step, tool, status, result|error }",
+            failure: "the first failed step stops the workflow; the response reports exactly which steps succeeded and which failed (status:\"partial\") — nothing is auto-compensated and no business objects are deleted to hide a partial failure",
+            dependencyFailed: "a step failing with not-found on a resource created by an earlier step of the same run is reported as dependency-failed",
+          },
+          idempotency: {
+            required: "idempotencyKey is REQUIRED — the workflow must be retry-safe",
+            derivedStepKeys: "each step claims a derived key (<workflowKey>#<n>:<tool>) through the same mcp_idempotency_keys mechanism as every other write tool (24h TTL)",
+            retry: "a retry with the same key + identical payload replays the completed steps (same competitionId — no duplicate competitions, attachments or schedules) and re-executes only the failed step",
+            payloadMismatch: "reusing a key with a different payload is rejected with code conflict — never reuse a key for a new request",
+          },
+          noSessions: "orchestration never reads or writes sessions — the schedule step only configures the competition business object; the existing autonomous scheduler opens the lobby",
         },
         ownerRequirements: {
           ownerIdRequired:
@@ -979,6 +1064,398 @@ export function registerTools(server: McpServer, config: AppConfig): void {
         cancelCompetition(client, {
           actorId: args.actorId ?? config.defaultOwnerId ?? "",
           competitionId: args.competitionId,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  /* ------------------------------------------------------------------ */
+  /* Phase 8D league, results & orchestration tools                      */
+  /* ------------------------------------------------------------------ */
+
+  const LEAGUE_STATUS = z.enum([...LEAGUE_STATUSES] as [LeagueStatus, ...LeagueStatus[]]);
+  const LEAGUE_VISIBILITY = z.enum([
+    ...LEAGUE_VISIBILITIES,
+  ] as [LeagueVisibility, ...LeagueVisibility[]]);
+
+  /** Wraps a league call so failures become structured envelopes. */
+  async function leagueResult(
+    action: string,
+    run: () => Promise<unknown>,
+  ): Promise<ReturnType<typeof text>> {
+    try {
+      return text(await run());
+    } catch (err) {
+      return text(toLeagueEnvelope(action, err));
+    }
+  }
+
+  /** Wraps an orchestration call: preflight failures become structured
+   * phase:"preflight" envelopes; partial/completed envelopes pass through. */
+  async function orchestrateResult(
+    action: string,
+    run: () => Promise<unknown>,
+  ): Promise<ReturnType<typeof text>> {
+    try {
+      return text(await run());
+    } catch (err) {
+      return text(toOrchestrationEnvelope(action, err));
+    }
+  }
+
+  server.registerTool(
+    "list_leagues",
+    {
+      title: "List leagues",
+      description:
+        "Lists compact metadata for leagues the acting principal can legitimately inspect: leagues it owns " +
+        "plus public leagues (the app's can_view_league rule). Filters: name search, archived/unarchived, " +
+        "visibility, status, ownerOnly (owned leagues only), limit. Compact metadata only — no standings.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        search: z.string().optional().describe("Literal substring match on the league name"),
+        archived: z
+          .boolean()
+          .optional()
+          .describe("true = archived only, false = not archived, omitted = both"),
+        visibility: LEAGUE_VISIBILITY.optional(),
+        status: LEAGUE_STATUS.optional(),
+        ownerOnly: z
+          .boolean()
+          .default(false)
+          .describe("true restricts the result to leagues owned by the acting principal"),
+        limit: z.number().int().min(1).max(100).default(50),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("list_leagues");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("list_leagues", async () => {
+        const { items, count } = await listLeagues(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          search: args.search,
+          archived: args.archived,
+          visibility: args.visibility,
+          status: args.status,
+          ownerOnly: args.ownerOnly,
+          limit: args.limit,
+        });
+        return { ok: true, action: "list_leagues", count, items, warnings: [], errors: [] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "get_league",
+    {
+      title: "Get one league",
+      description:
+        "Retrieves one league's metadata, owner, visibility, archived state, scoring configuration " +
+        "(points_first/second/third/participation), season state (status), and a compact overview: participant " +
+        "count, total/completed/upcoming competition counts and the upcoming competitions themselves. No " +
+        "standings — call get_league_standings for those.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        leagueId: z.string().describe("The uuid of the league"),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("get_league");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("get_league", async () => {
+        const { league } = await getLeague(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          leagueId: args.leagueId,
+        });
+        return { ok: true, action: "get_league", id: league.id, league, warnings: [], errors: [] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "get_league_standings",
+    {
+      title: "Get league standings",
+      description:
+        "Returns the league's standings exactly as the app computes them: the database function " +
+        "get_league_standings(league_id) is the source of truth (via the service-role wrapper) — rank, player, " +
+        "league points, competitions played, wins, podiums, cumulative score and average accuracy, in the app's " +
+        "tie-break order. Standings exist for completed league competitions; an empty list means none yet. " +
+        "Access: the acting principal must own the league (host capability) or the league must be public.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        leagueId: z.string().describe("The uuid of the league"),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("get_league_standings");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("get_league_standings", async () => {
+        const { standings, count } = await getLeagueStandings(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          leagueId: args.leagueId,
+        });
+        return { ok: true, action: "get_league_standings", count, standings, warnings: [], errors: [] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "list_league_competitions",
+    {
+      title: "List a league's competitions",
+      description:
+        "Lists the competitions attached to a league: id, title, status, mode, scheduled/completed times, " +
+        "visibility and whether permanent results exist. League owners see every attached competition; " +
+        "non-owners of a public league see only public competitions in the app-visible statuses. Never exposes " +
+        "session runtime internals.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        leagueId: z.string().describe("The uuid of the league"),
+        status: COMPETITION_STATUS.optional(),
+        limit: z.number().int().min(1).max(100).default(50),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("list_league_competitions");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("list_league_competitions", async () => {
+        const { items, count } = await listLeagueCompetitions(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          leagueId: args.leagueId,
+          status: args.status,
+          limit: args.limit,
+        });
+        return { ok: true, action: "list_league_competitions", count, items, warnings: [], errors: [] };
+      });
+    },
+  );
+
+  server.registerTool(
+    "get_competition_results",
+    {
+      title: "Get a competition's permanent results",
+      description:
+        "Returns the authorized permanent results of a COMPLETED competition, in final-rank order: player, rank, " +
+        "score, total participants, accuracy and completion time. Results come from the app's permanent " +
+        "competition_results store — never from live sessions, and never answer data. Only the competition's " +
+        "owner (host capability) can read results; non-completed competitions have none.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the competition (must be completed)"),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("get_competition_results");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("get_competition_results", async () => {
+        const r = await getCompetitionResults(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
+        });
+        return {
+          ok: true,
+          action: "get_competition_results",
+          competitionId: r.competitionId,
+          competitionTitle: r.competitionTitle,
+          quizTitle: r.quizTitle,
+          status: r.status,
+          count: r.count,
+          items: r.items,
+          warnings: r.warnings,
+          errors: [],
+        };
+      });
+    },
+  );
+
+  server.registerTool(
+    "get_player_league_history",
+    {
+      title: "Get a player's league history",
+      description:
+        "Answers 'how has this player performed in this league?' from permanent results: each completed " +
+        "competition they entered (rank, score, accuracy, completion) plus their cumulative league points and " +
+        "overall rank from the authoritative standings computation. Access: the league owner, readers of a " +
+        "public league, or the player themselves (their own results only — cumulative points/rank are then " +
+        "omitted for private leagues they do not own).",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        leagueId: z.string().describe("The uuid of the league"),
+        profileId: z.string().describe("The uuid of the player (auth user / profile id) to look up"),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("get_player_league_history");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("get_player_league_history", async () => {
+        const r = await getPlayerLeagueHistory(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          leagueId: args.leagueId,
+          profileId: args.profileId,
+        });
+        return {
+          ok: true,
+          action: "get_player_league_history",
+          leagueId: r.leagueId,
+          profileId: r.profileId,
+          displayName: r.displayName,
+          competitionsEntered: r.competitionsEntered,
+          leaguePoints: r.leaguePoints,
+          overallRank: r.overallRank,
+          items: r.items,
+          warnings: [],
+          errors: [],
+        };
+      });
+    },
+  );
+
+  server.registerTool(
+    "attach_competition_to_league",
+    {
+      title: "Attach a competition to a league",
+      description:
+        "Attaches a draft/scheduled competition owned by the acting principal to a league the acting principal " +
+        "owns (the league must not be archived). Idempotent: attaching an already-attached competition to the " +
+        "same league is a no-op with a warning. Completed/lobby_open/running competitions are protected — " +
+        "attaching a completed competition would retroactively change the league's standings.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the draft/scheduled competition"),
+        leagueId: z.string().describe("The uuid of the league owned by the acting principal"),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("attach_competition_to_league");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("attach_competition_to_league", () =>
+        attachCompetitionToLeague(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
+          leagueId: args.leagueId,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "detach_competition_from_league",
+    {
+      title: "Detach a competition from its league",
+      description:
+        "Removes a draft/scheduled competition (owned by the acting principal) from its league. Idempotent: " +
+        "detaching an unattached competition is a no-op with a warning. Completed/lobby_open/running " +
+        "competitions are protected — detaching a completed competition would retroactively remove its results " +
+        "from the league's standings.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        competitionId: z.string().describe("The uuid of the draft/scheduled competition"),
+        idempotencyKey: IDEMPOTENCY_KEY,
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("detach_competition_from_league");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return leagueResult("detach_competition_from_league", () =>
+        detachCompetitionFromLeague(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          competitionId: args.competitionId,
+          idempotencyKey: args.idempotencyKey,
+        }),
+      );
+    },
+  );
+
+  server.registerTool(
+    "orchestrate_competition_workflow",
+    {
+      title: "Run a bounded competition workflow",
+      description:
+        "Executes ONE explicit, declarative workflow in deterministic order, using the existing competition " +
+        "tools internally. Supported workflows: create_attach_schedule (create competition → attach to league → " +
+        "schedule) and create_schedule (create → schedule). The complete plan is validated BEFORE any mutation " +
+        "(preflight); live-state gates (archived flags, statuses) are re-checked by each step. If a step fails, " +
+        "the workflow stops and reports exactly which steps succeeded (status:'partial') — nothing is " +
+        "auto-compensated. idempotencyKey is REQUIRED: each step claims a derived key, so a retry with the same " +
+        "key + identical payload replays completed steps (no duplicate competitions/attachments/schedules) and " +
+        "re-runs only the failed step. Never touches sessions — the schedule step hands off to the existing " +
+        "autonomous scheduler. This is a bounded one-shot tool — no loops, no autonomous behavior.",
+      inputSchema: {
+        actorId: ACTOR_ID,
+        workflow: z
+          .enum(Object.keys(WORKFLOWS) as [WorkflowId, ...WorkflowId[]])
+          .describe("create_attach_schedule | create_schedule"),
+        plan: z
+          .object({
+            quizId: z.string().describe("The uuid of the quiz the competition runs — must be owned by the actor"),
+            title: z.string().min(1).describe("Competition title"),
+            mode: COMPETITION_MODE.describe(
+              "must be 'scheduled' — both supported workflows end in the schedule step, and the autonomous scheduler opens mode 'scheduled' competitions only",
+            ),
+            visibility: COMPETITION_VISIBILITY.describe(
+              "private | unlisted | public — explicit; MCP never defaults visibility",
+            ),
+            scheduledStartAt: z.string().describe("ISO-8601 start time — must be in the future"),
+            lobbyDurationSeconds: z
+              .number()
+              .int()
+              .min(30)
+              .max(3600)
+              .optional()
+              .describe("Lobby duration (30-3600s, default 300)"),
+            description: z.string().nullable().optional(),
+            brandingProfileId: z.string().nullable().optional(),
+            maxParticipants: z.number().int().min(1).nullable().optional(),
+            leagueId: z
+              .string()
+              .optional()
+              .describe("Required when workflow is create_attach_schedule — a league owned by the actor"),
+          })
+          .describe("The declarative plan — all create fields, plus leagueId for attach workflows"),
+        idempotencyKey: z
+          .string()
+          .min(1)
+          .max(200)
+          .describe(
+            "REQUIRED — any stable string identifying this logical workflow. A retry with the same key and " +
+              "identical payload replays completed steps instead of duplicating them. Never reuse a key with a " +
+              "different payload.",
+          ),
+      },
+    },
+    async (args) => {
+      if (!config.supabase) {
+        supabaseGateError("orchestrate_competition_workflow");
+      }
+      const client = createSupabaseClient(config.supabase);
+      return orchestrateResult("orchestrate_competition_workflow", () =>
+        orchestrateCompetitionWorkflow(client, {
+          actorId: args.actorId ?? config.defaultOwnerId ?? "",
+          workflow: args.workflow,
+          // The zod schema accepts the full mode enum so a non-'scheduled'
+          // plan reaches preflight and produces the structured envelope
+          // (phase:"preflight", nothing mutated) instead of a raw schema error.
+          plan: args.plan as OrchestrationPlan,
           idempotencyKey: args.idempotencyKey,
         }),
       );

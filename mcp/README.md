@@ -8,7 +8,9 @@ An [MCP](https://modelcontextprotocol.io) server that connects Brain Bolt Arena 
 - `save_quiz` — writes a generated quiz straight into the app's Supabase database (opt-in).
 - `get_capabilities` — returns the supported question types, limits, media URL policy, CSV template, lifecycle tools, ownership rules and idempotency requirements.
 - **Lifecycle (Phase 8B)** — `list_quizzes`, `get_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions`: inspect, update and safely manage existing quizzes.
-- **Competitions (Phase 8C)** — `list_competitions`, `get_competition`, `create_competition`, `update_competition`, `schedule_competition`, `cancel_competition`: create, configure, schedule, inspect and cancel competitions on the existing Brain Bolt Competition engine. No competition/league orchestration yet.
+- **Competitions (Phase 8C)** — `list_competitions`, `get_competition`, `create_competition`, `update_competition`, `schedule_competition`, `cancel_competition`: create, configure, schedule, inspect and cancel competitions on the existing Brain Bolt Competition engine.
+- **Leagues & results (Phase 8D)** — `list_leagues`, `get_league`, `get_league_standings` (live computation via the app's own database function through a service-role wrapper), `list_league_competitions`, `get_competition_results`, `get_player_league_history`, `attach_competition_to_league`, `detach_competition_from_league`: read leagues/standings/results and manage competition-league attachments. No `create_league` — league creation stays app-side.
+- **Orchestration (Phase 8D)** — `orchestrate_competition_workflow` (workflows `create_attach_schedule` / `create_schedule`): one bounded, declarative, idempotency-keyed plan executed in deterministic steps via the existing competition/league tools. Preflight validates everything before any mutation; a failed step stops the workflow with `status:"partial"` and nothing is auto-compensated.
 
 It runs locally as a stdio server. **Bwat is the only client connected to it for now** — exercised through the SDK test client in this repo (`bun run smoke`).
 

@@ -20,7 +20,7 @@ import { ShareCardPreview, downloadShareCard, shareShareCard, type ShareResultDa
 import { BrandBanner } from "@/components/BrandBanner";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { useCoalescedCallback } from "@/hooks/use-coalesced-callback";
-import { liveRevealBlur } from "@/lib/question-registry";
+import { liveRevealBlur, type GeoRegion } from "@/lib/question-registry";
 import { playSound, haptic, isSoundMuted, toggleSoundMuted, unlockAudio } from "@/lib/sound";
 import { Confetti } from "@/components/Confetti";
 import { Volume2, VolumeX } from "lucide-react";
@@ -129,7 +129,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [myAnswers, setMyAnswers] = useState<MyAnswer[]>([]);
   const [progress, setProgress] = useState<{ answered: number; total: number }>({ answered: 0, total: 0 });
-  const [roundResult, setRoundResult] = useState<{ answered: boolean; selected_index: number | null; is_correct: boolean; points: number; correct_index: number; total_score: number; answer_value?: any; correct_lat?: number | null; correct_lng?: number | null; correct_number?: number | null; correct_text?: string | null; text_submission?: string | null } | null>(null);
+  const [roundResult, setRoundResult] = useState<{ answered: boolean; selected_index: number | null; is_correct: boolean; points: number; correct_index: number; total_score: number; answer_value?: any; correct_lat?: number | null; correct_lng?: number | null; correct_number?: number | null; correct_text?: string | null; text_submission?: string | null; geo_region?: GeoRegion | null; geo_region_label?: string | null } | null>(null);
   const answeredQuestionId = useRef<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [soundOn, setSoundOn] = useState(() => !isSoundMuted());
@@ -355,7 +355,11 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       if (error) return;
       const row = Array.isArray(data) ? data[0] : data;
       if (row) {
-        setRoundResult(row);
+        setRoundResult({
+          ...row,
+          geo_region: row.geo_region != null ? (row.geo_region as unknown as GeoRegion) : null,
+          geo_region_label: row.geo_region_label ?? null,
+        });
         setQuestions((prev) => prev.map((q) => q.id === currentQId ? { ...q, correct_index: row.correct_index } : q));
       }
     })();
@@ -1009,7 +1013,7 @@ function RevealLoadingView({ roundNumber, totalRounds, label = "Revealing answer
 
 function RoundRevealView({ question, result, roundNumber, totalRounds, participants, prevRanks, myId }: {
   question: Question;
-  result: { answered: boolean; selected_index: number | null; is_correct: boolean; points: number; correct_index: number; total_score: number; answer_value?: any; correct_lat?: number | null; correct_lng?: number | null; correct_number?: number | null; correct_text?: string | null; text_submission?: string | null };
+  result: { answered: boolean; selected_index: number | null; is_correct: boolean; points: number; correct_index: number; total_score: number; answer_value?: any; correct_lat?: number | null; correct_lng?: number | null; correct_number?: number | null; correct_text?: string | null; text_submission?: string | null; geo_region?: GeoRegion | null; geo_region_label?: string | null };
   roundNumber: number;
   totalRounds: number;
   participants: Participant[];
@@ -1079,9 +1083,11 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
 
   let correctAnswerLabel: React.ReactNode = "—";
   if (isMap) {
-    correctAnswerLabel = result.correct_lat != null
-      ? `${Number(result.correct_lat).toFixed(3)}, ${Number(result.correct_lng).toFixed(3)}`
-      : "—";
+    correctAnswerLabel =
+      result.geo_region_label ??
+      (result.correct_lat != null
+        ? `${Number(result.correct_lat).toFixed(3)}, ${Number(result.correct_lng).toFixed(3)}`
+        : "—");
   } else if (isNum) {
     correctAnswerLabel = result.correct_number != null ? formatNumber(Number(result.correct_number), getNumberFormat(question.options)) : "—";
   } else if (isType) {
@@ -1109,7 +1115,16 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
         <div className="border-t border-border/40 pt-3 space-y-1">
           <p className="font-mono text-[10px] uppercase text-foreground/60">Correct answer</p>
           <p className="font-bold text-lg">{correctAnswerLabel}</p>
-          {isMap && av?.distance_km != null && (
+          {isMap && av?.distance_km != null && result.geo_region_label != null && (
+            <p className="font-mono text-xs text-foreground/60">
+              {av.inside_region ? (
+                <>Your pin was inside <span className="text-volt">{result.geo_region_label}</span></>
+              ) : (
+                <>Your pin was <span className="text-volt">{Number(av.border_distance_km ?? av.distance_km).toFixed(0)} km</span> outside {result.geo_region_label}</>
+              )}
+            </p>
+          )}
+          {isMap && av?.distance_km != null && result.geo_region_label == null && (
             <p className="font-mono text-xs text-foreground/60">Your pin was <span className="text-volt">{Number(av.distance_km).toFixed(0)} km</span> away</p>
           )}
           {isNum && av?.diff != null && (
@@ -1117,18 +1132,23 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
           )}
         </div>
 
-        {isMap && result.correct_lat != null && result.correct_lng != null && (
+        {isMap && (result.geo_region != null || (result.correct_lat != null && result.correct_lng != null)) && (
           <div className="pt-2">
             <MapPicker
               height={260}
               disabled
               guess={av && av.lat != null ? { lat: Number(av.lat), lng: Number(av.lng) } : null}
-              correct={{ lat: Number(result.correct_lat), lng: Number(result.correct_lng) }}
-              center={[Number(result.correct_lat), Number(result.correct_lng)]}
+              correct={result.correct_lat != null && result.correct_lng != null ? { lat: Number(result.correct_lat), lng: Number(result.correct_lng) } : null}
+              region={result.geo_region ?? null}
+              center={result.correct_lat != null && result.correct_lng != null ? [Number(result.correct_lat), Number(result.correct_lng)] : undefined}
               zoom={3}
             />
             <div className="flex justify-center gap-4 pt-2 font-mono text-[10px] uppercase text-foreground/60">
-              <span className="flex items-center gap-1"><span className="size-2 bg-volt inline-block rounded-full" /> Correct</span>
+              {result.geo_region != null ? (
+                <span className="flex items-center gap-1"><span className="size-2 bg-volt inline-block" /> {result.geo_region_label ?? "Region"}</span>
+              ) : (
+                <span className="flex items-center gap-1"><span className="size-2 bg-volt inline-block rounded-full" /> Correct</span>
+              )}
               {av && av.lat != null && <span className="flex items-center gap-1"><span className="size-2 bg-cyan-jolt inline-block rounded-full" /> Your pin</span>}
             </div>
           </div>

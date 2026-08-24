@@ -1,12 +1,12 @@
 # Brain Bolt MCP Architecture
 
-**Phase 8B — MCP Quiz Lifecycle & Idempotency. Phase 8C — MCP Competition Lifecycle & Scheduling.**
+**Phase 8B — MCP Quiz Lifecycle & Idempotency. Phase 8C — MCP Competition Lifecycle & Scheduling. Phase 8D — MCP League, Results & Multi-Step Orchestration.**
 
-This document describes the MCP server (`mcp/`) as of Phase 8C: its trust
-boundary, how it acts as an authorized Brain Bolt principal, the quiz and
-competition lifecycle toolset, the idempotency model, the safe error contract,
-the ownership model, the Competition/Session boundary, current limitations, and
-the roadmap toward League/Results orchestration.
+This document describes the MCP server (`mcp/`) as of Phase 8D: its trust
+boundary, how it acts as an authorized Brain Bolt principal, the quiz,
+competition and league/result toolset, the idempotency model, the bounded
+orchestration model, the safe error contract, the ownership model, the
+Competition/Session boundary, current limitations, and the roadmap.
 
 Companion documents: [ARCHITECTURE_CONSTITUTION.md](ARCHITECTURE_CONSTITUTION.md),
 [PRINCIPAL_MODEL.md](PRINCIPAL_MODEL.md), [CAPABILITY_MODEL.md](CAPABILITY_MODEL.md),
@@ -22,7 +22,7 @@ thing:
 
 | Surface | What it is | Where it lives |
 | ------- | ---------- | -------------- |
-| **MCP Tool** | A local stdio server that lets an LLM/agent call **Brain Bolt operations** through a small, validated tool surface (`generate_quiz`, `save_quiz`, the Phase 8B lifecycle tools). It is a *client of Brain Bolt*, acting as an authorized principal. | `mcp/` |
+| **MCP Tool** | A local stdio server that lets an LLM/agent call **Brain Bolt operations** through a small, validated tool surface (`generate_quiz`, `save_quiz`, the Phase 8B lifecycle tools, the Phase 8C competition tools, the Phase 8D league/result/orchestration tools). It is a *client of Brain Bolt*, acting as an authorized principal. | `mcp/` |
 | **Brain Bolt AI** | The future native AI service layer: model gateway, prompt management, usage tracking, AI credits, cost controls, assistants. It does not exist yet (Phase 8E, PLANNED). | — |
 | **Brain Bolt API** | The application's server surface (TanStack Start server functions, Supabase RLS + SECURITY DEFINER RPCs) that the web app, the MCP server, and eventually Brain Bolt AI all go through. Authorization is Postgres-side (`public.can(...)`, RLS). | `src/`, `supabase/migrations/` |
 
@@ -88,12 +88,20 @@ SELECT public.can(p_principal, p_action, p_resource)
 | `list_quizzes`, `get_quiz`, `update_quiz`, `archive_quiz`, `add_questions`, `update_question`, `remove_question`, `reorder_questions` | `can(principal, 'quiz.edit', quizId)` — the principal must **own** the quiz (`owner_principal_id`) **and** hold the host capability |
 | `create_competition` | `can(principal, 'competition.create')` — the host capability |
 | `list_competitions`, `get_competition`, `update_competition`, `schedule_competition`, `cancel_competition` | `can(principal, 'competition.manage', competitionId)` — the principal must **own** the competition (`owner_principal_id`) **and** hold the host capability |
+| `list_leagues`, `get_league`, `get_league_standings`, `list_league_competitions`, `get_player_league_history` (non-self) | `can(principal, 'league.manage', leagueId)` **or** `league.visibility = 'public'` — the app's `can_view_league` rule (see Section 7) |
+| `attach_competition_to_league`, `detach_competition_from_league` | `can(principal, 'competition.manage', competitionId)` **and** `can(principal, 'league.manage', leagueId)` — ownership of both resources, plus host capability |
+| `get_competition_results` | `can(principal, 'competition.manage', competitionId)` — the owner+host of the completed competition |
+| `orchestrate_competition_workflow` | `can(principal, 'competition.create')` for the plan, plus the per-step gates of the underlying tools (each step re-validates ownership of its resources) |
 
 The Phase 7L `can()` rules apply verbatim:
 
 - Admin implies host, but **ownership is explicit and separate from role**: an
   admin who does not own a quiz cannot edit it, and an admin who does not own a
-  competition cannot manage it.
+  competition cannot manage it. The same applies to leagues: **an admin who
+  owns nothing cannot read a private league through MCP** — the app's
+  `can_view_league` has an `is_admin()` view-all branch, which the MCP surface
+  deliberately omits (read-safety tightening: the agent never sees more than
+  the acting principal).
 - `quiz.delete` exists in the resolver but **no MCP tool uses it** — archiving
   is the only quiz removal path, and `cancel_competition` the only competition
   retirement path (Sections 5 and 6).
@@ -105,7 +113,9 @@ The Phase 7L `can()` rules apply verbatim:
 The failure mode is intentional: `assertCan` fetches the quiz first, so an
 unauthorized or non-existent resource reports "quiz does not exist" only when it
 truly does not exist, and a precise authorization error otherwise — never a
-generic denial that leaks which quizzes exist.
+generic denial that leaks which quizzes exist. The league tools follow the same
+pattern (`assertLeagueVisible` fetches the league first, so the failure mode is
+"league does not exist" rather than a generic denial).
 
 ## 5. Quiz lifecycle tools
 
@@ -204,7 +214,10 @@ Both must belong to the acting principal (leagues additionally must not be
 archived) — the same rule the app's form applies. MCP copies no branding
 data, uploads no assets, changes no ownership, and computes no standings or
 points. Competition completion flows into the existing
-`competition_results`/standings machinery unchanged.
+`competition_results`/standings machinery unchanged. Since Phase 8D the
+league link is also managed by the dedicated `attach_competition_to_league`
+and `detach_competition_from_league` tools (Section 7) instead of only the
+`update_competition` patch field.
 
 ### Public vs private visibility
 
@@ -225,9 +238,158 @@ competitions, no repeated side effects. Competition failures return
 `{ ok:false, action, error:{code,message} }` as **normal results** (unlike
 the 8B quiz tools, which throw) with codes
 `unauthorized | not-found | validation | conflict | unknown` — see
-Section 9.
+Section 11.
 
-## 7. Idempotency model
+## 7. League & results tools (Phase 8D)
+
+The league tools read the **League business object** and its permanent
+results, and mutate only the competition↔league link. The Session boundary
+from Section 6 applies unchanged: `session_id` appears in projections only as
+a value on the competition/result rows the app already exposes — the
+`sessions` table itself is never queried, and no session runtime internals are
+ever read.
+
+### League-read authorization
+
+Every league read applies the app's own `can_view_league` rule:
+
+```text
+can(principal, 'league.manage', leagueId)  OR  league.visibility = 'public'
+```
+
+- The acting principal must **own** the league (and hold the host capability
+  — admins do not bypass ownership) OR the league must be public.
+- **The app's `is_admin()` view-all branch is deliberately excluded.** An
+  admin who owns nothing cannot read a private league through MCP — the agent
+  must never see more than the corresponding Brain Bolt principal.
+- `list_leagues` returns owned **plus** public leagues by default; the
+  `ownerOnly` filter restricts it to owned leagues.
+
+| Tool | Behavior |
+| ---- | -------- |
+| `list_leagues` | Compact metadata for leagues the actor can legitimately inspect: id, name, description, season, status, visibility, owner principal, archived state, competition count, timestamps. Filters: `search` (name substring), `archived` (true/false/omitted), `visibility`, `status`, `ownerOnly`, `limit` (1–100). No standings. |
+| `get_league` | Full league metadata + owner principal + visibility + archived state + **scoring configuration** (`pointsFirst/Second/Third/Participation`) + season state (status) + compact overview: participant count, total/completed/upcoming competition counts (via the existing `get_league_overview` computation) + the upcoming competitions themselves (`{id,title,status,scheduledStartAt}` — never session ids). No standings — call `get_league_standings`. |
+| `get_league_standings` | The **authoritative standings**: the app's existing `get_league_standings(league_id)` database function is the only computation — no points logic is recreated in TypeScript, no standings table is created or written. Returns rank, profile, display name, avatar, league points, competitions played, wins, podiums, cumulative score, average accuracy, in the app's exact tie-break order (points → wins → podiums → total score → average accuracy → display name). |
+| `list_league_competitions` | The competitions attached to a league: id, title, status, mode, scheduled/completed times, visibility, and whether permanent results exist (`hasResults`). League owners see every attached competition; a non-owner of a public league sees only public competitions in the app-visible statuses (scheduled/lobby_open/running/completed). |
+| `get_competition_results` | Permanent results of a **completed** competition, in final-rank order, from the app's `competition_results` store (written by the existing engine at competition end): player, rank, score, total participants, accuracy, completion time. Gated on `can(principal,'competition.manage',competition)` — only the owner+host. **Never answer data** — result rows carry no per-question information. Non-completed competitions have no results (`conflict`). |
+| `get_player_league_history` | "How has this player performed in this league?" — per-competition entries from permanent results (competition, completion time, rank, score, accuracy) plus cumulative `leaguePoints`/`overallRank` read from the authoritative standings computation (never recomputed). Access: the league owner, a reader of a public league, or the player themselves (own results only — cumulative aggregates are omitted for private leagues the player does not own). |
+| `attach_competition_to_league` | Attaches a **draft/scheduled** competition owned by the actor to a league owned by the actor (league must not be archived). Idempotent: attaching to the same league again is a no-op with a warning. Completed/lobby_open/running competitions are protected — attaching a completed competition would retroactively inject its results into the league's standings. |
+| `detach_competition_from_league` | Removes a draft/scheduled competition from its league. Idempotent: detaching an unattached competition is a no-op with a warning. Completed competitions are protected — detaching one would retroactively remove its results from the standings. |
+
+### Standings delegation — the service-role wrappers
+
+The app's `get_league_standings` / `get_league_overview` are gated by
+`can_view_league`, which reads `auth.uid()` / `is_admin()` from the request
+JWT. The MCP server connects with the service role, which carries no JWT
+principal, so the originals only pass for public leagues. Phase 8D adds two
+service-role-only wrapper functions (`mcp_league_standings`,
+`mcp_league_overview` in `supabase/migrations/20260818090000_...sql`) that:
+
+1. take an **explicit principal** and enforce the same owner-or-public rule
+   above (via `can(principal, 'league.manage', league)` or the visibility
+   flag — checked **before** anything else);
+2. impersonate that principal for the duration of the call with
+   transaction-scoped `set_config('request.jwt.claims', ...)` /
+   `set_config('request.jwt.claim.sub', ...)` so the originals' JWT-based
+   gate passes for private leagues the principal owns (PostgREST runs each
+   RPC in its own transaction, so the claim never leaks to other calls);
+3. delegate to the existing functions — **no standings/points logic is
+   duplicated anywhere**.
+
+Security is preserved: the wrappers are `SECURITY DEFINER` with
+`EXECUTE` granted to `service_role` only, and the authorization gate runs
+before any impersonation, so a rejected caller never reaches it and an admin
+without ownership still cannot read a private league (the impersonated role
+is `authenticated`, so `is_admin()` resolves from the user's real roles —
+the app's exact semantics).
+
+### League mutation scope
+
+MCP mutates leagues **only** through competition attachment. There is no
+`create_league`, no roster management, no registration, no payouts, no best-N
+scoring, no playoffs, no season-advance tool — those remain app-side / future
+League work. Both mutation tools accept `idempotencyKey` (same
+`mcp_idempotency_keys` mechanism, 24h TTL).
+
+## 8. Orchestration (Phase 8D)
+
+`orchestrate_competition_workflow` is the first controlled multi-step Brain
+Bolt workflow. It executes **one bounded, explicit, declarative plan** —
+never an instruction stream, never a loop, never a self-modifying plan,
+never a background agent, never Session control.
+
+### Workflow contract
+
+| Workflow | Step sequence |
+| -------- | ------------- |
+| `create_attach_schedule` | `create_competition` → `attach_competition_to_league` → `schedule_competition` |
+| `create_schedule` | `create_competition` → `schedule_competition` |
+
+The plan is a flat object (quiz, title, mode `scheduled`, explicit
+visibility, future `scheduledStartAt`, optional lobby/branding/participant
+fields, `leagueId` when the workflow includes the attach step). The
+competition is always created **without** a league; the attach step owns the
+league link, so every step is independently retryable.
+
+### Preflight vs execution vs partial completion
+
+- **Preflight** validates the complete plan *before anything is mutated*:
+  workflow shape, required fields per workflow, a non-empty `idempotencyKey`
+  (required — the workflow must be retry-safe), the acting principal, the
+  `competition.create` capability, quiz existence/ownership, league
+  existence/ownership (attach workflows), a future start and `mode =
+  'scheduled'`. Preflight failures return
+  `{ ok:false, phase:"preflight", error:{code,message} }` with **nothing
+  written**.
+- **Execution** runs the steps in deterministic order, calling the existing
+  operation functions internally. Live-state gates (archived flags, statuses)
+  are deliberately NOT preflighted — each step re-checks them, because they
+  can change between preflight and execution. A step failure stops the
+  workflow immediately.
+- **Partial completion** is reported explicitly — never hidden, never
+  auto-compensated:
+
+```jsonc
+{
+  "ok": true,
+  "action": "orchestrate_competition_workflow",
+  "status": "partial",
+  "steps": [
+    { "step": 1, "tool": "create_competition", "status": "success", "result": { "competitionId": "...", "status": "draft", "warnings": [] } },
+    { "step": 2, "tool": "attach_competition_to_league", "status": "failed", "error": { "code": "validation", "message": "..." } }
+  ],
+  "competitionId": "...",
+  "failedStep": { "step": 2, "tool": "attach_competition_to_league", "error": { "code": "validation", "message": "..." } }
+}
+```
+
+No business objects are deleted to hide a partial failure. A step failing
+with `not-found` on a resource created by an earlier step of the **same run**
+is reported as `dependency-failed`. All steps succeeded →
+`{ "ok": true, "status": "completed", ... }`.
+
+### Orchestration idempotency
+
+`idempotencyKey` is **required**. Each step claims a **derived** key
+(`<workflowKey>#<n>:<tool>`) through the same `mcp_idempotency_keys`
+mechanism as every other write tool:
+
+- A retry with the same key + identical payload **replays the completed
+  steps** (step 1 replays the same competitionId, so step 2's payload —
+  derived from step 1's output — hashes identically) and **re-executes only
+  the failed step**. No duplicate competitions, no duplicate attachments, no
+  duplicate schedules.
+- Reusing a key with a **different payload** is rejected with `conflict`.
+- The orchestration entry point itself is not wrapped — only steps carry
+  keys, which is what makes resume-after-partial-failure possible.
+
+### Session boundary
+
+The schedule step only configures the competition business object
+(`status='scheduled'` + future start). The existing autonomous scheduler
+opens the lobby and creates the session — MCP never does.
+
+## 9. Idempotency model
 
 **Mechanism.** A unique claim row in `mcp_idempotency_keys` (migration
 `20260817060000_3f7c9d21-...sql`), claimed with a single INSERT. The claim lives
@@ -262,9 +424,13 @@ unreachable by `anon`/`authenticated`).
 
 **Coverage.** All write tools accept `idempotencyKey`: `save_quiz`,
 `update_quiz`, `archive_quiz`, `add_questions`, `update_question`,
-`remove_question`, `reorder_questions`.
+`remove_question`, `reorder_questions`, `create_competition`,
+`update_competition`, `schedule_competition`, `cancel_competition`,
+`attach_competition_to_league`, `detach_competition_from_league`, and
+`orchestrate_competition_workflow` (where it is **required**, with derived
+per-step keys — Section 8).
 
-## 8. Ownership model
+## 10. Ownership model
 
 - **Principal owns Quiz.** `quizzes.owner_principal_id` is authoritative
   (Phase 7L). The legacy `owner_id` mirror is maintained by bidirectional DB
@@ -272,6 +438,10 @@ unreachable by `anon`/`authenticated`).
 - **Principal owns Competition.** `competitions.owner_principal_id` is
   authoritative the same way; `create_competition` always derives the owner
   from the resolved actor.
+- **Principal owns League.** `leagues.owner_principal_id` is authoritative the
+  same way; league reads gate on it via `can(principal,'league.manage',id)`,
+  and attach/detach require the actor to own **both** the competition and the
+  league.
 - **Profile is not ownership.** Ownership lives on `principals`, not profiles.
 - **Question inherits ownership from Quiz.** Questions carry `quiz_id`; every
   question operation first verifies the question belongs to the supplied quiz
@@ -287,7 +457,7 @@ unreachable by `anon`/`authenticated`).
   generically, so an organization principal would flow through the same
   `can()` gate.
 
-## 9. Safe error contract
+## 11. Safe error contract
 
 Every operation returns a **structured envelope**:
 
@@ -296,13 +466,33 @@ Every operation returns a **structured envelope**:
 { "ok": true, "action": "update_quiz", "id": "...", "changed": { "title": true }, "warnings": [], "errors": [], "replayed": false }
 // failure (thrown; surfaced by the MCP transport as an error result — 8B quiz tools)
 { "ok": false, "action": "update_quiz", "error": { "code": "unauthorized", "message": "...", "field": null } }
-// failure (returned as a NORMAL result — 8C competition tools)
+// failure (returned as a NORMAL result — 8C/8D tools)
 { "ok": false, "action": "schedule_competition", "error": { "code": "validation", "message": "..." } }
+// preflight failure (returned as a NORMAL result — Phase 8D orchestration)
+{ "ok": false, "action": "orchestrate_competition_workflow", "phase": "preflight", "error": { "code": "validation", "message": "..." } }
 ```
 
-The 8C competition tools return failures as normal structured results with
-codes `unauthorized | not-found | validation | conflict | unknown`; the 8B
-quiz tools keep their throw behavior. Both never leak internals.
+The 8C competition tools and all Phase 8D league/result/orchestration tools
+return failures as normal structured results; the 8B quiz tools keep their
+throw behavior. Both never leak internals.
+
+Error vocabulary (Phase 8D):
+
+- `unauthorized` — the acting principal failed a `can()` gate or ownership
+  check.
+- `not-found` — the resource does not exist (fetched first, so this is never
+  a disguised denial).
+- `validation` — a malformed argument, a past start time, an archived
+  resource, an illegal status transition.
+- `conflict` — the resource is in a state that forbids the operation
+  (e.g. completed competition), or an idempotency key is reused with a
+  different payload / is still pending.
+- `dependency-failed` — an orchestration step failed with not-found on a
+  resource created by an earlier step of the same run.
+- `partial-failure` — the workflow status of a run whose later step failed
+  after earlier steps succeeded (`status:"partial"`, per-step outcomes in
+  `steps[]`).
+- `unknown` — sanitized generic failure.
 
 Error messages are written by the tool layer, never passed through from the
 database: **no SQL errors, stack traces, service-role details, secrets, RPC
@@ -316,13 +506,21 @@ failed call happens through the MCP client's own error output.
 
 Validation failures state exactly what was wrong and that **nothing was
 written** — a failed operation never leaves a partial write behind
-(e.g. `add_questions` validates the whole batch before inserting).
+(e.g. `add_questions` validates the whole batch before inserting). Orchestration
+distinguishes three failure classes explicitly: **preflight failure**
+(`phase:"preflight"`, nothing mutated), **execution failure** (a step failed;
+reported per-step with `status:"partial"`), and **partial completion** (the
+same structured partial result — the workflow never pretends to be atomic when
+it is not).
 
-## 10. Current limitations
+## 12. Current limitations
 
-- **MCP can now manage the Quiz and Competition business lifecycles, but it
-  does not yet orchestrate Leagues, Results/Analytics, or complete multi-step
-  Brain Bolt workflows.**
+- **MCP can now inspect and safely orchestrate Quiz → Competition → League
+  workflows, but it is not yet a general autonomous Brain Bolt agent.** Every
+  operation is a fixed, validated tool call; the orchestration tool executes
+  one bounded, explicit workflow supplied by the caller — no "keep trying
+  until successful", no loops, no self-modifying plans, no scheduled or
+  background agents, no autonomous competition management.
 - No hard delete — archiving is the only quiz removal path and
   `cancel_competition` the only competition retirement path (by design; the
   app's own delete stays app-only).
@@ -335,8 +533,10 @@ written** — a failed operation never leaves a partial write behind
 - No session controls of any kind: MCP cannot open a lobby early, advance
   questions, pause/resume, or manage participants — those stay in the app
   (`prepare_competition_session` RPC and the host screens).
-- No competition delete, no standings/roster/points writes, no league
-  orchestration.
+- No competition delete; no standings/roster/points writes; no league
+  *creation* (a league must exist in the app first); no roster management,
+  registration, payouts, best-N scoring, playoffs or advanced seasons —
+  those remain future League work.
 - Schema gaps, surfaced in `get_capabilities` rather than invented by MCP:
   `quizzes` has no `visibility`, `published`, `category`, `branding` or
   `updated_at` columns — those concepts live on competitions/leagues/sessions.
@@ -346,17 +546,30 @@ written** — a failed operation never leaves a partial write behind
   `time_limit_sec`) and editable through `update_question`.
 - Single default owner (`BRAINBOLT_DEFAULT_OWNER_ID`) for non-actor calls; no
   remote transport, no per-client auth (local stdio is the trust boundary).
+- The service-role wrappers (`mcp_league_standings`, `mcp_league_overview`)
+  depend on the Phase 8D migration being applied — `bun scripts/migrate.mjs`
+  reports them as applied markers.
 
-## 11. Roadmap
+## 13. Roadmap
 
 - **8C — MCP Competition Lifecycle ✅ COMPLETE**: create (draft) → configure →
   schedule (handoff to the existing pg_cron scheduler) → inspect → cancel,
   gated through `competition.create` / `competition.manage`, idempotent via
   the shared key table, session boundary enforced.
-- **8D — MCP League & Results Orchestration** (NEXT): connect Quiz →
-  Competition → League → Results → Standings.
-- **8E+ — Brain Bolt AI foundation**: the native service layer (model gateway,
-  prompts, usage, credits), then the assistant surfaces.
+- **8D — MCP League, Results & Multi-Step Orchestration ✅ COMPLETE**: league
+  discovery/inspection (`list_leagues`, `get_league`), authoritative standings
+  via the existing database computation, permanent-result inspection
+  (`get_competition_results`, `get_player_league_history`), safe league
+  mutations (`attach_competition_to_league`, `detach_competition_from_league`)
+  and the first bounded workflow (`orchestrate_competition_workflow`:
+  create → attach → schedule / create → schedule) with per-step derived
+  idempotency keys and explicit partial-failure reporting.
+- **8E — Brain Bolt AI foundation (NEXT)**: the native in-app AI service
+  layer — model gateway, prompt management, usage tracking, AI credits, cost
+  controls — then richer agent planning on top of the bounded workflow
+  contract.
+- **8F+ — AI Question & Quiz Builder / AI Assistant**: the product surfaces
+  built on 8E.
 
 The lifecycle tools deliberately reuse the Phase 8B patterns — principal
 resolution, `can()` enforcement, structured envelopes, idempotency keys — so

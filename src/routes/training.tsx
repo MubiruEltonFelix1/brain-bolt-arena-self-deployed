@@ -1,6 +1,6 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { DEMO_QUESTIONS, haversineKm, type DemoQuestion } from "@/lib/demo-questions";
+import { DEMO_QUESTIONS, type DemoQuestion } from "@/lib/demo-questions";
 import { computePoints } from "@/lib/game";
 import {
   QuestionRenderer,
@@ -9,7 +9,7 @@ import {
   type SubmittedAnswer,
 } from "@/components/question/QuestionRenderer";
 import { useSoloTimer } from "@/hooks/use-solo-timer";
-import { geoRatio, numberRatio, orderingRatio } from "@/lib/question-registry";
+import { geoCorrectness, numberRatio, orderingRatio } from "@/lib/question-registry";
 import { getQuestionMeta } from "@/lib/question-meta";
 
 export const Route = createFileRoute("/training")({
@@ -219,9 +219,13 @@ function QuestionCard({
       }
       case "geo": {
         if (question.type !== "map_pin") return;
-        const dist = haversineKm(answer, question.correct);
-        const tol = question.toleranceKm ?? 500;
-        return onSubmit(dist <= tol, ms, geoRatio(dist, tol));
+        const correctness = geoCorrectness(answer, {
+          lat: question.correct.lat,
+          lng: question.correct.lng,
+          maxDistanceKm: question.toleranceKm ?? 5000,
+          region: question.region ?? null,
+        });
+        return onSubmit(correctness >= 0.9, ms, correctness);
       }
       case "number": {
         if (question.type !== "number") return;
@@ -312,7 +316,7 @@ function correctAnswerLabel(q: DemoQuestion): string {
     case "ordering":
       return q.items.join(" → ");
     case "map_pin":
-      return `${q.correct.lat.toFixed(2)}, ${q.correct.lng.toFixed(2)}`;
+      return q.regionLabel ?? `${q.correct.lat.toFixed(2)}, ${q.correct.lng.toFixed(2)}`;
     case "number":
       return `${q.correct}${q.unit ? " " + q.unit : ""}`;
   }

@@ -1,4 +1,5 @@
 import { supabase } from "@/integrations/supabase/client";
+import type { GeoRegion } from "@/lib/question-registry";
 
 export type ArenaQuizDetail = {
   id: string;
@@ -31,6 +32,8 @@ export type ArenaQuestion = {
   q_correct_lat: number | null;
   q_correct_lng: number | null;
   q_max_distance_km: number | null;
+  q_geo_region: GeoRegion | null;
+  q_geo_region_label: string | null;
   q_correct_number: number | null;
   q_number_min: number | null;
   q_number_max: number | null;

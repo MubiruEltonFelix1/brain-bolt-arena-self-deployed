@@ -1,7 +1,8 @@
 import { useEffect } from "react";
-import { MapContainer, TileLayer, Marker, useMapEvents, Polyline, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Marker, useMapEvents, Polyline, Polygon, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import type { GeoRegion } from "@/lib/question-registry";
 
 // Fix default marker icons (bundlers strip Leaflet's default image resolution)
 L.Icon.Default.mergeOptions({
@@ -56,16 +57,39 @@ export type MapPickerInnerProps = {
   height?: number;
   guess?: { lat: number; lng: number } | null;
   correct?: { lat: number; lng: number } | null;
+  /** Accepted region polygon (GeoJSON [lng, lat]); rendered as a volt outline. */
+  region?: GeoRegion | null;
   onPick?: (lat: number, lng: number) => void;
   disabled?: boolean;
   center?: [number, number];
   zoom?: number;
 };
 
+function RegionLayer({ region }: { region: GeoRegion }) {
+  const polys = region.type === "Polygon" ? [region.coordinates as number[][][]] : (region.coordinates as number[][][][]);
+  return (
+    <>
+      {polys.map((poly, i) => (
+        <Polygon
+          key={i}
+          positions={poly[0].map(([lng, lat]) => [lat, lng] as [number, number])}
+          pathOptions={{
+            color: "#CCFF00",
+            weight: 1.5,
+            fillColor: "#CCFF00",
+            fillOpacity: 0.12,
+          }}
+        />
+      ))}
+    </>
+  );
+}
+
 export default function MapPickerInner({
   height = 340,
   guess,
   correct,
+  region,
   onPick,
   disabled,
   center = [20, 0],
@@ -90,6 +114,7 @@ export default function MapPickerInner({
 
         <ClickHandler onPick={onPick} disabled={disabled} />
         <MapResizer />
+        {region && <RegionLayer region={region} />}
         {guess && <Marker position={[guess.lat, guess.lng]} icon={guessIcon} />}
         {correct && <Marker position={[correct.lat, correct.lng]} icon={correctIcon} />}
         {guess && correct && (

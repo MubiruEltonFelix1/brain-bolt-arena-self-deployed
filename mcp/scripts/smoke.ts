@@ -6,12 +6,15 @@
 //   lifecycle tools (list_quizzes, get_quiz, update_quiz, archive_quiz,
 //   question management), the Phase 8C competition tools (list_competitions,
 //   get_competition, create_competition, update_competition,
-//   schedule_competition, cancel_competition), plus generate_quiz when an LLM
-//   provider is configured in mcp/.env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
+//   schedule_competition, cancel_competition), the Phase 8D league tools
+//   (list_leagues, get_league, get_league_standings, list_league_competitions,
+//   get_competition_results, get_player_league_history, attach/detach) and
+//   orchestrate_competition_workflow, plus generate_quiz when an LLM provider
+//   is configured in mcp/.env (LLM_BASE_URL / LLM_API_KEY / LLM_MODEL).
 //
-// Discovery is dynamic: the core + lifecycle + competition tool names are
-// asserted against the server's own listTools() so future tools don't break
-// the smoke test.
+// Discovery is dynamic: the core + lifecycle + competition + league +
+// orchestration tool names are asserted against the server's own listTools()
+// so future tools don't break the smoke test.
 //
 // With SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY + BRAINBOLT_DEFAULT_OWNER_ID
 // set, the smoke runs a full lifecycle against the real database:
@@ -88,6 +91,16 @@ const COMPETITION_TOOLS = [
   "schedule_competition",
   "cancel_competition",
 ];
+const LEAGUE_TOOLS = [
+  "list_leagues",
+  "get_league",
+  "get_league_standings",
+  "list_league_competitions",
+  "attach_competition_to_league",
+  "detach_competition_from_league",
+];
+const RESULTS_TOOLS = ["get_competition_results", "get_player_league_history"];
+const ORCHESTRATE_TOOLS = ["orchestrate_competition_workflow"];
 
 let passed = 0;
 let failed = 0;
@@ -152,10 +165,17 @@ async function main() {
   // --- Dynamic tool discovery ---------------------------------------------
   const tools = await client.listTools();
   const names = tools.tools.map((t) => t.name);
-  const required = [...CORE_TOOLS, ...LIFECYCLE_TOOLS, ...COMPETITION_TOOLS];
+  const required = [
+    ...CORE_TOOLS,
+    ...LIFECYCLE_TOOLS,
+    ...COMPETITION_TOOLS,
+    ...LEAGUE_TOOLS,
+    ...RESULTS_TOOLS,
+    ...ORCHESTRATE_TOOLS,
+  ];
   const missing = required.filter((r) => !names.includes(r));
   if (missing.length === 0) {
-    ok(`all ${required.length} core + lifecycle + competition tools registered (${names.length} total)`);
+    ok(`all ${required.length} core + lifecycle + competition + league + orchestration tools registered (${names.length} total)`);
   } else {
     bad(`missing tools: ${missing.join(", ")} — got ${names.join(", ")}`);
   }
@@ -197,6 +217,37 @@ async function main() {
     bad("get_capabilities competitions section", caps.text.slice(0, 400));
   }
 
+  const leaguesOk =
+    capsData.leagues?.tools?.length === LEAGUE_TOOLS.length &&
+    capsData.leagues?.standings?.source?.includes("mcp_league_standings") &&
+    capsData.leagues?.authorization?.read?.includes("can_view_league") &&
+    capsData.leagues?.noCreate?.includes("create_league");
+  if (leaguesOk) {
+    ok("get_capabilities: leagues section (tools + read gate + standings source + no create)");
+  } else {
+    bad("get_capabilities leagues section", caps.text.slice(0, 400));
+  }
+
+  const resultsOk =
+    capsData.results?.tools?.length === RESULTS_TOOLS.length &&
+    capsData.results?.source?.includes("competition_results");
+  if (resultsOk) {
+    ok("get_capabilities: results section (permanent results + player history)");
+  } else {
+    bad("get_capabilities results section", caps.text.slice(0, 400));
+  }
+
+  const orchestrationOk =
+    capsData.orchestration?.tool === "orchestrate_competition_workflow" &&
+    capsData.orchestration?.workflows?.create_attach_schedule?.length === 3 &&
+    capsData.orchestration?.workflows?.create_schedule?.length === 2 &&
+    capsData.orchestration?.idempotency?.required?.includes("REQUIRED") === true;
+  if (orchestrationOk) {
+    ok("get_capabilities: orchestration section (bounded workflows + required idempotency)");
+  } else {
+    bad("get_capabilities orchestration section", caps.text.slice(0, 400));
+  }
+
   // --- validate_quiz ------------------------------------------------------
   const val = await callTool(client, "validate_quiz", { quiz: FIXTURE });
   const valData = JSON.parse(val.text);
@@ -210,8 +261,9 @@ async function main() {
   const csv = await callTool(client, "to_csv", { quiz: FIXTURE });
   const csvData = JSON.parse(csv.text) as { csv: string };
   const lines = csvData.csv.trim().split("\n");
+  const headerCount = lines[0]!.split(",").length;
   if (lines.length === FIXTURE.questions.length + 1 && lines[1]!.startsWith("multiple_choice,")) {
-    ok(`to_csv: ${lines.length - 1} rows, 25-col header, legacy type names`);
+    ok(`to_csv: ${lines.length - 1} rows, ${headerCount}-col header, legacy type names`);
   } else {
     bad("to_csv output", csvData.csv?.slice(0, 200));
   }
@@ -235,18 +287,50 @@ async function main() {
     }
 
     let gatesOk = true;
-    const gatedTools = [...LIFECYCLE_TOOLS, ...COMPETITION_TOOLS];
+    const gatedTools = [
+      ...LIFECYCLE_TOOLS,
+      ...COMPETITION_TOOLS,
+      ...LEAGUE_TOOLS,
+      ...RESULTS_TOOLS,
+      ...ORCHESTRATE_TOOLS,
+    ];
     for (const tool of gatedTools) {
       const zeroUuid = "00000000-0000-0000-0000-000000000000";
       const args: Record<string, unknown> = (() => {
         switch (tool) {
           case "list_quizzes":
           case "list_competitions":
+          case "list_leagues":
             return { actorId: zeroUuid };
           case "get_competition":
           case "schedule_competition":
           case "cancel_competition":
             return { actorId: zeroUuid, competitionId: zeroUuid };
+          case "get_league":
+          case "get_league_standings":
+          case "list_league_competitions":
+            return { actorId: zeroUuid, leagueId: zeroUuid };
+          case "get_competition_results":
+            return { actorId: zeroUuid, competitionId: zeroUuid };
+          case "get_player_league_history":
+            return { actorId: zeroUuid, leagueId: zeroUuid, profileId: zeroUuid };
+          case "attach_competition_to_league":
+            return { actorId: zeroUuid, competitionId: zeroUuid, leagueId: zeroUuid };
+          case "detach_competition_from_league":
+            return { actorId: zeroUuid, competitionId: zeroUuid };
+          case "orchestrate_competition_workflow":
+            return {
+              actorId: zeroUuid,
+              workflow: "create_schedule",
+              plan: {
+                quizId: zeroUuid,
+                title: "x",
+                mode: "scheduled",
+                visibility: "private",
+                scheduledStartAt: new Date(Date.now() + 3600_000).toISOString(),
+              },
+              idempotencyKey: "smoke-gate",
+            };
           case "create_competition":
             return {
               actorId: zeroUuid,
@@ -282,7 +366,7 @@ async function main() {
         bad(`${tool} gate`, res.text.slice(0, 200));
       }
     }
-    if (gatesOk) ok(`all ${gatedTools.length} quiz + competition tools gated without Supabase config`);
+    if (gatesOk) ok(`all ${gatedTools.length} quiz + competition + league + orchestration tools gated without Supabase config`);
   } else if (!ownerId) {
     bad("lifecycle smoke needs BRAINBOLT_DEFAULT_OWNER_ID (a host-capable auth user uuid) when Supabase is configured");
   } else {
@@ -453,6 +537,182 @@ async function main() {
             ok("update_competition: patch applied (title + visibility)");
           } else {
             bad("update_competition", cupd.text.slice(0, 400));
+          }
+
+          // --- league reads + attach/detach + orchestration (Phase 8D) -------
+          // The main competition is still DRAFT here, so attach/detach can be
+          // exercised on it without disturbing the schedule flow below.
+          const llist = await callTool(client, "list_leagues", {
+            actorId: ownerId,
+            ownerOnly: true,
+          });
+          const llistData = JSON.parse(llist.text) as {
+            ok?: boolean;
+            count?: number;
+            items?: Array<{ id: string; archivedAt?: string | null }>;
+          };
+          if (llistData.ok === true && Array.isArray(llistData.items)) {
+            ok(`list_leagues: owner-scoped list (${llistData.count} league(s))`);
+          } else {
+            bad("list_leagues", llist.text.slice(0, 400));
+          }
+
+          const ownedLeague = llistData.items?.find((l) => !l.archivedAt);
+          if (!ownedLeague) {
+            console.log(
+              "ℹ No owned, non-archived league found — skipping league-read + attach + orchestrate live checks " +
+                "(create a league for the owner in the app first).",
+            );
+          } else {
+            const leagueId = ownedLeague.id;
+
+            const gleague = await callTool(client, "get_league", { actorId: ownerId, leagueId });
+            const gleagueData = JSON.parse(gleague.text) as { ok?: boolean; league?: { id?: string } };
+            if (gleagueData.ok === true && gleagueData.league?.id === leagueId) {
+              ok("get_league: metadata + season overview round-tripped");
+            } else {
+              bad("get_league", gleague.text.slice(0, 400));
+            }
+
+            // Standings go through the Phase 8D service-role wrapper — this
+            // fails with a structured error until the 8D migration is applied.
+            const stand = await callTool(client, "get_league_standings", { actorId: ownerId, leagueId });
+            const standData = JSON.parse(stand.text) as { ok?: boolean; count?: number; standings?: unknown[] };
+            if (standData.ok === true && typeof standData.count === "number") {
+              ok(`get_league_standings: live computation via mcp_league_standings (${standData.count} row(s))`);
+            } else {
+              bad("get_league_standings", stand.text.slice(0, 400));
+            }
+
+            const lcomp = await callTool(client, "list_league_competitions", { actorId: ownerId, leagueId });
+            const lcompData = JSON.parse(lcomp.text) as { ok?: boolean; count?: number };
+            if (lcompData.ok === true && typeof lcompData.count === "number") {
+              ok(`list_league_competitions: ${lcompData.count} attached competition(s)`);
+            } else {
+              bad("list_league_competitions", lcomp.text.slice(0, 400));
+            }
+
+            // Self-read: the owner reads their own league history (allowed even
+            // in private leagues); zero entries is a valid outcome.
+            const hist = await callTool(client, "get_player_league_history", {
+              actorId: ownerId,
+              leagueId,
+              profileId: ownerId,
+            });
+            const histData = JSON.parse(hist.text) as { ok?: boolean; competitionsEntered?: number };
+            if (histData.ok === true && typeof histData.competitionsEntered === "number") {
+              ok(`get_player_league_history: ${histData.competitionsEntered} competition(s) on record`);
+            } else {
+              bad("get_player_league_history", hist.text.slice(0, 400));
+            }
+
+            // attach (draft competition) → idempotent replay → detach
+            const attachKey = `smoke-comp-attach-${Date.now()}`;
+            const attach1 = await callTool(client, "attach_competition_to_league", {
+              actorId: ownerId,
+              competitionId,
+              leagueId,
+              idempotencyKey: attachKey,
+            });
+            const attach1Data = JSON.parse(attach1.text) as { ok?: boolean; leagueId?: string | null };
+            if (attach1Data.ok === true && attach1Data.leagueId === leagueId) {
+              ok("attach_competition_to_league: draft competition attached");
+              const attach2 = await callTool(client, "attach_competition_to_league", {
+                actorId: ownerId,
+                competitionId,
+                leagueId,
+                idempotencyKey: attachKey,
+              });
+              const attach2Data = JSON.parse(attach2.text) as { replayed?: boolean };
+              if (!attach2.isError && attach2Data.replayed === true) {
+                ok("attach_competition_to_league: idempotent replay (attached once)");
+              } else {
+                bad("attach_competition_to_league idempotent replay", attach2.text.slice(0, 300));
+              }
+            } else {
+              bad("attach_competition_to_league", attach1.text.slice(0, 400));
+            }
+
+            const detach1 = await callTool(client, "detach_competition_from_league", {
+              actorId: ownerId,
+              competitionId,
+              idempotencyKey: `smoke-comp-detach-${Date.now()}`,
+            });
+            const detach1Data = JSON.parse(detach1.text) as { ok?: boolean; leagueId?: string | null };
+            if (detach1Data.ok === true && detach1Data.leagueId === null) {
+              ok("detach_competition_from_league: competition detached again");
+            } else {
+              bad("detach_competition_from_league", detach1.text.slice(0, 400));
+            }
+
+            // orchestrate create_attach_schedule → verify → replay → detach →
+            // cancel. The orchestrated competition is detached while still
+            // scheduled (detach is protected once cancelled) and then
+            // cancelled, so the league is left exactly as it was.
+            const orchKey = `smoke-orch-${Date.now()}`;
+            const orchArgs = {
+              actorId: ownerId,
+              workflow: "create_attach_schedule" as const,
+              plan: {
+                quizId,
+                title: "MCP Orchestration Smoke",
+                mode: "scheduled" as const,
+                visibility: "unlisted" as const,
+                scheduledStartAt: compStart,
+                leagueId,
+              },
+              idempotencyKey: orchKey,
+            };
+            const orch1 = await callTool(client, "orchestrate_competition_workflow", orchArgs);
+            const orch1Data = JSON.parse(orch1.text) as {
+              ok?: boolean;
+              status?: string;
+              competitionId?: string;
+              steps?: Array<{ step?: number; tool?: string; status?: string }>;
+            };
+            const orchCompetitionId = orch1Data.competitionId;
+            if (
+              orch1Data.ok === true &&
+              orch1Data.status === "completed" &&
+              orch1Data.steps?.length === 3 &&
+              orch1Data.steps.every((s) => s.status === "success") &&
+              orchCompetitionId
+            ) {
+              ok(`orchestrate_competition_workflow: ${orch1Data.steps.length} steps completed (competition ${orchCompetitionId})`);
+              const orch2 = await callTool(client, "orchestrate_competition_workflow", orchArgs);
+              const orch2Data = JSON.parse(orch2.text) as { replayed?: boolean; competitionId?: string };
+              if (!orch2.isError && orch2Data.replayed === true && orch2Data.competitionId === orchCompetitionId) {
+                ok("orchestrate_competition_workflow: idempotent replay returned the same competitionId (no duplicate)");
+              } else {
+                bad("orchestrate idempotent replay", orch2.text.slice(0, 300));
+              }
+
+              const odetach = await callTool(client, "detach_competition_from_league", {
+                actorId: ownerId,
+                competitionId: orchCompetitionId,
+                idempotencyKey: `smoke-orch-detach-${Date.now()}`,
+              });
+              const odetachData = JSON.parse(odetach.text) as { ok?: boolean; leagueId?: string | null };
+              if (odetachData.ok === true && odetachData.leagueId === null) {
+                ok("detach_competition_from_league: orchestrated competition detached (league left untouched)");
+              } else {
+                bad("orchestrated detach", odetach.text.slice(0, 400));
+              }
+
+              const ocancel = await callTool(client, "cancel_competition", {
+                actorId: ownerId,
+                competitionId: orchCompetitionId,
+                idempotencyKey: `smoke-orch-cancel-${Date.now()}`,
+              });
+              const ocancelData = JSON.parse(ocancel.text) as { ok?: boolean; status?: string };
+              if (ocancelData.ok === true && ocancelData.status === "cancelled") {
+                ok("cancel_competition: orchestrated fixture cancelled (left cancelled + detached — safe to remove via the app)");
+              } else {
+                bad("orchestrated cancel", ocancel.text.slice(0, 400));
+              }
+            } else {
+              bad("orchestrate_competition_workflow", orch1.text.slice(0, 400));
+            }
           }
 
           // schedule_competition (handoff to the existing autonomous scheduler)

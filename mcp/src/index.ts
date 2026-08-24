@@ -9,7 +9,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { loadConfig } from "./config";
 import { registerTools } from "./tools";
 
-const VERSION = "0.4.0";
+const VERSION = "0.5.0";
 
 const config = loadConfig();
 
@@ -24,7 +24,7 @@ console.error(
   `[brainbolt-mcp] v${VERSION}` +
     ` | llm=${config.llm ? `${config.llm.model} @ ${config.llm.baseUrl}` : "not configured (set mcp/.env)"}` +
     ` | save_quiz=${config.supabase ? "enabled" : "disabled (JSON/CSV only)"}` +
-    ` | lifecycle=${config.supabase ? "enabled (quiz + competition)" : "disabled"}`,
+    ` | lifecycle=${config.supabase ? "enabled (quiz + competition + league/results + orchestration)" : "disabled"}`,
 );
 
 const transport = new StdioServerTransport();

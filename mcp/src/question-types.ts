@@ -123,7 +123,10 @@ export const QUESTION_TYPE_META: Record<QuestionTypeId, QuestionTypeMeta> = {
     accent: "cyan-jolt",
     scored: true,
     needsMedia: false,
-    csvColumns: "map_latitude, map_longitude, tolerance (km radius, default 5000)",
+    csvColumns:
+      "map_latitude, map_longitude, tolerance (km radius, default 5000), region " +
+      "(country name from the bundled dataset — full marks inside, tolerance " +
+      "becomes the falloff band beyond the border, default 300)",
   },
 };
 
@@ -148,12 +151,12 @@ export function legacyCsvType(type: QuestionTypeId): string {
 }
 
 /**
- * The quiz editor's universal CSV template header — 25 columns
+ * The quiz editor's universal CSV template header — 26 columns
  * (src/routes/quizzes.$id.tsx:43). `option_e`/`option_f` are appended
  * dynamically by the serializer when a choice question has > 4 options
  * (the importer resolves them by header name, src/routes/quizzes.$id.tsx:281).
  */
 export const CSV_HEADER =
-  "question_type,question,option_a,option_b,option_c,option_d,correct_answer,explanation,time_limit,points,image_url,audio_url,map_latitude,map_longitude,map_zoom,numeric_answer,tolerance,answer_format,slider_min,slider_max,accepted_answers,reveal_duration,order_items,match_pairs,double_points";
+  "question_type,question,option_a,option_b,option_c,option_d,correct_answer,explanation,time_limit,points,image_url,audio_url,map_latitude,map_longitude,map_zoom,numeric_answer,tolerance,answer_format,slider_min,slider_max,accepted_answers,reveal_duration,order_items,match_pairs,double_points,region";
 
 export const CSV_EXTRA_OPTIONS_HEADER = ",option_e,option_f";

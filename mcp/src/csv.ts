@@ -60,6 +60,9 @@ function questionToCsvRow(quiz: BrainBoltQuiz, questionIndex: number): Record<st
       row.map_latitude = String(q.lat);
       row.map_longitude = String(q.lng);
       row.tolerance = String(q.maxDistanceKm ?? 5000);
+      // Region label only — the app importer resolves the polygon back from
+      // the bundled country dataset by name (quizzes.$id.tsx CSV `region`).
+      row.region = q.regionLabel ?? "";
       break;
     case "type":
       row.accepted_answers = q.acceptedAnswers.join(";");

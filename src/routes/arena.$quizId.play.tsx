@@ -13,7 +13,7 @@ import {
   type SubmittedAnswer,
 } from "@/components/question/QuestionRenderer";
 import { useSoloTimer } from "@/hooks/use-solo-timer";
-import { geoRatio, haversineKm, numberRatio, orderingRatio } from "@/lib/question-registry";
+import { geoCorrectness, numberRatio, orderingRatio } from "@/lib/question-registry";
 import {
   fetchArenaDetail,
   fetchArenaQuestions,
@@ -458,12 +458,15 @@ function QuestionCard({
         return onSubmit(ratio === 1, ms, ratio, { order: answer.order });
       }
       case "geo": {
-        const dist = haversineKm(answer, {
+        // Preview grading only — the server re-grades the run via
+        // evaluate_question_answer with the same unified formula.
+        const correctness = geoCorrectness(answer, {
           lat: Number(question.q_correct_lat ?? 0),
           lng: Number(question.q_correct_lng ?? 0),
+          maxDistanceKm: Number(question.q_max_distance_km ?? 5000),
+          region: question.q_geo_region ?? null,
         });
-        const tol = Number(question.q_max_distance_km ?? 500);
-        return onSubmit(dist <= tol, ms, geoRatio(dist, tol), { lat: answer.lat, lng: answer.lng });
+        return onSubmit(correctness >= 0.9, ms, correctness, { lat: answer.lat, lng: answer.lng });
       }
       case "number": {
         const diff = Math.abs(answer.value - Number(question.q_correct_number ?? 0));
@@ -525,7 +528,9 @@ function RevealCard({
       answer = options.join(" → ");
       break;
     case "map_pin":
-      answer = `${Number(question.q_correct_lat ?? 0).toFixed(2)}, ${Number(question.q_correct_lng ?? 0).toFixed(2)}`;
+      answer =
+        question.q_geo_region_label ??
+        `${Number(question.q_correct_lat ?? 0).toFixed(2)}, ${Number(question.q_correct_lng ?? 0).toFixed(2)}`;
       break;
     case "number":
       answer = String(question.q_correct_number ?? "—");

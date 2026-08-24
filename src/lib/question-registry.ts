@@ -181,9 +181,119 @@ export function orderingRatio(submitted: string[], correct: string[]) {
   return hits / correct.length;
 }
 
-/** Partial credit for a map pin, relative to the tolerance radius. */
+/* ------------------------------------------------------------------ */
+/* Geo regions (map_pin grading)                                       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A GeoJSON geometry for an accepted map-pin region. Coordinate order is
+ * GeoJSON's **[lng, lat]** — the SQL helpers in
+ * `supabase/migrations/20260820090000_phase_8e_geo_region_grading.sql`
+ * (`geo_point_in_region`, `geo_region_border_km`) read the same convention and
+ * MUST stay behaviorally identical to the TS helpers below.
+ */
+export type GeoRegion = {
+  type: "Polygon" | "MultiPolygon";
+  coordinates: number[][][][] | number[][][];
+};
+
+/** Even-odd ray casting over one ring ([lng, lat] vertices). */
+function pointInRing(lat: number, lng: number, ring: number[][]): boolean {
+  let inside = false;
+  let j = ring.length - 1;
+  for (let k = 0; k < ring.length; k++) {
+    const [lng2, lat2] = ring[k];
+    const [jlng, jlat] = ring[j];
+    if ((lng2 > lng) !== (jlng > lng) && lat < ((jlat - lat2) * (lng - lng2)) / (jlng - lng2) + lat2) {
+      inside = !inside;
+    }
+    j = k;
+  }
+  return inside;
+}
+
+/** True when the point lies inside the region (exterior ring; holes flip to outside). */
+export function pointInRegion(lat: number, lng: number, region: GeoRegion): boolean {
+  const polys = region.type === "Polygon" ? [region.coordinates as number[][][]] : (region.coordinates as number[][][][]);
+  for (const poly of polys) {
+    if (poly.length === 0) continue;
+    if (!pointInRing(lat, lng, poly[0])) continue;
+    let inHole = false;
+    for (let c = 1; c < poly.length; c++) {
+      if (pointInRing(lat, lng, poly[c])) {
+        inHole = true;
+        break;
+      }
+    }
+    if (!inHole) return true;
+  }
+  return false;
+}
+
+/**
+ * Distance from the point to the nearest region border segment. Projects each
+ * ring edge into an equirectangular plane around the click latitude, clamps
+ * the click onto the segment, converts back and takes the haversine — a
+ * faithful point-to-segment distance at these latitudes/scales. Mirrors the
+ * SQL `geo_region_border_km` exactly.
+ */
+export function regionBorderKm(lat: number, lng: number, region: GeoRegion): number {
+  const polys = region.type === "Polygon" ? [region.coordinates as number[][][]] : (region.coordinates as number[][][][]);
+  const cosLat = Math.max(Math.cos((lat * Math.PI) / 180), 1e-6);
+  const px = lng * cosLat;
+  const py = lat;
+  let min = Infinity;
+  for (const poly of polys) {
+    for (const ring of poly) {
+      if (ring.length < 2) continue;
+      let ax = ring[0][0] * cosLat;
+      let ay = ring[0][1];
+      for (let k = 1; k < ring.length; k++) {
+        const bx = ring[k][0] * cosLat;
+        const by = ring[k][1];
+        const dx = bx - ax;
+        const dy = by - ay;
+        let t = 0;
+        const denom = dx * dx + dy * dy;
+        if (denom > 0) {
+          t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / denom));
+        }
+        const cx = ax + t * dx;
+        const cy = ay + t * dy;
+        const d = haversineKm({ lat, lng }, { lat: cy, lng: cx / cosLat });
+        if (d < min) min = d;
+        ax = bx;
+        ay = by;
+      }
+    }
+  }
+  return min;
+}
+
+/**
+ * Unified map-pin correctness (0..1) shared by every surface. Region mode:
+ * inside → 1, outside → falloff by distance to the border. Point mode: linear
+ * falloff from the pin. `correct` everywhere = correctness ≥ 0.9. This is the
+ * single formula the SQL graders (`submit_geo_answer`,
+ * `evaluate_question_answer`) implement too.
+ */
+export function geoCorrectness(
+  point: { lat: number; lng: number },
+  spec: { lat: number | null; lng: number | null; maxDistanceKm: number | null; region?: GeoRegion | null },
+): number {
+  const tol = Math.max(spec.maxDistanceKm ?? 5000, 1);
+  if (spec.region) {
+    if (pointInRegion(point.lat, point.lng, spec.region)) return 1;
+    const borderKm = regionBorderKm(point.lat, point.lng, spec.region);
+    return Math.max(0, 1 - (Number.isFinite(borderKm) ? borderKm : 0) / tol);
+  }
+  const dist = haversineKm(point, { lat: spec.lat ?? 0, lng: spec.lng ?? 0 });
+  return Math.max(0, 1 - dist / tol);
+}
+
+/** Partial credit for a map pin, relative to the tolerance radius (unified formula). */
 export function geoRatio(distanceKm: number, toleranceKm: number) {
-  return Math.max(0, 1 - distanceKm / (Math.max(1, toleranceKm) * 4));
+  return Math.max(0, 1 - distanceKm / Math.max(1, toleranceKm));
 }
 
 /** Partial credit for a numeric guess, relative to the allowed range. */
