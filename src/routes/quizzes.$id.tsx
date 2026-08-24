@@ -5,6 +5,8 @@ import { HostShell } from "@/components/host-shell";
 import { EmptyState } from "@/components/EmptyState";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { MapPicker } from "@/components/MapPicker";
+import type { GeoRegion } from "@/lib/question-registry";
+import type { CountryRegion } from "@/lib/geo/country-regions";
 import {
   toastError,
   safeErrorMessage,
@@ -47,6 +49,7 @@ type Question = {
   question_type: QuestionType;
   image_url: string | null;
   double_points: boolean;
+  is_playable: boolean;
   correct_lat: number | null;
   correct_lng: number | null;
   max_distance_km: number | null;
@@ -57,6 +60,8 @@ type Question = {
   accepted_answers: string[] | null;
   reveal_stages?: number | null;
   audio_url?: string | null;
+  geo_region?: GeoRegion | null;
+  geo_region_label?: string | null;
 };
 
 // Delete an image/audio upload that is no longer referenced by any question
@@ -90,7 +95,7 @@ function removeOrphanedUpload(url: string | null | undefined) {
 // `question_type` and `question`; the importer ignores columns that do not
 // apply to a given row's type. Old templates (question,option_a..d,correct,
 // time,points) continue to import unchanged.
-const CSV_TEMPLATE = `question_type,question,option_a,option_b,option_c,option_d,correct_answer,explanation,time_limit,points,image_url,audio_url,map_latitude,map_longitude,map_zoom,numeric_answer,tolerance,answer_format,slider_min,slider_max,accepted_answers,reveal_duration,order_items,match_pairs,double_points
+const CSV_TEMPLATE = `question_type,question,option_a,option_b,option_c,option_d,correct_answer,explanation,time_limit,points,image_url,audio_url,map_latitude,map_longitude,map_zoom,numeric_answer,tolerance,answer_format,slider_min,slider_max,accepted_answers,reveal_duration,order_items,match_pairs,double_points,region
 multiple_choice,What is 2 + 2?,1,2,3,4,D,Basic arithmetic,20,1000,,,,,,,,,,,,,,,false
 true_false,The sky is blue on a clear day.,,,,,TRUE,,15,1000,,,,,,,,,,,,,,,false
 multiple_choice,Largest planet in our solar system?,Earth,Mars,Jupiter,Venus,Jupiter,Gas giant,25,2000,,,,,,,,,,,,,,,true
@@ -135,8 +140,13 @@ closest_number    numeric_answer (required), tolerance, slider_min,
                   slider_max, answer_format (general | year | decimal |
                   percentage | currency).
 map_pin           map_latitude, map_longitude, tolerance (km radius,
-                  defaults to 5000). map_zoom is accepted but currently
-                  ignored by gameplay.
+                  defaults to 5000). region accepts a country name from the
+                  bundled dataset (e.g. "Kenya") — with a region, any click
+                  inside it scores full marks and tolerance becomes the
+                  falloff band beyond the border (defaults to 300). The
+                  centroid is filled automatically from the region; latitude
+                  and longitude then become optional. map_zoom is accepted
+                  but currently ignored by gameplay.
 image_reveal      option_a..option_d + correct_answer, image_url,
                   reveal_duration (stages, defaults to 5).
 audio             option_a..option_d + correct_answer, audio_url.
@@ -357,6 +367,25 @@ function QuizEditor() {
     }
   }
 
+  async function setAllPlayable(playable: boolean) {
+    const ids = questions.map((q) => q.id);
+    if (ids.length === 0) return;
+    // Roll back only the flag on failure — a whole-snapshot restore would also
+    // revert content edits committed by other cards in the meantime.
+    const previousFlag = new Map(questions.map((q) => [q.id, q.is_playable]));
+    setQuestions((prev) => prev.map((q) => ({ ...q, is_playable: playable })));
+    const { error } = await supabase
+      .from("questions")
+      .update({ is_playable: playable })
+      .in("id", ids);
+    if (error) {
+      toastError(error, { context: playable ? "enable all questions" : "exclude all questions" });
+      setQuestions((prev) =>
+        prev.map((q) => ({ ...q, is_playable: previousFlag.get(q.id) ?? q.is_playable })),
+      );
+    }
+  }
+
   // ---- CSV import ----
   function parseCsvLine(line: string): string[] {
     const out: string[] = [];
@@ -431,6 +460,10 @@ function QuizEditor() {
     }
 
     const errors: string[] = [];
+    // Lazily load the country dataset only when a `region` column is present.
+    const regionLookup = header.includes("region")
+      ? (await import("@/lib/geo/country-regions")).findCountryRegion
+      : null;
     type InsertRow = {
       text: string;
       options: string[];
@@ -450,6 +483,8 @@ function QuizEditor() {
       accepted_answers: string[] | null;
       audio_url: string | null;
       reveal_stages: number | null;
+      geo_region?: GeoRegion | null;
+      geo_region_label?: string | null;
     };
     const toInsert: InsertRow[] = [];
 
@@ -466,7 +501,8 @@ function QuizEditor() {
       let dblRaw = "";
       let latRaw = "",
         lngRaw = "",
-        maxDistRaw = "";
+        maxDistRaw = "",
+        regionRaw = "";
       let numRaw = "",
         numMinRaw = "",
         numMaxRaw = "",
@@ -509,6 +545,7 @@ function QuizEditor() {
         // For map_pin `tolerance` = km radius; for number it's numeric tolerance.
         const genericTol = get("tolerance");
         maxDistRaw = get("max_distance_km") || get("max_km") || "";
+        regionRaw = get("region") || get("country") || "";
         numRaw = get("numeric_answer") || get("correct_number") || get("number") || get("value");
         numMinRaw = get("slider_min") || get("number_min") || get("min");
         numMaxRaw = get("slider_max") || get("number_max") || get("max");
@@ -591,17 +628,35 @@ function QuizEditor() {
           errors.push(`Row ${lineNo}: missing question text`);
           return;
         }
+        // Optional `region` column: a country name/key from the bundled
+        // dataset. When present, any click inside the region scores full marks
+        // and the tolerance becomes the falloff band beyond the border.
+        let regionEntry: CountryRegion | null = null;
+        const regionName = regionRaw.trim();
+        if (regionName) {
+          regionEntry = regionLookup ? regionLookup(regionName) : null;
+          if (!regionEntry) {
+            errors.push(`Row ${lineNo}: unknown region "${regionName}"`);
+            return;
+          }
+        }
         const lat = parseFloat(latRaw),
           lng = parseFloat(lngRaw);
-        if (!isFinite(lat) || lat < -90 || lat > 90) {
+        const hasCoords = isFinite(lat) && isFinite(lng);
+        if (!regionEntry && !hasCoords) {
+          errors.push(`Row ${lineNo}: map_pin needs map_latitude/map_longitude (or a region)`);
+          return;
+        }
+        if (hasCoords && (lat < -90 || lat > 90)) {
           errors.push(`Row ${lineNo}: map_pin needs map_latitude (-90..90)`);
           return;
         }
-        if (!isFinite(lng) || lng < -180 || lng > 180) {
+        if (hasCoords && (lng < -180 || lng > 180)) {
           errors.push(`Row ${lineNo}: map_pin needs map_longitude (-180..180)`);
           return;
         }
-        const maxKm = maxDistRaw ? parseFloat(maxDistRaw) : 5000;
+        const kmDefault = regionEntry ? 300 : 5000;
+        const maxKm = maxDistRaw ? parseFloat(maxDistRaw) : kmDefault;
         toInsert.push({
           text: qtext,
           options: [],
@@ -611,9 +666,11 @@ function QuizEditor() {
           question_type: "map_pin",
           ...base,
           ...emptyExtras,
-          correct_lat: lat,
-          correct_lng: lng,
-          max_distance_km: isFinite(maxKm) ? maxKm : 5000,
+          correct_lat: regionEntry ? regionEntry.label.lat : lat,
+          correct_lng: regionEntry ? regionEntry.label.lng : lng,
+          max_distance_km: isFinite(maxKm) ? maxKm : kmDefault,
+          geo_region: regionEntry ? regionEntry.region : null,
+          geo_region_label: regionEntry ? regionEntry.name : null,
         });
       } else if (qtype === "number") {
         if (!qtext) {
@@ -871,6 +928,10 @@ function QuizEditor() {
     navigate({ to: "/dashboard" });
   }
 
+  // `!== false` (not truthiness) so a row that somehow lacks the flag reads as
+  // included — same default the host console, MCP and the DB column use.
+  const excludedCount = questions.filter((q) => q.is_playable === false).length;
+
   return (
     <HostShell title="Editor">
       <div className="max-w-3xl mx-auto px-6 py-10 space-y-8">
@@ -920,6 +981,12 @@ function QuizEditor() {
           <div className="flex items-end justify-between flex-wrap gap-2">
             <h2 className="font-display text-2xl italic uppercase">
               Questions · {questions.length}
+              {excludedCount > 0 && (
+                <span className="text-foreground/40">
+                  {" "}
+                  · {questions.length - excludedCount} playable
+                </span>
+              )}
             </h2>
             <div className="flex gap-2 flex-wrap">
               <button
@@ -929,6 +996,23 @@ function QuizEditor() {
                 Template
               </button>
               <CsvButton onImport={importCsv} />
+              {questions.length > 0 && (
+                <>
+                  <button
+                    onClick={() => setAllPlayable(true)}
+                    disabled={excludedCount === 0}
+                    className="border border-border px-3 py-2.5 font-mono text-xs uppercase hover:border-volt hover:text-volt disabled:opacity-30 disabled:hover:border-border disabled:hover:text-foreground"
+                  >
+                    Enable all
+                  </button>
+                  <button
+                    onClick={() => setAllPlayable(false)}
+                    className="border border-border px-3 py-2.5 font-mono text-xs uppercase hover:border-pink-shock hover:text-pink-shock"
+                  >
+                    Exclude all
+                  </button>
+                </>
+              )}
               <button
                 onClick={addQuestion}
                 className="bg-volt text-background font-display text-base px-5 py-2.5 skew-cta"
@@ -1039,7 +1123,7 @@ function QuestionEditor({
   onMove: (dir: -1 | 1) => void;
 }) {
   const [local, setLocal] = useState(question);
-  useEffect(() => setLocal(question), [question.id, question.position]);
+  useEffect(() => setLocal(question), [question.id, question.position, question.is_playable]);
 
   function setOption(i: number, val: string) {
     const opts = [...local.options];
@@ -1062,7 +1146,53 @@ function QuestionEditor({
   }
 
   function blurSave() {
-    onChange(local);
+    // Send content edits only. Identity, ordering and playability have their
+    // own writers (add/move/delete, moveQuestion, the play toggle) — resending
+    // the full row here raced the bulk Enable/Exclude buttons: the blur fired
+    // by clicking them could land after the bulk write and silently restore
+    // the old flag while the UI showed the new one.
+    const patch: Partial<Question> = { ...local };
+    delete patch.id;
+    delete patch.position;
+    delete patch.is_playable;
+    onChange(patch);
+  }
+
+  // Country boundaries for region-based map questions — lazy-loaded on first
+  // dropdown focus so the editor bundle stays lean.
+  const [regionOptions, setRegionOptions] = useState<CountryRegion[] | null>(null);
+  async function openRegionOptions() {
+    if (regionOptions) return;
+    const mod = await import("@/lib/geo/country-regions");
+    setRegionOptions(mod.COUNTRY_REGIONS);
+  }
+  function applyRegion(name: string) {
+    const entry = regionOptions?.find((c) => c.name === name);
+    if (!entry) return;
+    const next = {
+      ...local,
+      geo_region: entry.region,
+      geo_region_label: entry.name,
+      correct_lat: entry.label.lat,
+      correct_lng: entry.label.lng,
+      max_distance_km:
+        local.max_distance_km == null || local.max_distance_km === 5000
+          ? 300
+          : local.max_distance_km,
+    };
+    setLocal(next);
+    onChange({
+      geo_region: next.geo_region,
+      geo_region_label: next.geo_region_label,
+      correct_lat: next.correct_lat,
+      correct_lng: next.correct_lng,
+      max_distance_km: next.max_distance_km,
+    });
+  }
+  function clearRegion() {
+    const next = { ...local, geo_region: null, geo_region_label: null };
+    setLocal(next);
+    onChange({ geo_region: null, geo_region_label: null });
   }
 
   function changeType(t: QuestionType) {
@@ -1274,7 +1404,11 @@ function QuestionEditor({
   }
 
   return (
-    <div className="bg-card border border-border p-5 space-y-4">
+    <div
+      className={`bg-card border p-5 space-y-4 ${
+        local.is_playable !== false ? "border-border" : "border-pink-shock/30 opacity-70"
+      }`}
+    >
       <div className="flex items-start gap-3">
         <div className="flex flex-col items-center gap-1 shrink-0">
           <span className="font-display text-2xl italic text-volt">
@@ -1358,6 +1492,26 @@ function QuestionEditor({
           </button>
         ))}
         <label
+          className={`font-mono text-[10px] uppercase px-2 py-1 border cursor-pointer ${local.is_playable === false ? "border-pink-shock bg-pink-shock/10 text-pink-shock" : "border-volt/40 text-volt hover:border-volt"}`}
+          title={
+            local.is_playable !== false
+              ? "Included — players will see this question"
+              : "Excluded — stored but never asked during play"
+          }
+        >
+          <input
+            type="checkbox"
+            checked={local.is_playable === false}
+            className="hidden"
+            onChange={(e) => {
+              const next = !e.target.checked;
+              setLocal({ ...local, is_playable: next });
+              onChange({ is_playable: next });
+            }}
+          />
+          {local.is_playable !== false ? "Included in play" : "Excluded from play"}
+        </label>
+        <label
           className={`font-mono text-[10px] uppercase px-2 py-1 border cursor-pointer ml-auto ${local.double_points ? "border-amber-spark bg-amber-spark/10 text-amber-spark" : "border-border text-foreground/60 hover:border-amber-spark/60"}`}
         >
           <input
@@ -1375,6 +1529,39 @@ function QuestionEditor({
 
       {isMap && (
         <div className="border border-border p-3 space-y-3 bg-background/40">
+          <div className="space-y-1">
+            <label className="font-mono text-[10px] uppercase text-foreground/60">
+              Region (optional)
+            </label>
+            <div className="flex gap-2">
+              <select
+                value={local.geo_region_label ?? ""}
+                onFocus={() => void openRegionOptions()}
+                onChange={(e) => applyRegion(e.target.value)}
+                className="flex-1 bg-background border border-border p-2 font-mono text-xs focus:outline-none focus:border-volt"
+              >
+                <option value="">— none —</option>
+                {(regionOptions ?? []).map((c) => (
+                  <option key={c.key} value={c.name}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              {local.geo_region && (
+                <button
+                  type="button"
+                  onClick={clearRegion}
+                  className="border border-border px-2 font-mono text-[10px] uppercase text-pink-shock hover:border-pink-shock/60"
+                >
+                  ✕ clear
+                </button>
+              )}
+            </div>
+            <p className="font-mono text-[10px] text-foreground/40">
+              With a region, any click inside it scores full marks; outside scores by distance from
+              the border. Max dist (km) becomes the falloff band.
+            </p>
+          </div>
           <p className="font-mono text-[10px] uppercase text-foreground/60">
             📍 Correct location — click on the map
           </p>
@@ -1385,6 +1572,13 @@ function QuestionEditor({
                 ? { lat: Number(local.correct_lat), lng: Number(local.correct_lng) }
                 : null
             }
+            region={local.geo_region ?? null}
+            center={
+              local.geo_region && local.correct_lat != null && local.correct_lng != null
+                ? [Number(local.correct_lat), Number(local.correct_lng)]
+                : undefined
+            }
+            zoom={local.geo_region ? 5 : undefined}
             onPick={(lat, lng) => {
               const next = { ...local, correct_lat: lat, correct_lng: lng };
               setLocal(next);
@@ -1442,7 +1636,8 @@ function QuestionEditor({
             </label>
           </div>
           <p className="font-mono text-[10px] text-foreground/40">
-            Guesses within max distance earn points on a linear falloff; closer = more.
+            Point questions: linear falloff from the pin. Region questions: full marks inside,
+            linear falloff beyond the border.
           </p>
         </div>
       )}

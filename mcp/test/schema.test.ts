@@ -8,6 +8,7 @@ import { extractQuestionIndex, mediaUrlError, validateQuiz } from "../src/valida
 import {
   QUIZ_TIME_PER_QUESTION_MAX,
   QUIZ_TIME_PER_QUESTION_MIN,
+  dbQuestionRowToCamel,
   questionToDbRow,
   quizSchema,
   type BrainBoltQuiz,
@@ -277,6 +278,45 @@ describe("questionToDbRow (storage conventions)", () => {
     expect(row.correct_index).toBe(-1);
     expect(row.max_distance_km).toBe(5000);
     expect(row.correct_lat).toBe(35.6);
+    expect(row.geo_region).toBeNull();
+    expect(row.geo_region_label).toBeNull();
+  });
+
+  test("map_pin with region → geo_region + label mapped", () => {
+    const region = {
+      type: "Polygon" as const,
+      coordinates: [
+        [
+          [33.9, -0.95],
+          [41.85, 3.91],
+          [39.2, -4.67],
+          [33.9, -0.95],
+        ],
+      ],
+    };
+    const row = questionToDbRow(
+      {
+        type: "map_pin",
+        text: "x",
+        lat: 0.9,
+        lng: 38.2,
+        maxDistanceKm: 300,
+        region,
+        regionLabel: "Kenya",
+      },
+      0,
+    );
+    expect(row.geo_region).toEqual(region);
+    expect(row.geo_region_label).toBe("Kenya");
+    expect(row.max_distance_km).toBe(300);
+  });
+
+  test("map_pin regionLabel without region fails validation", () => {
+    const bad = {
+      title: "t",
+      questions: [{ type: "map_pin", text: "x", lat: 1, lng: 2, regionLabel: "Kenya" }],
+    };
+    expect(quizSchema.safeParse(bad).success).toBe(false);
   });
 
   test("ordering → options are the items, correct_index -1", () => {
@@ -294,13 +334,56 @@ describe("questionToDbRow (storage conventions)", () => {
     expect(row.correct_index).toBe(1);
     expect(row.point_value).toBe(1000);
   });
+
+  test("isPlayable false maps to is_playable false and round-trips (20260821090000)", () => {
+    const row = questionToDbRow(
+      { type: "mcq", text: "x", options: ["a", "b"], correctIndex: 0, isPlayable: false },
+      0,
+    );
+    expect(row.is_playable).toBe(false);
+    const camel = dbQuestionRowToCamel(row);
+    expect(camel.isPlayable).toBe(false);
+  });
+
+  test("is_playable defaults to true on both sides when omitted", () => {
+    const row = questionToDbRow(
+      { type: "mcq", text: "x", options: ["a", "b"], correctIndex: 0 },
+      0,
+    );
+    expect(row.is_playable).toBe(true);
+    const camel = dbQuestionRowToCamel(row);
+    expect(camel.isPlayable).toBe(true);
+  });
 });
 
 describe("quizToCsv", () => {
-  test("header is the 25-column template", () => {
+  test("header is the 26-column template", () => {
     const csv = quizToCsv(FIXTURE);
-    expect(csvColumnCount(csv)).toBe(25);
+    expect(csvColumnCount(csv)).toBe(26);
     expect(csv.split("\n")[0]!.startsWith("question_type,question,option_a")).toBe(true);
+    expect(csv.split("\n")[0]!.endsWith(",region")).toBe(true);
+  });
+
+  test("map_pin region label lands in the region column", () => {
+    const region = {
+      type: "Polygon" as const,
+      coordinates: [
+        [
+          [33.9, -0.95],
+          [41.85, 3.91],
+          [39.2, -4.67],
+          [33.9, -0.95],
+        ],
+      ],
+    };
+    const quiz: BrainBoltQuiz = {
+      title: "t",
+      questions: [
+        { type: "map_pin", text: "q", lat: 0.9, lng: 38.2, region, regionLabel: "Kenya" },
+      ],
+    };
+    const csv = quizToCsv(quiz);
+    expect(csv).toContain(",Kenya");
   });
 
   test("uses legacy type names", () => {
@@ -337,7 +420,7 @@ describe("quizToCsv", () => {
       questions: [{ type: "mcq", text: "q", options: ["a", "b", "c", "d", "e"], correctIndex: 4 }],
     };
     const csv = quizToCsv(quiz);
-    expect(csvColumnCount(csv)).toBe(27);
+    expect(csvColumnCount(csv)).toBe(28);
     expect(csv.split("\n")[0]!.includes("option_e,option_f")).toBe(true);
     expect(csv).toContain(",e,");
   });

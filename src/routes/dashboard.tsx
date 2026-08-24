@@ -13,12 +13,26 @@ export const Route = createFileRoute("/dashboard")({
   component: Dashboard,
 });
 
-type Quiz = { id: string; title: string; description: string | null; time_per_question: number; created_at: string; question_count?: number };
+type Quiz = {
+  id: string;
+  title: string;
+  description: string | null;
+  time_per_question: number;
+  created_at: string;
+  question_count?: number;
+};
 type League = { id: string; name: string };
 type BrandingLite = { id: string; organization_name: string };
 
 function Dashboard() {
-  const { user, canHost, isAdmin, authorization, loading: hostLoading, refresh: refreshHost } = useHostStatus();
+  const {
+    user,
+    canHost,
+    isAdmin,
+    authorization,
+    loading: hostLoading,
+    refresh: refreshHost,
+  } = useHostStatus();
   const navigate = useNavigate();
   const [quizzes, setQuizzes] = useState<Quiz[]>([]);
   const [leagues, setLeagues] = useState<League[]>([]);
@@ -39,9 +53,12 @@ function Dashboard() {
       ((data as Array<Quiz & { questions: { count: number }[] }> | null) ?? []).map((q) => ({
         ...q,
         question_count: q.questions?.[0]?.count ?? 0,
-      }))
+      })),
     );
-    const { data: l } = await supabase.from("leagues").select("id,name").eq("owner_principal_id", user.id);
+    const { data: l } = await supabase
+      .from("leagues")
+      .select("id,name")
+      .eq("owner_principal_id", user.id);
     setLeagues((l as League[] | null) ?? []);
     const { data: b } = await supabase
       .from("branding_profiles")
@@ -51,9 +68,11 @@ function Dashboard() {
     setBrandingProfiles((b as BrandingLite[] | null) ?? []);
   }
 
-
   async function archiveQuiz(quizId: string, title: string) {
-    if (!confirm(`Delete "${title}"? This can't be undone. Past sessions and scores are preserved.`)) return;
+    if (
+      !confirm(`Delete "${title}"? This can't be undone. Past sessions and scores are preserved.`)
+    )
+      return;
     const { error } = await supabase
       .from("quizzes")
       .update({ archived_at: new Date().toISOString() } as never)
@@ -63,7 +82,9 @@ function Dashboard() {
     setQuizzes((qs) => qs.filter((q) => q.id !== quizId));
   }
 
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [user?.id]);
+  useEffect(() => {
+    load(); /* eslint-disable-next-line */
+  }, [user?.id]);
 
   async function createQuiz() {
     if (!user) return;
@@ -72,25 +93,47 @@ function Dashboard() {
       .insert({ owner_principal_id: user.id, title: "Untitled Quiz" } as never)
       .select("id")
       .single();
-    if (error || !data) return toastError(error, { context: "create quiz", fallback: "Could not create the quiz.", retry: () => createQuiz() });
+    if (error || !data)
+      return toastError(error, {
+        context: "create quiz",
+        fallback: "Could not create the quiz.",
+        retry: () => createQuiz(),
+      });
     navigate({ to: "/quizzes/$id", params: { id: data.id } });
   }
 
-  async function startSession(quizId: string, opts: { teamMode: boolean; leagueId: string | null; brandingProfileId: string | null }) {
+  async function startSession(
+    quizId: string,
+    opts: { teamMode: boolean; leagueId: string | null; brandingProfileId: string | null },
+  ) {
     if (!user) return;
     if (!canHost) {
-      toastHostAccessError({ context: "start session pre-check", requestHostAccess: () => navigate({ to: "/request-hosting" }) });
+      toastHostAccessError({
+        context: "start session pre-check",
+        requestHostAccess: () => navigate({ to: "/request-hosting" }),
+      });
       return;
     }
     setCreatingId(quizId);
-    const { data: qs } = await supabase.from("questions").select("id").eq("quiz_id", quizId).order("position");
+    // Only playable questions enter the frozen session order; excluded ones stay stored in the quiz.
+    const { data: qs } = await supabase
+      .from("questions")
+      .select("id")
+      .eq("quiz_id", quizId)
+      .eq("is_playable", true)
+      .order("position");
     if (!qs || qs.length === 0) {
       setCreatingId(null);
-      toast.error("Quiz has no questions yet");
+      toast.error(
+        "This quiz has no playable questions. Enable at least one question before starting.",
+      );
       return;
     }
     const code = generateGameCode();
-    const order = seededShuffle(qs.map((q) => q.id), code);
+    const order = seededShuffle(
+      qs.map((q) => q.id),
+      code,
+    );
     const { data, error } = await supabase
       .from("sessions")
       .insert({
@@ -127,12 +170,19 @@ function Dashboard() {
             <p className="font-mono text-xs uppercase tracking-widest text-volt">Control room</p>
             <h1 className="font-display text-5xl italic uppercase mt-1">Your quizzes</h1>
           </div>
-          <button onClick={createQuiz} className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95">
+          <button
+            onClick={createQuiz}
+            className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95"
+          >
             + NEW QUIZ
           </button>
         </div>
 
-        <HostAuthorizationCard isAdmin={isAdmin} authorization={authorization} loading={hostLoading} />
+        <HostAuthorizationCard
+          isAdmin={isAdmin}
+          authorization={authorization}
+          loading={hostLoading}
+        />
 
         {loadingQuizzes ? (
           <SkeletonList rows={3} height="h-24" />
@@ -142,10 +192,16 @@ function Dashboard() {
             title="Build your first quiz"
             body="Quizzes are the source of every BrainBolt match. Create one, add questions, then start a live session and share the game code with your players."
           >
-            <button onClick={createQuiz} className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95">
+            <button
+              onClick={createQuiz}
+              className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95"
+            >
               + NEW QUIZ
             </button>
-            <Link to="/arena" className="border border-border px-6 py-3 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors">
+            <Link
+              to="/arena"
+              className="border border-border px-6 py-3 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors"
+            >
               See example challenges
             </Link>
           </EmptyState>
@@ -182,12 +238,24 @@ function Dashboard() {
   );
 }
 
-function QuizCard({ quiz, leagues, brandingProfiles, canHost, onStart, onDelete, starting }: {
+function QuizCard({
+  quiz,
+  leagues,
+  brandingProfiles,
+  canHost,
+  onStart,
+  onDelete,
+  starting,
+}: {
   quiz: Quiz;
   leagues: League[];
   brandingProfiles: BrandingLite[];
   canHost: boolean;
-  onStart: (opts: { teamMode: boolean; leagueId: string | null; brandingProfileId: string | null }) => void;
+  onStart: (opts: {
+    teamMode: boolean;
+    leagueId: string | null;
+    brandingProfileId: string | null;
+  }) => void;
   onDelete: () => void;
   starting: boolean;
 }) {
@@ -197,7 +265,11 @@ function QuizCard({ quiz, leagues, brandingProfiles, canHost, onStart, onDelete,
   return (
     <div className="bg-card border border-border p-5 flex flex-col gap-4 md:flex-row md:items-center">
       <div className="flex-1">
-        <Link to="/quizzes/$id" params={{ id: quiz.id }} className="font-display text-xl italic uppercase hover:text-volt">
+        <Link
+          to="/quizzes/$id"
+          params={{ id: quiz.id }}
+          className="font-display text-xl italic uppercase hover:text-volt"
+        >
           {quiz.title}
         </Link>
         <p className="font-mono text-xs uppercase text-foreground/40 mt-1">
@@ -206,7 +278,12 @@ function QuizCard({ quiz, leagues, brandingProfiles, canHost, onStart, onDelete,
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <label className="font-mono text-[10px] uppercase text-foreground/60 flex items-center gap-2 px-3 py-2 border border-border bg-background cursor-pointer">
-          <input type="checkbox" checked={teamMode} onChange={(e) => setTeamMode(e.target.checked)} className="accent-volt" />
+          <input
+            type="checkbox"
+            checked={teamMode}
+            onChange={(e) => setTeamMode(e.target.checked)}
+            className="accent-volt"
+          />
           Teams
         </label>
         {leagues.length > 0 && (
@@ -216,7 +293,11 @@ function QuizCard({ quiz, leagues, brandingProfiles, canHost, onStart, onDelete,
             className="bg-background border border-border px-3 py-2 font-mono text-xs uppercase focus:outline-none focus:border-volt"
           >
             <option value="">No league</option>
-            {leagues.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+            {leagues.map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+              </option>
+            ))}
           </select>
         )}
         {brandingProfiles.length > 0 && (
@@ -227,13 +308,19 @@ function QuizCard({ quiz, leagues, brandingProfiles, canHost, onStart, onDelete,
             className="bg-background border border-border px-3 py-2 font-mono text-xs uppercase focus:outline-none focus:border-volt"
           >
             <option value="">BrainBolt branding</option>
-            {brandingProfiles.map((b) => <option key={b.id} value={b.id}>{b.organization_name}</option>)}
+            {brandingProfiles.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.organization_name}
+              </option>
+            ))}
           </select>
         )}
         <button
           disabled={starting || !canHost}
           title={!canHost ? "Hosting not authorized" : undefined}
-          onClick={() => onStart({ teamMode, leagueId: leagueId || null, brandingProfileId: brandingId || null })}
+          onClick={() =>
+            onStart({ teamMode, leagueId: leagueId || null, brandingProfileId: brandingId || null })
+          }
           className="bg-volt text-background font-display text-base px-5 py-2.5 skew-cta active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {starting ? "..." : canHost ? "START" : "LOCKED"}

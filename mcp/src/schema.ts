@@ -44,6 +44,8 @@ const commonFields = {
   pointValue: z.number().int().min(POINT_VALUE_MIN).max(POINT_VALUE_MAX).optional(),
   /** Doubles the score for this round. Default false. */
   doublePoints: z.boolean().optional(),
+  /** Whether players can be served this question. Default true. */
+  isPlayable: z.boolean().optional(),
 };
 
 const choiceFields = {
@@ -51,6 +53,12 @@ const choiceFields = {
   /** 0-based index of the correct option. */
   correctIndex: z.number().int().min(0),
 };
+
+/** GeoJSON geometry for region-based map_pin questions (coords are [lng, lat]). */
+const geoRegionSchema = z.object({
+  type: z.enum(["Polygon", "MultiPolygon"]),
+  coordinates: z.any(),
+});
 
 export const questionSchema = z.discriminatedUnion("type", [
   z.object({
@@ -119,24 +127,42 @@ export const questionSchema = z.discriminatedUnion("type", [
     lng: z.number().min(-180).max(180),
     /** Tolerance radius in km; defaults to 5000. */
     maxDistanceKm: z.number().positive().optional(),
+    /** Accepted region polygon — any click inside scores full marks. */
+    region: geoRegionSchema.optional(),
+    /** Display label for the region (e.g. "Kenya"). */
+    regionLabel: z.string().min(1).optional(),
   }),
 ]);
 
 export type BrainBoltQuestion = z.infer<typeof questionSchema>;
 
-export const quizSchema = z.object({
-  title: z.string().min(1),
-  description: z.string().optional(),
-  /** Quiz-wide per-question time in seconds; default 20. App editor caps at 120. */
-  timePerQuestionSec: z
-    .number()
-    .int()
-    .min(QUIZ_TIME_PER_QUESTION_MIN)
-    .max(QUIZ_TIME_PER_QUESTION_MAX)
-    .optional(),
-  difficulty: z.enum(["easy", "medium", "hard"]).optional(),
-  questions: z.array(questionSchema).min(MIN_QUESTIONS).max(MAX_QUESTIONS),
-});
+export const quizSchema = z
+  .object({
+    title: z.string().min(1),
+    description: z.string().optional(),
+    /** Quiz-wide per-question time in seconds; default 20. App editor caps at 120. */
+    timePerQuestionSec: z
+      .number()
+      .int()
+      .min(QUIZ_TIME_PER_QUESTION_MIN)
+      .max(QUIZ_TIME_PER_QUESTION_MAX)
+      .optional(),
+    difficulty: z.enum(["easy", "medium", "hard"]).optional(),
+    questions: z.array(questionSchema).min(MIN_QUESTIONS).max(MAX_QUESTIONS),
+  })
+  // Cross-field rule that cannot live inside the discriminated union (a
+  // refined member would break z.discriminatedUnion in zod v3).
+  .superRefine((quiz, ctx) => {
+    quiz.questions.forEach((q, i) => {
+      if (q.type === "map_pin" && q.regionLabel !== undefined && q.region === undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["questions", i, "region"],
+          message: "regionLabel requires region (the accepted polygon)",
+        });
+      }
+    });
+  });
 
 export type BrainBoltQuiz = z.infer<typeof quizSchema>;
 
@@ -155,6 +181,8 @@ const NULL_EXTRAS = {
   accepted_answers: null as string[] | null,
   audio_url: null as string | null,
   reveal_stages: null as number | null,
+  geo_region: null as unknown as { type: "Polygon" | "MultiPolygon"; coordinates?: unknown } | null,
+  geo_region_label: null as string | null,
 };
 
 export type QuestionDbRow = {
@@ -165,6 +193,7 @@ export type QuestionDbRow = {
   question_type: QuestionTypeId;
   image_url: string | null;
   double_points: boolean;
+  is_playable: boolean;
   options: string[];
   correct_index: number;
 } & typeof NULL_EXTRAS;
@@ -193,6 +222,8 @@ export function questionToDbRow(q: BrainBoltQuestion, position: number): Questio
     point_value: q.type === "feedback" ? 0 : (q.pointValue ?? DEFAULT_POINT_VALUE),
     image_url: "imageUrl" in q && q.imageUrl ? q.imageUrl : null,
     double_points: q.doublePoints ?? false,
+    // Mirrors the DB column default (questions.is_playable DEFAULT TRUE).
+    is_playable: q.isPlayable ?? true,
   };
 
   switch (q.type) {
@@ -232,6 +263,9 @@ export function questionToDbRow(q: BrainBoltQuestion, position: number): Questio
       };
     }
     case "map_pin":
+      if (q.regionLabel && !q.region) {
+        throw new Error("map_pin: regionLabel requires region (the accepted polygon)");
+      }
       return {
         ...base,
         question_type: "map_pin",
@@ -241,6 +275,8 @@ export function questionToDbRow(q: BrainBoltQuestion, position: number): Questio
         correct_lat: q.lat,
         correct_lng: q.lng,
         max_distance_km: q.maxDistanceKm ?? DEFAULT_MAX_DISTANCE_KM,
+        geo_region: q.region ?? null,
+        geo_region_label: q.regionLabel ?? null,
       };
     case "type":
       return {
@@ -276,22 +312,32 @@ export function questionToDbRow(q: BrainBoltQuestion, position: number): Questio
  * apply to a question's type as warnings instead of silently dropping them.
  */
 export const QUESTION_TYPE_FIELDS: Record<QuestionTypeId, readonly string[]> = {
-  mcq: ["text", "timeLimitSec", "pointValue", "doublePoints", "options", "correctIndex"],
+  mcq: [
+    "text",
+    "timeLimitSec",
+    "pointValue",
+    "doublePoints",
+    "isPlayable",
+    "options",
+    "correctIndex",
+  ],
   image_mcq: [
     "text",
     "timeLimitSec",
     "pointValue",
     "doublePoints",
+    "isPlayable",
     "options",
     "correctIndex",
     "imageUrl",
   ],
-  true_false: ["text", "timeLimitSec", "pointValue", "doublePoints", "correct"],
+  true_false: ["text", "timeLimitSec", "pointValue", "doublePoints", "isPlayable", "correct"],
   number: [
     "text",
     "timeLimitSec",
     "pointValue",
     "doublePoints",
+    "isPlayable",
     "correctNumber",
     "min",
     "max",
@@ -303,16 +349,37 @@ export const QUESTION_TYPE_FIELDS: Record<QuestionTypeId, readonly string[]> = {
     "timeLimitSec",
     "pointValue",
     "doublePoints",
+    "isPlayable",
     "options",
     "correctIndex",
     "imageUrl",
     "revealStages",
   ],
-  audio: ["text", "timeLimitSec", "pointValue", "doublePoints", "options", "correctIndex", "audioUrl"],
-  ordering: ["text", "timeLimitSec", "pointValue", "doublePoints", "items"],
-  type: ["text", "timeLimitSec", "pointValue", "doublePoints", "acceptedAnswers"],
-  feedback: ["text", "timeLimitSec", "pointValue", "doublePoints"],
-  map_pin: ["text", "timeLimitSec", "pointValue", "doublePoints", "lat", "lng", "maxDistanceKm"],
+  audio: [
+    "text",
+    "timeLimitSec",
+    "pointValue",
+    "doublePoints",
+    "isPlayable",
+    "options",
+    "correctIndex",
+    "audioUrl",
+  ],
+  ordering: ["text", "timeLimitSec", "pointValue", "doublePoints", "isPlayable", "items"],
+  type: ["text", "timeLimitSec", "pointValue", "doublePoints", "isPlayable", "acceptedAnswers"],
+  feedback: ["text", "timeLimitSec", "pointValue", "doublePoints", "isPlayable"],
+  map_pin: [
+    "text",
+    "timeLimitSec",
+    "pointValue",
+    "doublePoints",
+    "isPlayable",
+    "lat",
+    "lng",
+    "maxDistanceKm",
+    "region",
+    "regionLabel",
+  ],
 };
 
 /** A `questions` row as read back from the database (snake_case). */
@@ -326,6 +393,7 @@ export type QuestionDbRowLike = {
   point_value: number;
   image_url: string | null;
   double_points: boolean;
+  is_playable: boolean;
   correct_lat: number | null;
   correct_lng: number | null;
   max_distance_km: number | null;
@@ -336,6 +404,8 @@ export type QuestionDbRowLike = {
   accepted_answers: string[] | null;
   audio_url: string | null;
   reveal_stages: number | null;
+  geo_region: { type: "Polygon" | "MultiPolygon"; coordinates?: unknown } | null;
+  geo_region_label: string | null;
 };
 
 const NUMBER_FORMATS = ["general", "year", "decimal", "percentage", "currency"] as const;
@@ -351,6 +421,7 @@ export function dbQuestionRowToCamel(row: QuestionDbRowLike): BrainBoltQuestion 
     timeLimitSec: row.time_limit_sec ?? undefined,
     pointValue: row.point_value,
     doublePoints: row.double_points || undefined,
+    isPlayable: row.is_playable ?? true,
   };
   const options = Array.isArray(row.options) ? (row.options as string[]) : [];
 
@@ -392,6 +463,8 @@ export function dbQuestionRowToCamel(row: QuestionDbRowLike): BrainBoltQuestion 
         lat: row.correct_lat ?? 0,
         lng: row.correct_lng ?? 0,
         maxDistanceKm: row.max_distance_km ?? undefined,
+        region: row.geo_region ?? undefined,
+        regionLabel: row.geo_region_label ?? undefined,
       };
     case "type":
       return { ...base, type: "type", acceptedAnswers: row.accepted_answers ?? [] };

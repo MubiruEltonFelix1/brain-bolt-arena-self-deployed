@@ -35,7 +35,12 @@ const QUIZ: BrainBoltQuiz = {
   timePerQuestionSec: 20,
   difficulty: "medium",
   questions: [
-    { type: "mcq", text: "Which planet is the Red Planet?", options: ["Venus", "Mars"], correctIndex: 1 },
+    {
+      type: "mcq",
+      text: "Which planet is the Red Planet?",
+      options: ["Venus", "Mars"],
+      correctIndex: 1,
+    },
     { type: "true_false", text: "The Earth is round.", correct: true },
   ],
 };
@@ -82,17 +87,17 @@ describe("save_quiz lifecycle gate", () => {
 
   test("rejects an owner without the host capability — nothing written", async () => {
     const { db, client } = makeEnv();
-    await expect(
-      saveQuizWithClient(client, QUIZ, { ownerId: NO_ROLE_USER }),
-    ).rejects.toThrow("host capability");
+    await expect(saveQuizWithClient(client, QUIZ, { ownerId: NO_ROLE_USER })).rejects.toThrow(
+      "host capability",
+    );
     expect(db.quizzes).toHaveLength(0);
   });
 
   test("rejects an owner without a user principal", async () => {
     const { db, client } = makeEnv();
-    await expect(
-      saveQuizWithClient(client, QUIZ, { ownerId: GHOST }),
-    ).rejects.toThrow("no user principal");
+    await expect(saveQuizWithClient(client, QUIZ, { ownerId: GHOST })).rejects.toThrow(
+      "no user principal",
+    );
     expect(db.quizzes).toHaveLength(0);
   });
 
@@ -104,11 +109,15 @@ describe("save_quiz lifecycle gate", () => {
       options: ["a", "b"],
       correctIndex: 0,
     }));
-    await expect(saveQuizWithClient(client, { title: "big", questions: many }, { ownerId: OWNER })).rejects.toThrow(
-      "validation errors",
-    );
+    await expect(
+      saveQuizWithClient(client, { title: "big", questions: many }, { ownerId: OWNER }),
+    ).rejects.toThrow("validation errors");
     const ok = many.slice(0, 30);
-    const res = await saveQuizWithClient(client, { title: "big", questions: ok }, { ownerId: OWNER });
+    const res = await saveQuizWithClient(
+      client,
+      { title: "big", questions: ok },
+      { ownerId: OWNER },
+    );
     expect(res.questionCount).toBe(30);
   });
 });
@@ -278,7 +287,11 @@ describe("update_quiz", () => {
       quizId,
       patch: { description: null, difficulty: "hard", timePerQuestionSec: 45 },
     });
-    expect(result.changed).toEqual({ description: true, difficulty: true, timePerQuestionSec: true });
+    expect(result.changed).toEqual({
+      description: true,
+      difficulty: true,
+      timePerQuestionSec: true,
+    });
     const row = db.quizzes.find((q) => q.id === quizId)!;
     expect(row.description).toBeNull();
     expect(row.difficulty).toBe("hard");
@@ -288,9 +301,9 @@ describe("update_quiz", () => {
   test("rejects an empty patch", async () => {
     const { client } = makeEnv();
     const { quizId } = await saveOwnedQuiz(client);
-    await expect(
-      updateQuiz(client, { actorId: OWNER, quizId, patch: {} }),
-    ).rejects.toThrow("at least one field");
+    await expect(updateQuiz(client, { actorId: OWNER, quizId, patch: {} })).rejects.toThrow(
+      "at least one field",
+    );
   });
 
   test("rejects out-of-range values with field-level errors", async () => {
@@ -342,7 +355,7 @@ describe("archive_quiz", () => {
     const { quizId } = await saveOwnedQuiz(client);
     const result = await archiveQuiz(client, { actorId: OWNER, quizId });
     expect(result.changed).toEqual({ archived: true, archivedAt: expect.any(String) });
-    expect((db.quizzes.find((q) => q.id === quizId)!.archived_at as string | null)).toBeTruthy();
+    expect(db.quizzes.find((q) => q.id === quizId)!.archived_at as string | null).toBeTruthy();
     const live = await listQuizzes(client, { actorId: OWNER, archived: false });
     expect(live.items).toHaveLength(0);
     const archived = await listQuizzes(client, { actorId: OWNER, archived: true });
@@ -379,7 +392,13 @@ describe("add_questions", () => {
       actorId: OWNER,
       quizId,
       questions: [
-        { type: "number", text: "How many moons does Mars have?", correctNumber: 2, min: 0, max: 10 },
+        {
+          type: "number",
+          text: "How many moons does Mars have?",
+          correctNumber: 2,
+          min: 0,
+          max: 10,
+        },
         { type: "ordering", text: "Order these", items: ["a", "b", "c"] },
       ],
     });
@@ -550,11 +569,7 @@ describe("update_question", () => {
     const { client } = makeEnv();
     const a = await saveOwnedQuiz(client, "A");
     const b = await saveOwnedQuiz(client, "B");
-    const { data } = await client
-      .from("questions")
-      .select("id")
-      .eq("quiz_id", a.quizId)
-      .limit(1);
+    const { data } = await client.from("questions").select("id").eq("quiz_id", a.quizId).limit(1);
     await expect(
       updateQuestion(client, {
         actorId: OWNER,
@@ -595,6 +610,21 @@ describe("update_question", () => {
     expect(result.warnings[0]).toContain("ignored");
     const row = db.questions.find((q) => q.id === data!.id)!;
     expect(row.unit).toBeUndefined();
+  });
+
+  test("patches isPlayable=false and persists the playable flag", async () => {
+    const { db, client } = makeEnv();
+    const { quizId } = await saveOwnedQuiz(client);
+    const questionId = questionIdsOf(db, quizId)[0]!;
+    const result = await updateQuestion(client, {
+      actorId: OWNER,
+      quizId,
+      questionId,
+      patch: { isPlayable: false },
+    });
+    expect(result.changed).toEqual({ isPlayable: true });
+    const row = db.questions.find((q) => q.id === questionId)!;
+    expect(row.is_playable).toBe(false);
   });
 
   test("non-owner is denied", async () => {

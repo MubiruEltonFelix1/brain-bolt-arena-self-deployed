@@ -514,5 +514,23 @@ export function createMarkers({ q, yes }) {
       marker: "admin_session_funnel exists",
       applied: () => fnExists("admin_session_funnel"),
     },
+    {
+      file: "20260818090000_phase_8d_mcp_league_reads.sql",
+      marker: "mcp_league_standings + mcp_league_overview wrappers exist (Phase 8D)",
+      applied: () =>
+        yes(
+          `SELECT to_regprocedure('public.mcp_league_standings(uuid,uuid)') IS NOT NULL AND to_regprocedure('public.mcp_league_overview(uuid,uuid)') IS NOT NULL`,
+        ),
+    },
+    {
+      file: "20260820090000_phase_8e_geo_region_grading.sql",
+      marker: "questions.geo_region column exists (Phase 8E)",
+      applied: () => colExists("questions", "geo_region"),
+    },
+    {
+      file: "20260821090000_question_playable_flag.sql",
+      marker: "questions.is_playable column exists (question playable flag)",
+      applied: () => colExists("questions", "is_playable"),
+    },
   ];
 }

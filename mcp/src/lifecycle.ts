@@ -70,8 +70,9 @@ const QUIZ_COLUMNS =
 
 const QUESTION_COLUMNS =
   "id,quiz_id,position,text,options,correct_index,time_limit_sec,point_value," +
-  "question_type,image_url,double_points,correct_lat,correct_lng,max_distance_km," +
-  "correct_number,number_min,number_max,number_tolerance,accepted_answers,audio_url,reveal_stages";
+  "question_type,image_url,double_points,is_playable,correct_lat,correct_lng,max_distance_km," +
+  "correct_number,number_min,number_max,number_tolerance,accepted_answers,audio_url,reveal_stages," +
+  "geo_region,geo_region_label";
 
 const MAX_LIST_LIMIT = 100;
 const DEFAULT_LIST_LIMIT = 50;
@@ -138,10 +139,7 @@ type QuizRow = {
   owner_principal_id: string | null;
 };
 
-async function fetchQuizRow(
-  client: SupabaseClient,
-  quizId: string,
-): Promise<QuizRow | null> {
+async function fetchQuizRow(client: SupabaseClient, quizId: string): Promise<QuizRow | null> {
   if (!isValidUuid(quizId)) {
     throw new Error(`quizId "${quizId}" is not a valid uuid.`);
   }
@@ -298,7 +296,15 @@ export type QuestionView = { type: string; text: string } & Record<string, unkno
 
 export function redactAnswers(q: BrainBoltQuestion): QuestionView {
   const { text, timeLimitSec, pointValue, doublePoints } = q;
-  const view: QuestionView = { type: q.type, text, timeLimitSec, pointValue, doublePoints };
+  // isPlayable is content-management state, not an answer key — it survives redaction.
+  const view: QuestionView = {
+    type: q.type,
+    text,
+    timeLimitSec,
+    pointValue,
+    doublePoints,
+    isPlayable: q.isPlayable ?? true,
+  };
   switch (q.type) {
     case "mcq":
     case "image_mcq":
@@ -402,7 +408,9 @@ export async function updateQuiz(
     const patch = options.patch ?? {};
     const keys = Object.keys(patch);
     if (keys.length === 0) {
-      throw new Error("update_quiz needs at least one field to change (title, description, difficulty, timePerQuestionSec).");
+      throw new Error(
+        "update_quiz needs at least one field to change (title, description, difficulty, timePerQuestionSec).",
+      );
     }
 
     const update: Record<string, unknown> = {};
@@ -422,7 +430,9 @@ export async function updateQuiz(
     if ("difficulty" in patch) {
       const difficulty = patch.difficulty ?? null;
       if (difficulty !== null && !["easy", "medium", "hard"].includes(difficulty)) {
-        throw new Error(`update_quiz: difficulty must be easy, medium or hard (got "${difficulty}").`);
+        throw new Error(
+          `update_quiz: difficulty must be easy, medium or hard (got "${difficulty}").`,
+        );
       }
       update.difficulty = difficulty;
       changed.difficulty = difficulty !== row.difficulty;
@@ -438,10 +448,7 @@ export async function updateQuiz(
 
     const applied = Object.values(changed).some(Boolean);
     if (applied) {
-      const { error } = await client
-        .from("quizzes")
-        .update(update)
-        .eq("id", options.quizId);
+      const { error } = await client.from("quizzes").update(update).eq("id", options.quizId);
       if (error) {
         throw new Error(`Could not update quiz "${options.quizId}": ${error.message}`);
       }
@@ -455,11 +462,17 @@ export async function updateQuiz(
     return { ok: true, action: "update_quiz", id: options.quizId, changed, warnings, errors: [] };
   };
 
-  return wrapIdempotent(client, "update_quiz", options.idempotencyKey, {
-    actor: options.actorId,
-    quizId: options.quizId,
-    patch: options.patch,
-  }, run);
+  return wrapIdempotent(
+    client,
+    "update_quiz",
+    options.idempotencyKey,
+    {
+      actor: options.actorId,
+      quizId: options.quizId,
+      patch: options.patch,
+    },
+    run,
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -510,10 +523,16 @@ export async function archiveQuiz(
     };
   };
 
-  return wrapIdempotent(client, "archive_quiz", options.idempotencyKey, {
-    actor: options.actorId,
-    quizId: options.quizId,
-  }, run);
+  return wrapIdempotent(
+    client,
+    "archive_quiz",
+    options.idempotencyKey,
+    {
+      actor: options.actorId,
+      quizId: options.quizId,
+    },
+    run,
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -555,7 +574,10 @@ export function validateQuestionBatch(questions: unknown[]): {
   if (!report.valid) {
     throw new Error(`Invalid question data — nothing was written:\n${formatIssues(report)}`);
   }
-  return { parsed, warnings: report.warnings.map((w) => `question[${w.questionIndex}].${w.field}: ${w.message}`) };
+  return {
+    parsed,
+    warnings: report.warnings.map((w) => `question[${w.questionIndex}].${w.field}: ${w.message}`),
+  };
 }
 
 export type AddQuestionsOptions = {
@@ -580,7 +602,9 @@ export async function addQuestions(
       .eq("quiz_id", options.quizId)
       .order("position");
     if (existingError) {
-      throw new Error(`Could not read questions of quiz "${options.quizId}": ${existingError.message}`);
+      throw new Error(
+        `Could not read questions of quiz "${options.quizId}": ${existingError.message}`,
+      );
     }
     const rows = (existing ?? []) as unknown as Array<{ position: number }>;
     if (rows.length + parsed.length > MAX_QUESTIONS) {
@@ -596,10 +620,7 @@ export async function addQuestions(
       ...questionToDbRow(q, start + i),
     }));
 
-    const { data: inserted, error } = await client
-      .from("questions")
-      .insert(payload)
-      .select("id");
+    const { data: inserted, error } = await client.from("questions").insert(payload).select("id");
     if (error) {
       throw new Error(`Could not insert questions into quiz "${options.quizId}": ${error.message}`);
     }
@@ -614,11 +635,17 @@ export async function addQuestions(
     };
   };
 
-  return wrapIdempotent(client, "add_questions", options.idempotencyKey, {
-    actor: options.actorId,
-    quizId: options.quizId,
-    questions: options.questions,
-  }, run);
+  return wrapIdempotent(
+    client,
+    "add_questions",
+    options.idempotencyKey,
+    {
+      actor: options.actorId,
+      quizId: options.quizId,
+      questions: options.questions,
+    },
+    run,
+  );
 }
 
 export type UpdateQuestionOptions = {
@@ -675,7 +702,8 @@ export async function updateQuestion(
       delete patch.type; // same-type no-op
     }
 
-    const allowed = QUESTION_TYPE_FIELDS[question.question_type as keyof typeof QUESTION_TYPE_FIELDS] ?? [];
+    const allowed =
+      QUESTION_TYPE_FIELDS[question.question_type as keyof typeof QUESTION_TYPE_FIELDS] ?? [];
     const warnings: string[] = [];
     const appliedPatch: Record<string, unknown> = {};
     for (const key of Object.keys(patch)) {
@@ -719,7 +747,9 @@ export async function updateQuestion(
         .update(dbRow)
         .eq("id", options.questionId);
       if (updateError) {
-        throw new Error(`Could not update question "${options.questionId}": ${updateError.message}`);
+        throw new Error(
+          `Could not update question "${options.questionId}": ${updateError.message}`,
+        );
       }
     }
 
@@ -734,12 +764,18 @@ export async function updateQuestion(
     };
   };
 
-  return wrapIdempotent(client, "update_question", options.idempotencyKey, {
-    actor: options.actorId,
-    quizId: options.quizId,
-    questionId: options.questionId,
-    patch: options.patch,
-  }, run);
+  return wrapIdempotent(
+    client,
+    "update_question",
+    options.idempotencyKey,
+    {
+      actor: options.actorId,
+      quizId: options.quizId,
+      questionId: options.questionId,
+      patch: options.patch,
+    },
+    run,
+  );
 }
 
 export type RemoveQuestionOptions = {
@@ -827,11 +863,17 @@ export async function removeQuestion(
     };
   };
 
-  return wrapIdempotent(client, "remove_question", options.idempotencyKey, {
-    actor: options.actorId,
-    quizId: options.quizId,
-    questionId: options.questionId,
-  }, run);
+  return wrapIdempotent(
+    client,
+    "remove_question",
+    options.idempotencyKey,
+    {
+      actor: options.actorId,
+      quizId: options.quizId,
+      questionId: options.questionId,
+    },
+    run,
+  );
 }
 
 export type ReorderQuestionsOptions = {
@@ -855,7 +897,9 @@ export async function reorderQuestions(
       throw new Error("reorder_questions needs a non-empty questionIds array.");
     }
     if (new Set(ids).size !== ids.length) {
-      throw new Error("reorder_questions: questionIds contains duplicates — each id must appear exactly once.");
+      throw new Error(
+        "reorder_questions: questionIds contains duplicates — each id must appear exactly once.",
+      );
     }
 
     const { data: all, error: allError } = await client
@@ -897,7 +941,9 @@ export async function reorderQuestions(
       }
     }
 
-    const warnings = changed ? [] : ["The given order matches the current order — nothing changed."];
+    const warnings = changed
+      ? []
+      : ["The given order matches the current order — nothing changed."];
     return {
       ok: true,
       action: "reorder_questions",
@@ -908,11 +954,17 @@ export async function reorderQuestions(
     };
   };
 
-  return wrapIdempotent(client, "reorder_questions", options.idempotencyKey, {
-    actor: options.actorId,
-    quizId: options.quizId,
-    questionIds: options.questionIds,
-  }, run);
+  return wrapIdempotent(
+    client,
+    "reorder_questions",
+    options.idempotencyKey,
+    {
+      actor: options.actorId,
+      quizId: options.quizId,
+      questionIds: options.questionIds,
+    },
+    run,
+  );
 }
 
 /* ------------------------------------------------------------------ */

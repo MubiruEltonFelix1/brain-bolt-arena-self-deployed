@@ -33,6 +33,8 @@ export type FakeDb = {
   competitions: Row[];
   leagues: Row[];
   branding_profiles: Row[];
+  profiles: Row[];
+  competition_results: Row[];
 };
 
 export function createFakeDb(): FakeDb {
@@ -46,19 +48,27 @@ export function createFakeDb(): FakeDb {
     competitions: [],
     leagues: [],
     branding_profiles: [],
+    profiles: [],
+    competition_results: [],
   };
 }
 
 /** A user with a principal and (optionally) host/admin roles — the Phase 7 model. */
-export function seedUser(
-  db: FakeDb,
-  userId: string,
-  roles: Array<"admin" | "host"> = [],
-): void {
+export function seedUser(db: FakeDb, userId: string, roles: Array<"admin" | "host"> = []): void {
   db.principals.push({ id: userId, type: "user", user_id: userId });
   for (const role of roles) {
     db.userRoles.push({ user_id: userId, role });
   }
+}
+
+/** A player profile row (profiles.id is the auth-user id — id-identical). */
+export function seedProfile(
+  db: FakeDb,
+  id: string,
+  displayName: string,
+  avatarId: string | null = null,
+): void {
+  db.profiles.push({ id, display_name: displayName, avatar_id: avatarId });
 }
 
 /**
@@ -85,6 +95,8 @@ const PK_COLUMNS: Record<string, string> = {
   competitions: "id",
   leagues: "id",
   branding_profiles: "id",
+  profiles: "id",
+  competition_results: "id",
 };
 
 type Filter =
@@ -218,7 +230,10 @@ function matches(row: Row, filters: Filter[]): boolean {
 function project(row: Row, cols: string): Row {
   if (cols === "*") return { ...row };
   const out: Row = {};
-  for (const col of cols.split(",").map((c) => c.trim()).filter(Boolean)) {
+  for (const col of cols
+    .split(",")
+    .map((c) => c.trim())
+    .filter(Boolean)) {
     out[col] = row[col];
   }
   return out;
@@ -399,9 +414,7 @@ class FakeBuilder {
         if (typeof av === "string" && typeof bv === "string") {
           return this.ascending ? av.localeCompare(bv) : bv.localeCompare(av);
         }
-        return this.ascending
-          ? (av as number) - (bv as number)
-          : (bv as number) - (av as number);
+        return this.ascending ? (av as number) - (bv as number) : (bv as number) - (av as number);
       });
     }
     if (this.limitN !== null) rows = rows.slice(0, this.limitN);
@@ -497,14 +510,34 @@ class FakeBuilder {
         if (row.cancelled_at == null) row.cancelled_at = null;
         if (row.updated_at == null) row.updated_at = new Date().toISOString();
       }
-      // Leagues / branding_profiles minimal defaults.
+      // Questions column defaults (20260821090000: is_playable NOT NULL DEFAULT true).
+      if (this.table === "questions") {
+        if (row.is_playable == null) row.is_playable = true;
+      }
+
+      // Leagues / branding_profiles minimal defaults. Leagues mirror the
+      // scoring-config and archive defaults from 20260806054006.
       if (this.table === "leagues") {
         if (row.status == null) row.status = "draft";
         if (row.visibility == null) row.visibility = "private";
+        if (row.points_first == null) row.points_first = 10;
+        if (row.points_second == null) row.points_second = 7;
+        if (row.points_third == null) row.points_third = 5;
+        if (row.points_participation == null) row.points_participation = 1;
+        if (row.archived_at == null) row.archived_at = null;
+        if (row.description == null) row.description = null;
+        if (row.season == null) row.season = "Season 1";
         if (row.updated_at == null) row.updated_at = new Date().toISOString();
       }
       if (this.table === "branding_profiles" && row.updated_at == null) {
         row.updated_at = new Date().toISOString();
+      }
+      // competition_results minimal defaults (20260722065824).
+      if (this.table === "competition_results") {
+        if (row.final_score == null) row.final_score = 0;
+        if (row.accuracy_percentage == null) row.accuracy_percentage = 0;
+        if (row.total_participants == null) row.total_participants = 0;
+        if (row.completed_at == null) row.completed_at = new Date().toISOString();
       }
 
       table.push(row);
@@ -529,14 +562,177 @@ export class FakeSupabase {
     return new FakeBuilder(this.db, table, "select");
   }
 
-  rpc(name: string, args: Record<string, unknown>): Promise<FakeResult<boolean>> {
-    if (name !== "can") {
-      return Promise.resolve({
-        data: null,
-        error: { message: `fake-supabase: unknown rpc "${name}"` },
-      });
+  rpc(name: string, args: Record<string, unknown>): Promise<FakeResult<unknown>> {
+    try {
+      switch (name) {
+        case "can":
+          return Promise.resolve({ data: this.can(args), error: null });
+        case "mcp_league_standings":
+          return Promise.resolve({
+            data: this.leagueStandings(args.p_principal as string, args.p_league_id as string),
+            error: null,
+          });
+        case "mcp_league_overview":
+          return Promise.resolve({
+            data: this.leagueOverview(args.p_principal as string, args.p_league_id as string),
+            error: null,
+          });
+        default:
+          return Promise.resolve({
+            data: null,
+            error: { message: `fake-supabase: unknown rpc "${name}"` },
+          });
+      }
+    } catch (err) {
+      // The production wrappers raise 'Not authorized' — PostgREST surfaces
+      // that as an error, so the fake must too (message match drives the
+      // unauthorized mapping in league.ts).
+      const message = err instanceof Error ? err.message : "unknown";
+      return Promise.resolve({ data: null, error: { message } });
     }
-    return Promise.resolve({ data: this.can(args), error: null });
+  }
+
+  /** Mirrors the Phase 8D wrapper gate: can(league.manage) OR public. */
+  private leagueVisible(principal: string, leagueId: string): boolean {
+    const league = this.db.leagues.find((l) => l.id === leagueId);
+    if (league && league.visibility === "public") return true;
+    return this.can({
+      p_principal: principal,
+      p_action: "league.manage",
+      p_resource: leagueId,
+    });
+  }
+
+  /** Faithful port of public.get_league_standings (20260806054006:21-74):
+   * completed league competitions' permanent results aggregated with the
+   * league's scoring config and the app's exact tie-break order. */
+  private leagueStandings(principal: string, leagueId: string): Row[] {
+    const league = this.db.leagues.find((l) => l.id === leagueId);
+    if (!league || !this.leagueVisible(principal, leagueId)) {
+      throw new Error("Not authorized");
+    }
+    const p1 = Number(league.points_first ?? 10);
+    const p2 = Number(league.points_second ?? 7);
+    const p3 = Number(league.points_third ?? 5);
+    const pp = Number(league.points_participation ?? 1);
+
+    const competitions = this.db.competitions as Row[];
+    const byPid = new Map<
+      string,
+      {
+        pts: number;
+        played: number;
+        wins: number;
+        podiums: number;
+        totalScore: number;
+        accs: number[];
+      }
+    >();
+    for (const cr of this.db.competition_results as Row[]) {
+      const sessionId = cr.session_id as string | null;
+      if (sessionId == null) continue;
+      const comp = competitions.find((c) => c.session_id === sessionId);
+      if (!comp || comp.league_id !== leagueId || comp.status !== "completed") continue;
+      const rnk = Number(cr.final_rank);
+      const acc = cr.accuracy_percentage == null ? null : Number(cr.accuracy_percentage);
+      let agg = byPid.get(cr.profile_id as string);
+      if (!agg) {
+        agg = { pts: 0, played: 0, wins: 0, podiums: 0, totalScore: 0, accs: [] };
+        byPid.set(cr.profile_id as string, agg);
+      }
+      agg.pts += rnk === 1 ? p1 : rnk === 2 ? p2 : rnk === 3 ? p3 : pp;
+      agg.played += 1;
+      if (rnk === 1) agg.wins += 1;
+      if (rnk <= 3) agg.podiums += 1;
+      agg.totalScore += Number(cr.final_score ?? 0);
+      if (acc !== null) agg.accs.push(acc);
+    }
+
+    const rows = [...byPid.entries()].map(([pid, agg]) => {
+      const profile = this.db.profiles.find((p) => p.id === pid);
+      const avgAcc =
+        agg.accs.length > 0
+          ? Math.round((agg.accs.reduce((a, b) => a + b, 0) / agg.accs.length) * 10) / 10
+          : null;
+      return {
+        pid,
+        display_name: (profile?.display_name as string | undefined) ?? "Player",
+        avatar_id: profile?.avatar_id ?? null,
+        pts: agg.pts,
+        played: agg.played,
+        wins: agg.wins,
+        podiums: agg.podiums,
+        total_score: agg.totalScore,
+        avg_acc: avgAcc,
+      };
+    });
+
+    // ORDER BY pts DESC, wins DESC, podiums DESC, total_score DESC,
+    //          avg_acc DESC NULLS LAST, COALESCE(display_name,'') ASC
+    rows.sort((a, b) => {
+      if (a.pts !== b.pts) return b.pts - a.pts;
+      if (a.wins !== b.wins) return b.wins - a.wins;
+      if (a.podiums !== b.podiums) return b.podiums - a.podiums;
+      if (a.total_score !== b.total_score) return b.total_score - a.total_score;
+      if (a.avg_acc !== b.avg_acc) {
+        if (a.avg_acc === null) return 1;
+        if (b.avg_acc === null) return -1;
+        return b.avg_acc - a.avg_acc;
+      }
+      return a.display_name.localeCompare(b.display_name);
+    });
+
+    return rows.map((r, i) => ({
+      standing_position: i + 1,
+      profile_id: r.pid,
+      display_name: r.display_name,
+      avatar_id: r.avatar_id,
+      league_points: r.pts,
+      competitions_played: r.played,
+      wins: r.wins,
+      podiums: r.podiums,
+      total_score: r.total_score,
+      avg_accuracy: r.avg_acc,
+    }));
+  }
+
+  /** Faithful port of public.get_league_overview (20260806054006:76-99). */
+  private leagueOverview(principal: string, leagueId: string): Row[] {
+    const league = this.db.leagues.find((l) => l.id === leagueId);
+    if (!league || !this.leagueVisible(principal, leagueId)) {
+      throw new Error("Not authorized");
+    }
+    const competitions = this.db.competitions as Row[];
+    const results = this.db.competition_results as Row[];
+    const participantCount = new Set(
+      results
+        .filter((cr) => {
+          const sessionId = cr.session_id as string | null;
+          if (sessionId == null) return false;
+          const comp = competitions.find((c) => c.session_id === sessionId);
+          return comp !== undefined && comp.league_id === leagueId && comp.status === "completed";
+        })
+        .map((cr) => cr.profile_id),
+    ).size;
+    const total = competitions.filter(
+      (c) => c.league_id === leagueId && c.status !== "cancelled",
+    ).length;
+    const completed = competitions.filter(
+      (c) => c.league_id === leagueId && c.status === "completed",
+    ).length;
+    const upcoming = competitions.filter(
+      (c) =>
+        c.league_id === leagueId &&
+        ["draft", "scheduled", "lobby_open", "running"].includes(c.status as string),
+    ).length;
+    return [
+      {
+        participant_count: participantCount,
+        competitions_total: total,
+        competitions_completed: completed,
+        competitions_upcoming: upcoming,
+      },
+    ];
   }
 
   /** Mirrors public.has_active_host_authorization() — the third host source. */
@@ -572,14 +768,21 @@ export class FakeSupabase {
     if (action.startsWith("admin.")) return admin;
 
     const host = admin || hasRole("host") || this.hasActiveHostAuthorization(user);
-    if (["quiz.create", "competition.create", "league.create", "branding.create", "session.host"].includes(action)) {
+    if (
+      [
+        "quiz.create",
+        "competition.create",
+        "league.create",
+        "branding.create",
+        "session.host",
+      ].includes(action)
+    ) {
       return host;
     }
     if (!resource) return false;
 
-    const ownerPrincipal = this.db.principals.find(
-      (p) => p.type === "user" && p.user_id === user,
-    )?.id as string | undefined;
+    const ownerPrincipal = this.db.principals.find((p) => p.type === "user" && p.user_id === user)
+      ?.id as string | undefined;
 
     if (action === "quiz.edit" || action === "quiz.delete") {
       const owned = this.db.quizzes.some(

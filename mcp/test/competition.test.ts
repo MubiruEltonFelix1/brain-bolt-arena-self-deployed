@@ -21,7 +21,14 @@ import {
 } from "../src/competition";
 import { saveQuizWithClient } from "../src/supabase";
 import type { BrainBoltQuestion, BrainBoltQuiz } from "../src/schema";
-import { asClient, createFakeDb, FakeSupabase, seedHostAuthorization, seedUser, type FakeDb } from "./fake-supabase";
+import {
+  asClient,
+  createFakeDb,
+  FakeSupabase,
+  seedHostAuthorization,
+  seedUser,
+  type FakeDb,
+} from "./fake-supabase";
 
 const OWNER = "11111111-1111-1111-1111-111111111111";
 const OTHER_HOST = "22222222-2222-2222-2222-222222222222";
@@ -37,7 +44,12 @@ const QUIZ: BrainBoltQuiz = {
   timePerQuestionSec: 20,
   difficulty: "medium",
   questions: [
-    { type: "mcq", text: "Which planet is the Red Planet?", options: ["Venus", "Mars"], correctIndex: 1 },
+    {
+      type: "mcq",
+      text: "Which planet is the Red Planet?",
+      options: ["Venus", "Mars"],
+      correctIndex: 1,
+    },
     { type: "true_false", text: "The Earth is round.", correct: true },
   ],
 };
@@ -73,17 +85,18 @@ async function seedLeague(
 ): Promise<string> {
   const { data, error } = await client
     .from("leagues")
-    .insert({ owner_principal_id: ownerId, name: "Season League", archived_at: archived ? new Date().toISOString() : null })
+    .insert({
+      owner_principal_id: ownerId,
+      name: "Season League",
+      archived_at: archived ? new Date().toISOString() : null,
+    })
     .select("id")
     .single();
   if (error) throw new Error(`seedLeague failed: ${error.message}`);
   return (data as unknown as { id: string }).id;
 }
 
-async function seedBranding(
-  client: ReturnType<typeof asClient>,
-  ownerId: string,
-): Promise<string> {
+async function seedBranding(client: ReturnType<typeof asClient>, ownerId: string): Promise<string> {
   const { data, error } = await client
     .from("branding_profiles")
     .insert({ owner_principal_id: ownerId, organization_name: "Volt Media" })
@@ -127,6 +140,13 @@ function competitionRowOf(db: FakeDb, competitionId: string) {
   return db.competitions.find((c) => c.id === competitionId)!;
 }
 
+function questionIdsOf(db: FakeDb, quizId: string): string[] {
+  return db.questions
+    .filter((q) => q.quiz_id === quizId)
+    .sort((a, b) => (a.position as number) - (b.position as number))
+    .map((q) => q.id as string);
+}
+
 /* ------------------------------------------------------------------ */
 /* toErrorEnvelope / CompetitionError                                   */
 /* ------------------------------------------------------------------ */
@@ -143,7 +163,10 @@ describe("toErrorEnvelope", () => {
   });
 
   test("unknown errors become a generic unknown envelope — never raw internals", () => {
-    const envelope = toErrorEnvelope("create_competition", new Error("SQLSTATE 42P01: relation does not exist"));
+    const envelope = toErrorEnvelope(
+      "create_competition",
+      new Error("SQLSTATE 42P01: relation does not exist"),
+    );
     expect(envelope.ok).toBe(false);
     expect(envelope.error.code).toBe("unknown");
     expect(envelope.error.message).not.toContain("SQLSTATE");
@@ -204,22 +227,30 @@ describe("create_competition", () => {
 
   test("rejects an invented mode", async () => {
     const { db, client } = makeEnv();
-    const error = await makeCompetition(client, { mode: "league_fixture" as never }).catch((e: unknown) => e);
+    const error = await makeCompetition(client, { mode: "league_fixture" as never }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
-    expect((error as CompetitionError).message).toContain("mode must be one of hosted, arena, scheduled");
+    expect((error as CompetitionError).message).toContain(
+      "mode must be one of hosted, arena, scheduled",
+    );
     expect(db.competitions).toHaveLength(0);
   });
 
   test("rejects an invalid visibility", async () => {
     const { db, client } = makeEnv();
-    const error = await makeCompetition(client, { visibility: "public-ish" as never }).catch((e: unknown) => e);
+    const error = await makeCompetition(client, { visibility: "public-ish" as never }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
     expect(db.competitions).toHaveLength(0);
   });
 
   test("rejects a past scheduled start — never coerced", async () => {
     const { db, client } = makeEnv();
-    const error = await makeCompetition(client, { scheduledStartAt: pastIso() }).catch((e: unknown) => e);
+    const error = await makeCompetition(client, { scheduledStartAt: pastIso() }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
     expect((error as CompetitionError).message).toContain("must be in the future");
     expect(db.competitions).toHaveLength(0);
@@ -227,7 +258,9 @@ describe("create_competition", () => {
 
   test("rejects out-of-range lobby duration and max participants", async () => {
     const { db, client } = makeEnv();
-    const lobbyError = await makeCompetition(client, { lobbyDurationSeconds: 10 }).catch((e: unknown) => e);
+    const lobbyError = await makeCompetition(client, { lobbyDurationSeconds: 10 }).catch(
+      (e: unknown) => e,
+    );
     expect((lobbyError as CompetitionError).code).toBe("validation");
     const maxError = await makeCompetition(client, { maxParticipants: 0 }).catch((e: unknown) => e);
     expect((maxError as CompetitionError).code).toBe("validation");
@@ -250,7 +283,11 @@ describe("create_competition", () => {
     seedUser(db, HOST_AUTH_USER);
     seedHostAuthorization(db, HOST_AUTH_USER);
     const { quizId } = await saveOwnedQuiz(client, QUIZ.questions, HOST_AUTH_USER);
-    const result = await makeCompetition(client, { actorId: HOST_AUTH_USER, quizId, title: "Auth'd host's" });
+    const result = await makeCompetition(client, {
+      actorId: HOST_AUTH_USER,
+      quizId,
+      title: "Auth'd host's",
+    });
     expect(result.ok).toBe(true);
     expect(competitionRowOf(db, result.competitionId).owner_principal_id).toBe(HOST_AUTH_USER);
 
@@ -277,10 +314,14 @@ describe("create_competition", () => {
     const theirBranding = await seedBranding(client, OTHER_HOST);
     const myBranding = await seedBranding(client, OWNER);
 
-    const leagueError = await makeCompetition(client, { leagueId: theirLeague }).catch((e: unknown) => e);
+    const leagueError = await makeCompetition(client, { leagueId: theirLeague }).catch(
+      (e: unknown) => e,
+    );
     expect((leagueError as CompetitionError).code).toBe("unauthorized");
 
-    const brandingError = await makeCompetition(client, { brandingProfileId: theirBranding }).catch((e: unknown) => e);
+    const brandingError = await makeCompetition(client, { brandingProfileId: theirBranding }).catch(
+      (e: unknown) => e,
+    );
     expect((brandingError as CompetitionError).code).toBe("unauthorized");
 
     const ok = await makeCompetition(client, { leagueId: myLeague, brandingProfileId: myBranding });
@@ -293,9 +334,38 @@ describe("create_competition", () => {
   test("rejects an archived league", async () => {
     const { client } = makeEnv();
     const archivedLeague = await seedLeague(client, OWNER, true);
-    const error = await makeCompetition(client, { leagueId: archivedLeague }).catch((e: unknown) => e);
+    const error = await makeCompetition(client, { leagueId: archivedLeague }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
     expect((error as CompetitionError).message).toContain("archived");
+  });
+
+  test("rejects a quiz whose questions are all is_playable=false — nothing written", async () => {
+    const { db, client } = makeEnv();
+    const { quizId } = await saveOwnedQuiz(client);
+    for (const questionId of questionIdsOf(db, quizId)) {
+      await client.from("questions").update({ is_playable: false }).eq("id", questionId);
+    }
+    const error = await makeCompetition(client, { quizId }).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(CompetitionError);
+    expect((error as CompetitionError).code).toBe("validation");
+    expect((error as CompetitionError).message).toContain("no playable questions");
+    expect(db.competitions).toHaveLength(0);
+  });
+
+  test("accepts a quiz with at least one is_playable=true question", async () => {
+    const { db, client } = makeEnv();
+    const { quizId } = await saveOwnedQuiz(client);
+    // Only the first question stays playable; the rest are excluded.
+    const [playableId, ...restIds] = questionIdsOf(db, quizId);
+    for (const questionId of restIds) {
+      await client.from("questions").update({ is_playable: false }).eq("id", questionId!);
+    }
+    const result = await makeCompetition(client, { quizId });
+    expect(result.ok).toBe(true);
+    expect(competitionRowOf(db, result.competitionId!).quiz_id).toBe(quizId);
+    expect(db.questions.find((q) => q.id === playableId)!.is_playable).toBe(true);
   });
 });
 
@@ -327,7 +397,12 @@ describe("list_competitions", () => {
     const { quizId: quizA } = await saveOwnedQuiz(client);
     const { quizId: quizB } = await saveOwnedQuiz(client);
     const league = await seedLeague(client, OWNER);
-    await makeCompetition(client, { quizId: quizA, title: "Draft One", visibility: "public", leagueId: league });
+    await makeCompetition(client, {
+      quizId: quizA,
+      title: "Draft One",
+      visibility: "public",
+      leagueId: league,
+    });
     await makeCompetition(client, { quizId: quizB, title: "Draft Two" });
     await makeCompetition(client, { quizId: quizA, title: "Arena One", mode: "arena" });
 
@@ -353,7 +428,11 @@ describe("list_competitions", () => {
     expect(early.items.map((i) => i.title)).toEqual(["Early"]);
     const late = await listCompetitions(client, { actorId: OWNER, scheduledFrom: mid });
     expect(late.items.map((i) => i.title)).toEqual(["Late"]);
-    const both = await listCompetitions(client, { actorId: OWNER, scheduledFrom: futureIso(12), scheduledTo: futureIso(96) });
+    const both = await listCompetitions(client, {
+      actorId: OWNER,
+      scheduledFrom: futureIso(12),
+      scheduledTo: futureIso(96),
+    });
     expect(both.count).toBe(2);
   });
 
@@ -380,7 +459,10 @@ describe("list_competitions", () => {
 describe("get_competition", () => {
   test("owner reads the full business state — no session reads", async () => {
     const { client } = makeEnv();
-    const { competitionId } = await makeCompetition(client, { title: "Readable", maxParticipants: 40 });
+    const { competitionId } = await makeCompetition(client, {
+      title: "Readable",
+      maxParticipants: 40,
+    });
     const { competition } = await getCompetition(client, { actorId: OWNER, competitionId });
     expect(competition.id).toBe(competitionId);
     expect(competition.title).toBe("Readable");
@@ -396,13 +478,17 @@ describe("get_competition", () => {
   test("non-owner is denied even with host capability", async () => {
     const { client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
-    const error = await getCompetition(client, { actorId: OTHER_HOST, competitionId }).catch((e: unknown) => e);
+    const error = await getCompetition(client, { actorId: OTHER_HOST, competitionId }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("unauthorized");
   });
 
   test("missing competition reports not-found, not a generic denial", async () => {
     const { client } = makeEnv();
-    const error = await getCompetition(client, { actorId: OWNER, competitionId: MISSING }).catch((e: unknown) => e);
+    const error = await getCompetition(client, { actorId: OWNER, competitionId: MISSING }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("not-found");
     expect((error as CompetitionError).message).toContain("does not exist");
   });
@@ -415,7 +501,10 @@ describe("get_competition", () => {
 describe("update_competition", () => {
   test("patches only the supplied fields", async () => {
     const { db, client } = makeEnv();
-    const { competitionId } = await makeCompetition(client, { title: "Before", maxParticipants: 10 });
+    const { competitionId } = await makeCompetition(client, {
+      title: "Before",
+      maxParticipants: 10,
+    });
     const result = await updateCompetition(client, {
       actorId: OWNER,
       competitionId,
@@ -432,14 +521,21 @@ describe("update_competition", () => {
   test("visibility change is an explicit patch", async () => {
     const { db, client } = makeEnv();
     const { competitionId } = await makeCompetition(client, { visibility: "private" });
-    await updateCompetition(client, { actorId: OWNER, competitionId, patch: { visibility: "public" } });
+    await updateCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      patch: { visibility: "public" },
+    });
     expect(competitionRowOf(db, competitionId).visibility).toBe("public");
   });
 
   test("null detaches league and clears description/maxParticipants", async () => {
     const { db, client } = makeEnv();
     const league = await seedLeague(client, OWNER);
-    const { competitionId } = await makeCompetition(client, { leagueId: league, maxParticipants: 25 });
+    const { competitionId } = await makeCompetition(client, {
+      leagueId: league,
+      maxParticipants: 25,
+    });
     const result = await updateCompetition(client, {
       actorId: OWNER,
       competitionId,
@@ -455,7 +551,11 @@ describe("update_competition", () => {
     const { db, client } = makeEnv();
     seedUser(db, ADMIN, ["admin"]);
     const { quizId } = await saveOwnedQuiz(client, QUIZ.questions, ADMIN);
-    const { competitionId } = await makeCompetition(client, { actorId: ADMIN, quizId, title: "Admin's" });
+    const { competitionId } = await makeCompetition(client, {
+      actorId: ADMIN,
+      quizId,
+      title: "Admin's",
+    });
     const result = await updateCompetition(client, {
       actorId: ADMIN,
       competitionId,
@@ -518,7 +618,11 @@ describe("update_competition", () => {
   test("rejects an empty patch and a detach of another's league", async () => {
     const { client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
-    const empty = await updateCompetition(client, { actorId: OWNER, competitionId, patch: {} }).catch((e: unknown) => e);
+    const empty = await updateCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      patch: {},
+    }).catch((e: unknown) => e);
     expect((empty as CompetitionError).code).toBe("validation");
     const theirLeague = await seedLeague(client, OTHER_HOST);
     const bad = await updateCompetition(client, {
@@ -554,7 +658,11 @@ describe("schedule_competition", () => {
     const { competitionId } = await makeCompetition(client);
     await scheduleCompetition(client, { actorId: OWNER, competitionId });
     const later = futureIso(48);
-    const result = await scheduleCompetition(client, { actorId: OWNER, competitionId, scheduledStartAt: later });
+    const result = await scheduleCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      scheduledStartAt: later,
+    });
     expect(result.scheduledStartAt).toBe(later);
     expect(competitionRowOf(db, competitionId).scheduled_start_at).toBe(later);
   });
@@ -575,7 +683,9 @@ describe("schedule_competition", () => {
     const { client } = makeEnv();
     for (const mode of ["hosted", "arena"] as const) {
       const { competitionId } = await makeCompetition(client, { mode });
-      const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch((e: unknown) => e);
+      const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch(
+        (e: unknown) => e,
+      );
       expect((error as CompetitionError).code).toBe("validation");
       expect((error as CompetitionError).message).toContain("mode");
     }
@@ -592,7 +702,10 @@ describe("schedule_competition", () => {
     expect((cancelError as CompetitionError).code).toBe("conflict");
 
     const completed = await makeCompetition(client);
-    await client.from("competitions").update({ status: "completed" }).eq("id", completed.competitionId!);
+    await client
+      .from("competitions")
+      .update({ status: "completed" })
+      .eq("id", completed.competitionId!);
     const completeError = await scheduleCompetition(client, {
       actorId: OWNER,
       competitionId: completed.competitionId!,
@@ -604,7 +717,9 @@ describe("schedule_competition", () => {
     const { client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
     await client.from("competitions").update({ scheduled_start_at: null }).eq("id", competitionId);
-    const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch((e: unknown) => e);
+    const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
     expect((error as CompetitionError).message).toContain("pass scheduledStartAt");
   });
@@ -612,8 +727,13 @@ describe("schedule_competition", () => {
   test("rejects a stored start that has passed", async () => {
     const { client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
-    await client.from("competitions").update({ scheduled_start_at: pastIso() }).eq("id", competitionId);
-    const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch((e: unknown) => e);
+    await client
+      .from("competitions")
+      .update({ scheduled_start_at: pastIso() })
+      .eq("id", competitionId);
+    const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
     expect((error as CompetitionError).message).toContain("in the past");
   });
@@ -623,7 +743,9 @@ describe("schedule_competition", () => {
     const { quizId } = await saveOwnedQuiz(client);
     const { competitionId } = await makeCompetition(client, { quizId });
     await client.from("quizzes").update({ archived_at: new Date().toISOString() }).eq("id", quizId);
-    const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch((e: unknown) => e);
+    const error = await scheduleCompetition(client, { actorId: OWNER, competitionId }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("validation");
     expect((error as CompetitionError).message).toContain("archived");
   });
@@ -666,7 +788,9 @@ describe("cancel_competition", () => {
     const { client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
     await client.from("competitions").update({ status: "completed" }).eq("id", competitionId);
-    const error = await cancelCompetition(client, { actorId: OWNER, competitionId }).catch((e: unknown) => e);
+    const error = await cancelCompetition(client, { actorId: OWNER, competitionId }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("conflict");
     expect((error as CompetitionError).message).toContain("completed");
   });
@@ -684,7 +808,9 @@ describe("cancel_competition", () => {
   test("non-owner cannot cancel", async () => {
     const { client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
-    const error = await cancelCompetition(client, { actorId: OTHER_HOST, competitionId }).catch((e: unknown) => e);
+    const error = await cancelCompetition(client, { actorId: OTHER_HOST, competitionId }).catch(
+      (e: unknown) => e,
+    );
     expect((error as CompetitionError).code).toBe("unauthorized");
   });
 });
@@ -701,8 +827,16 @@ describe("competition idempotency", () => {
     // different request).
     const { quizId } = await saveOwnedQuiz(client);
     const start = futureIso();
-    const first = await makeCompetition(client, { idempotencyKey: "comp-create-1", quizId, scheduledStartAt: start });
-    const second = await makeCompetition(client, { idempotencyKey: "comp-create-1", quizId, scheduledStartAt: start });
+    const first = await makeCompetition(client, {
+      idempotencyKey: "comp-create-1",
+      quizId,
+      scheduledStartAt: start,
+    });
+    const second = await makeCompetition(client, {
+      idempotencyKey: "comp-create-1",
+      quizId,
+      scheduledStartAt: start,
+    });
     expect(second.competitionId).toBe(first.competitionId);
     expect(second.replayed).toBe(true);
     expect(first.replayed).toBe(false);
@@ -734,13 +868,29 @@ describe("competition idempotency", () => {
     const { db, client } = makeEnv();
     const { competitionId } = await makeCompetition(client);
 
-    const s1 = await scheduleCompetition(client, { actorId: OWNER, competitionId, idempotencyKey: "comp-sched-1" });
-    const s2 = await scheduleCompetition(client, { actorId: OWNER, competitionId, idempotencyKey: "comp-sched-1" });
+    const s1 = await scheduleCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      idempotencyKey: "comp-sched-1",
+    });
+    const s2 = await scheduleCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      idempotencyKey: "comp-sched-1",
+    });
     expect(s2.replayed).toBe(true);
     expect(s2.status).toBe("scheduled");
 
-    const c1 = await cancelCompetition(client, { actorId: OWNER, competitionId, idempotencyKey: "comp-cancel-1" });
-    const c2 = await cancelCompetition(client, { actorId: OWNER, competitionId, idempotencyKey: "comp-cancel-1" });
+    const c1 = await cancelCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      idempotencyKey: "comp-cancel-1",
+    });
+    const c2 = await cancelCompetition(client, {
+      actorId: OWNER,
+      competitionId,
+      idempotencyKey: "comp-cancel-1",
+    });
     expect(c2.replayed).toBe(true);
     expect(competitionRowOf(db, competitionId).status).toBe("cancelled");
     expect(competitionRowOf(db, competitionId).cancelled_at).toBeTruthy();

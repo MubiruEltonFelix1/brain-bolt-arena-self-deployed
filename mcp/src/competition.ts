@@ -26,23 +26,14 @@
 // key replays the stored result (see idempotency.ts, same table as Phase 8B).
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import {
-  isValidUuid,
-  resolveActor,
-  wrapIdempotent,
-  type Actor,
-} from "./lifecycle";
+import { isValidUuid, resolveActor, wrapIdempotent, type Actor } from "./lifecycle";
 
 /* ------------------------------------------------------------------ */
 /* Shared shapes                                                        */
 /* ------------------------------------------------------------------ */
 
 export type CompetitionErrorCode =
-  | "unauthorized"
-  | "not-found"
-  | "validation"
-  | "conflict"
-  | "unknown";
+  "unauthorized" | "not-found" | "validation" | "conflict" | "unknown";
 
 export class CompetitionError extends Error {
   code: CompetitionErrorCode;
@@ -75,10 +66,7 @@ export type CompetitionFailureEnvelope = {
 };
 
 /** Maps any thrown value to the structured failure envelope (spec §16). */
-export function toErrorEnvelope(
-  action: string,
-  err: unknown,
-): CompetitionFailureEnvelope {
+export function toErrorEnvelope(action: string, err: unknown): CompetitionFailureEnvelope {
   if (err instanceof CompetitionError) {
     return { ok: false, action, error: { code: err.code, message: err.message } };
   }
@@ -299,10 +287,7 @@ async function fetchQuizTitles(
   client: SupabaseClient,
   quizIds: string[],
 ): Promise<Map<string, string>> {
-  const { data, error } = await client
-    .from("quizzes")
-    .select("id,title")
-    .in("id", quizIds);
+  const { data, error } = await client.from("quizzes").select("id,title").in("id", quizIds);
   if (error) {
     throw sanitizeError(error, "Could not read quiz titles.");
   }
@@ -340,7 +325,10 @@ export async function assertCompetitionCan(
     p_resource: competitionId,
   });
   if (error) {
-    throw sanitizeError(error, `Could not verify authorization for competition "${competitionId}".`);
+    throw sanitizeError(
+      error,
+      `Could not verify authorization for competition "${competitionId}".`,
+    );
   }
   if (data !== true) {
     throw new CompetitionError(
@@ -390,7 +378,10 @@ export async function listCompetitions(
   }
   if (options.leagueId) {
     if (!isValidUuid(options.leagueId)) {
-      throw new CompetitionError("validation", `leagueId "${options.leagueId}" is not a valid uuid.`);
+      throw new CompetitionError(
+        "validation",
+        `leagueId "${options.leagueId}" is not a valid uuid.`,
+      );
     }
     query = query.eq("league_id", options.leagueId);
   }
@@ -497,7 +488,10 @@ export async function createCompetition(
 
     const title = (options.title ?? "").trim();
     if (!title) {
-      throw new CompetitionError("validation", "create_competition: title must be a non-empty string.");
+      throw new CompetitionError(
+        "validation",
+        "create_competition: title must be a non-empty string.",
+      );
     }
     const mode = options.mode;
     if (!COMPETITION_MODES.includes(mode)) {
@@ -557,6 +551,22 @@ export async function createCompetition(
       throw new CompetitionError(
         "validation",
         `quiz "${options.quizId}" is archived — competitions require an active quiz.`,
+      );
+    }
+
+    // Playability gate: at least one question must be servable to players.
+    const { data: playableRows, error: playableError } = await client
+      .from("questions")
+      .select("id")
+      .eq("quiz_id", options.quizId)
+      .eq("is_playable", true);
+    if (playableError) {
+      throw sanitizeError(playableError, `Could not read questions of quiz "${options.quizId}".`);
+    }
+    if (!playableRows || playableRows.length === 0) {
+      throw new CompetitionError(
+        "validation",
+        `quiz "${options.quizId}" has no playable questions — enable at least one question before creating a competition.`,
       );
     }
 
@@ -683,7 +693,11 @@ export async function updateCompetition(
 
     if ("title" in patch) {
       const title = (patch.title ?? "").trim();
-      if (!title) throw new CompetitionError("validation", "update_competition: title must be a non-empty string.");
+      if (!title)
+        throw new CompetitionError(
+          "validation",
+          "update_competition: title must be a non-empty string.",
+        );
       update.title = title;
       changed.title = title !== row.title;
     }
@@ -709,10 +723,14 @@ export async function updateCompetition(
       // Compare semantically (Date.parse), not lexically: the DB stores
       // TIMESTAMPTZ-normalized text, the client may pass +00:00 offsets.
       const before = row.scheduled_start_at;
-      changed.scheduledStartAt = before === null || Date.parse(scheduledStartAt) !== Date.parse(before);
+      changed.scheduledStartAt =
+        before === null || Date.parse(scheduledStartAt) !== Date.parse(before);
     }
     if ("lobbyDurationSeconds" in patch) {
-      const lobbyDurationSeconds = assertLobbyDuration(patch.lobbyDurationSeconds, "lobbyDurationSeconds");
+      const lobbyDurationSeconds = assertLobbyDuration(
+        patch.lobbyDurationSeconds,
+        "lobbyDurationSeconds",
+      );
       update.lobby_duration_seconds = lobbyDurationSeconds;
       changed.lobbyDurationSeconds = lobbyDurationSeconds !== row.lobby_duration_seconds;
     }
@@ -925,7 +943,9 @@ export async function cancelCompetition(
         competitionId: options.competitionId,
         status: "cancelled",
         changed: { cancelled: false },
-        warnings: [`competition "${options.competitionId}" was already cancelled on ${row.cancelled_at}.`],
+        warnings: [
+          `competition "${options.competitionId}" was already cancelled on ${row.cancelled_at}.`,
+        ],
         errors: [],
       };
     }
@@ -967,7 +987,8 @@ export async function cancelCompetition(
 /* League / branding accessibility (owner-scoped, like the app form)     */
 /* ------------------------------------------------------------------ */
 
-async function assertAccessibleLeague(
+/** Exported for the Phase 8D league tools (attach/detach reuse the same gate). */
+export async function assertAccessibleLeague(
   client: SupabaseClient,
   actor: Actor,
   leagueId: string,
@@ -998,7 +1019,10 @@ async function assertAccessibleLeague(
     );
   }
   if (league.archived_at !== null) {
-    throw new CompetitionError("validation", `league "${leagueId}" is archived and cannot be attached.`);
+    throw new CompetitionError(
+      "validation",
+      `league "${leagueId}" is archived and cannot be attached.`,
+    );
   }
 }
 
