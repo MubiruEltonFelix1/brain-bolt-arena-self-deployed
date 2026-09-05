@@ -123,19 +123,21 @@ AI can connect: Quiz → Competition → League → Results → Standings.
 
 League discovery/inspection (`list_leagues`, `get_league`), authoritative standings via the app's existing `get_league_standings` database function (service-role wrappers `mcp_league_standings` / `mcp_league_overview`, no points logic recreated in MCP), permanent-result inspection (`get_competition_results`, `get_player_league_history`), safe league mutations (`attach_competition_to_league`, `detach_competition_from_league` — draft/scheduled only, idempotent) and the first bounded workflow (`orchestrate_competition_workflow`: create → attach → schedule / create → schedule) with per-step derived idempotency keys, preflight validation and explicit partial-failure reporting. All gated through `can(...)` (league reads: owner-or-public, matching the app's `can_view_league`); session boundary unchanged — MCP never touches sessions.
 
-#### 8E — Brain Bolt AI Foundation ⬜ PLANNED
+#### 8E — Brain Bolt AI Foundation ✅ COMPLETE
 
 The actual **native Brain Bolt AI service layer**.
 
-Secure model gateway, prompt management, usage tracking, model selection, AI credits, cost controls.
+Server-side model gateway (`src/lib/ai/`), prompt registry (`PROMPT_VERSIONS`), usage tracking (`ai_usage_log` table + `recordUsage` helper), Bedrock + DeepSeek R1 provider (swappable via `AiProvider` interface), Principal-aware authorization (`ai.generate_questions` capability branch in `public.can(...)`), friendly-error taxonomy (`FRIENDLY_MESSAGES`), no provider secrets exposed to UI.
 
-#### 8F — AI Question & Quiz Builder ⬜ PLANNED
+#### 8F — AI Question & Quiz Builder ✅ COMPLETE
 
 A user says:
 
 > "Create me 20 Form 3 biology questions on genetics."
 
 Brain Bolt AI creates a **draft**, validates it, and lets the human review it before publishing.
+
+Shipped: inline AI panel in the Quiz Editor (`src/components/quiz/AiQuestionBuilderPanel.tsx`) — structured + natural-language inputs, per-question edit / regenerate / remove / exclude, **Add to Quiz** persists via the existing `supabase.from("questions").insert(...)` path with `is_playable=false`. Two server functions (`generateQuestions`, `regenerateQuestion`) in `src/lib/api/ai.functions.ts`. See [BRAINBOLT_AI_ARCHITECTURE.md](BRAINBOLT_AI_ARCHITECTURE.md) for the full architecture.
 
 #### 8G — Brain Bolt AI Assistant ⬜ PLANNED
 
@@ -149,7 +151,7 @@ Eventually:
 - Difficulty balancing
 - Weakness detection
 
-**Definition of done:** MCP lifecycle covers quiz, competition, and league orchestration with idempotency; the native AI service generates a validated draft quiz a human can review and publish; assistant v1 (creator-focused) is live.
+**Definition of done:** MCP lifecycle covers quiz, competition, and league orchestration with idempotency ✅; the native AI service generates a validated draft quiz a human can review and publish ✅; assistant v1 (creator-focused) is live (8G).
 
 ---
 
@@ -482,8 +484,8 @@ AI / MCP
 🔄 Phase 8
 MCP lifecycle
 MCP orchestration
-Brain Bolt AI
-AI Question Builder
+✅ Brain Bolt AI
+✅ AI Question Builder
 AI Assistant
 
         ↓

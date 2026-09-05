@@ -118,16 +118,60 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
   // In-flight guard: a reconnect or an impatient double-tap must never fire the
-  // same host control twice.
+  // same host control twice. Bounded by an 8-second hard timeout so a stuck RPC
+  // (slow network at 50-player load, DB lock contention) cannot permanently
+  // wedge subsequent legitimate transitions.
+  // Phase 21 Decision 2: 8s universal timeout covers `startGame` and
+  // `skip_current_question` (heaviest work — lazy `question_order` backfill +
+  // answers SUM refund) without leaking the identity-key short-circuit into
+  // non-reveal actions.
+  const CONTROL_TIMEOUT_MS = 8000;
   const controlBusy = useRef(false);
   const [controlPending, setControlPending] = useState(false);
+  // Identity-key refs for reveal-specific dedupe (Phase 21 Decision 2). These
+  // are scoped to reveal/end-early only — `runControl` itself does not dedupe
+  // because it wraps 7 different actions.
+  const lastRevealKey = useRef<string | null>(null);
+  const lastEndEarlyKey = useRef<string | null>(null);
+
   async function runControl(fn: () => Promise<void>) {
     if (controlBusy.current) return;
     controlBusy.current = true;
     setControlPending(true);
+    // Track the underlying RPC separately from the timeout. If the timeout
+    // fires first, we still wait for the RPC to settle before releasing the
+    // busy flag — otherwise a follow-up `runControl` could race with the
+    // stale RPC for non-idempotent actions (`startGame`/`nextRound` calling
+    // `advance_question`, `doSkipQuestion` calling `skip_current_question`,
+    // `togglePause`'s resume path which shifts `current_question_started_at`).
+    const work = fn();
+    // Build the timeout promise with its rejection pre-handled so the race
+    // loser can never trigger an unhandled-rejection warning. `timedOut`
+    // is tracked via closure so the catch block can distinguish timeout
+    // rejections from genuine RPC errors.
+    let timedOut = false;
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => {
+        timedOut = true;
+        reject(new Error("runControl: hard timeout exceeded"));
+      }, CONTROL_TIMEOUT_MS);
+    });
+    // Pre-attach a no-op catch so the loser's rejection never escapes.
+    timeoutPromise.catch(() => {});
     try {
-      await fn();
+      await Promise.race([work, timeoutPromise]);
+    } catch (err) {
+      if (!timedOut) {
+        toastError(err, { context: "runControl" });
+      } else {
+        toastError(err, { context: "runControl (timeout)" });
+      }
     } finally {
+      // Wait for the underlying RPC to actually settle. The race may have
+      // resolved on the timeout branch while `work` is still in flight;
+      // releasing `controlBusy` before it settles would let a follow-up
+      // call race with the in-flight RPC.
+      await work.catch(() => {});
       controlBusy.current = false;
       setControlPending(false);
     }
@@ -372,12 +416,36 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   }
 
   async function revealRound() {
+    // Identity-key short-circuit (Phase 21 Decision 2). Scoped to reveal only —
+    // other actions (startGame, nextRound, togglePause, addTime, doSkipQuestion,
+    // doEndEarly) flow through `runControl` without this guard. On resume,
+    // `current_question_started_at` is shifted forward by the pause delta so
+    // the key legitimately changes; on End-Early after reveal, `revealed` is
+    // true and the action proceeds (End-Early is in its own short-circuit).
+    const key = `${sessionId}:${currentQuestion?.id ?? "none"}:${session?.current_question_started_at ?? "none"}`;
+    if (lastRevealKey.current === key && revealed) return;
+
     await runControl(async () => {
-      const { error } = await supabase.rpc("reveal_current_question", { p_session_id: sessionId });
+      // Phase 21 Decision 4: pass the row's current started_at for stale-
+      // state protection. Server raises `phase21.stale_started_at` if the row
+      // has advanced past our view — we silently resync (expected behaviour
+      // after a fast-forward, no user-facing toast).
+      const { error } = await supabase.rpc("reveal_current_question", {
+        p_session_id: sessionId,
+        p_expected_started_at: session?.current_question_started_at ?? null,
+      });
       if (error) {
+        const msg = String((error as { message?: unknown })?.message ?? "");
+        if (msg.startsWith("phase21.stale_started_at:")) {
+          // Stale client view — fast-forward already occurred. Resync and
+          // move on without toasting.
+          void load();
+          return;
+        }
         toastError(error, { context: "revealRound (reveal_current_question)" });
         return;
       }
+      lastRevealKey.current = key;
       // Fetch stats
       if (currentQuestion) {
         const { data } = await supabase.rpc("get_round_stats", {
@@ -456,15 +524,28 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
   async function doEndEarly() {
     setConfirmEndEarly(false);
+    // Identity-key short-circuit (Phase 21 Decision 2). On stale, the server
+    // silently no-ops; we defensively resync via realtime + load() to avoid
+    // hammering with redundant End-Early calls. Distinct from `revealRound`'s
+    // short-circuit so End-Early after reveal still works (resume shifts
+    // started_at, key changes).
+    const key = `${sessionId}:${currentQuestion?.id ?? "none"}:${session?.current_question_started_at ?? "none"}`;
+    if (lastEndEarlyKey.current === key && revealed) return;
+
     await runControl(async () => {
       if (isPaused) {
         await supabase.rpc("resume_session", { p_session_id: sessionId });
       }
-      const { error } = await supabase.rpc("end_question_early", { p_session_id: sessionId });
+      // Phase 21 Decision 4: stale-started_at is a silent no-op server-side.
+      const { error } = await supabase.rpc("end_question_early", {
+        p_session_id: sessionId,
+        p_expected_started_at: session?.current_question_started_at ?? null,
+      });
       if (error) {
         toastError(error, { context: "doEndEarly (end_question_early)" });
         return;
       }
+      lastEndEarlyKey.current = key;
       if (currentQuestion) {
         const { data } = await supabase.rpc("get_round_stats", {
           p_session_id: sessionId,

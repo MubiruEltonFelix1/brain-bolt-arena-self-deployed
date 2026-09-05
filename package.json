@@ -8,10 +8,12 @@
     "build": "vite build",
     "build:dev": "vite build --mode development",
     "preview": "vite preview",
+    "test": "bun test",
     "lint": "eslint .",
     "format": "prettier --write ."
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock": "^3.1127.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -81,6 +83,8 @@
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
     "@vitejs/plugin-react": "^5.2.0",
+    "bun-types": "^1.4.1",
+    "dotenv": "^17.4.2",
     "eslint": "^9.32.0",
     "eslint-config-prettier": "^10.1.1",
     "eslint-plugin-prettier": "^5.2.6",

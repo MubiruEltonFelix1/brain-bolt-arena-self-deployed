@@ -532,5 +532,10 @@ export function createMarkers({ q, yes }) {
       marker: "questions.is_playable column exists (question playable flag)",
       applied: () => colExists("questions", "is_playable"),
     },
+    {
+      file: "20260822120000_phase_8e_ai_question_builder.sql",
+      marker: "ai_usage_log table exists + ai.* branch in public.can() (Phase 8E AI Builder)",
+      applied: () => tableExists("ai_usage_log") && fnBodyLike("can", "ai.%"),
+    },
   ];
 }

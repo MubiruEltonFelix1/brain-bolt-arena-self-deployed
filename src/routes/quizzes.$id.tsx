@@ -5,6 +5,7 @@ import { HostShell } from "@/components/host-shell";
 import { EmptyState } from "@/components/EmptyState";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { MapPicker } from "@/components/MapPicker";
+import { AiQuestionBuilderPanel } from "@/components/quiz/AiQuestionBuilderPanel";
 import type { GeoRegion } from "@/lib/question-registry";
 import type { CountryRegion } from "@/lib/geo/country-regions";
 import {
@@ -1021,6 +1022,19 @@ function QuizEditor() {
               </button>
             </div>
           </div>
+
+          <AiQuestionBuilderPanel
+            quizId={id}
+            startPosition={questions.length}
+            currentQuestionCount={questions.length}
+            onInsert={(rows) => {
+              // The panel already inserted the rows via supabase and passed
+              // us the actual DB rows back. Append to local state so the
+              // existing per-question cards render them — they keep
+              // is_playable=false until the creator toggles per-question.
+              setQuestions([...questions, ...(rows as unknown as Question[])]);
+            }}
+          />
 
           {csvErrors.length > 0 && (
             <div className="border border-pink-shock/40 bg-pink-shock/5 p-4 space-y-1">
