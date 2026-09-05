@@ -155,7 +155,7 @@ describe("ai / service: BrainBoltAiService", () => {
     // count=3 was requested, 1 was returned. Per brief §4: warning, not error.
     expect(result.error).toBeNull();
     expect(result.draft?.questions.length).toBe(1);
-    expect(result.warnings.some((w) => w.includes("returned 1 questions"))).toBe(true);
+    expect(result.warnings.some((w) => w.includes("returned 1 question"))).toBe(true);
   });
 
   test("model returning non-JSON is mapped to invalid_output", async () => {

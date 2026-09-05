@@ -1,22 +1,26 @@
-// Bedrock provider implementation — uses @aws-sdk/client-bedrock to call
-// InvokeModelCommand against us.deepseek.r1-v1:0 (DeepSeek R1 via the
-// cross-region inference profile).
+// Bedrock provider implementation — uses @aws-sdk/client-bedrock-runtime
+// to call InvokeModelCommand against us.deepseek.r1-v1:0 (DeepSeek R1
+// via the cross-region inference profile).
 //
 // Server-only. The .server.ts suffix prevents Vite from bundling this into
 // the client. AWS_* env vars are read inside the class methods — never at
 // module scope — because Cloudflare Workers / Vercel serverless bind env
 // per-request.
 //
-// The SDK is dynamically imported so tests can run without the package
-// installed; only the live path through BrainBoltAiService requires it.
+// Package note: `@aws-sdk/client-bedrock` is the management plane (CRUD
+// on custom models, etc.). The actual inference commands
+// (InvokeModelCommand, ConverseCommand, etc.) live in
+// `@aws-sdk/client-bedrock-runtime`. The SDK is dynamically imported so
+// tests can run without the package installed.
 
 import type { AiProvider, AiPrompt, AiRawResponse } from "@/lib/ai/types";
 import { stripReasoning } from "@/lib/ai/prompts";
 import { getPricingForModel } from "@/lib/ai/cost-table";
 
-/** DeepSeek R1 expects a "prompt" field with a chat-template-rendered string. */
+/** DeepSeek R1 on Bedrock via the cross-region inference profile. */
 const DEEPSEEK_R1_MODEL = "us.deepseek.r1-v1:0";
 
+/** Body sent to InvokeModelCommand. */
 type DeepSeekR1Body = {
   prompt: string;
   max_tokens: number;
@@ -24,21 +28,28 @@ type DeepSeekR1Body = {
   top_p?: number;
 };
 
+/**
+ * Response body from InvokeModelCommand for DeepSeek R1.
+ *
+ * The actual structure is OpenAI completions-style:
+ *   { choices: [{ text: "...", finish_reason: "..." }],
+ *     usage: { prompt_tokens, completion_tokens, total_tokens } }
+ *
+ * Token counts may appear as `prompt_tokens` / `completion_tokens` (the
+ * names this model uses) or `input_tokens` / `output_tokens` (other Bedrock
+ * models). Both are handled.
+ */
 type DeepSeekR1Response = {
-  // For DeepSeek on Bedrock, the response body is the text completion directly.
-  // (Some other models return { choices: [{ text }] }; R1 returns plain text.)
-  // We keep this loose so a future model change is a one-line fix.
-  text?: string;
-  generation?: string;
-  completion?: string;
+  choices?: Array<{
+    text?: string;
+    finish_reason?: string;
+  }>;
   usage?: {
     input_tokens?: number;
     output_tokens?: number;
     prompt_tokens?: number;
     completion_tokens?: number;
   };
-  // Some Bedrock responses wrap the body in { output: { text, ... } }.
-  output?: { text?: string };
 };
 
 export class BedrockDeepSeekProvider implements AiProvider {
@@ -53,9 +64,9 @@ export class BedrockDeepSeekProvider implements AiProvider {
   }
 
   /**
-   * Lazily import + construct the AWS Bedrock client. Dynamic so tests
-   * without `@aws-sdk/client-bedrock` installed don't fail at import time.
-   * The first real .generate() call pays the cost.
+   * Lazily import + construct the AWS Bedrock Runtime client. Dynamic
+   * so tests without `@aws-sdk/client-bedrock-runtime` installed don't
+   * fail at import time. The first real .generate() call pays the cost.
    */
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   private async getClient(): Promise<any> {
@@ -64,9 +75,9 @@ export class BedrockDeepSeekProvider implements AiProvider {
     if (!region) {
       throw new Error("BedrockDeepSeekProvider: AWS_REGION is not set");
     }
-    const mod = await import("@aws-sdk/client-bedrock");
+    const mod = await import("@aws-sdk/client-bedrock-runtime");
     // SDK reads AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY from env automatically.
-    this.client = new mod.BedrockClient({ region });
+    this.client = new mod.BedrockRuntimeClient({ region });
     return this.client;
   }
 
@@ -75,18 +86,15 @@ export class BedrockDeepSeekProvider implements AiProvider {
     const maxTokens = prompt.maxOutputTokens ?? 8000;
     const temperature = prompt.temperature ?? 0.4;
 
-    // Render the DeepSeek-R1 chat template. R1 expects a single
-    // concatenated prompt — not OpenAI's messages array.
-    //
-    // VERIFICATION DEBT: this `Human:/Assistant:` framing follows the
-    // pattern in the AWS DeepSeek blog example. For the cross-region
-    // inference profile `us.deepseek.r1-v1:0`, AWS may or may not apply
-    // its own chat template on top. If the live output is poor, swap to
-    // DeepSeek's native template
-    // (`<|begin▁of▁sentence|><|User|>...<|Assistant|>...`) or use the
-    // Converse API which handles templating internally. See
-    // docs/BRAINBOLT_AI_ARCHITECTURE.md §Provider model.
-    const renderedPrompt = `${prompt.system}\n\n` + `Human: ${prompt.user}\n\n` + `Assistant:`;
+    // Render the DeepSeek-R1 prompt. We DO NOT use a Human:/Assistant:
+    // chat template — the model ignores our framing and uses its own
+    // multi-turn template under the hood. The plain "Instruction: ...
+    // Response:" format works because the model interprets the
+    // instruction block as a single user turn and emits a single
+    // completion. We then strip any multi-turn continuation (subsequent
+    // Human:/Assistant: blocks) before parsing.
+    const renderedPrompt =
+      `${prompt.system}\n\n` + `Instruction: ${prompt.user}\n\n` + `Response:`;
 
     const body: DeepSeekR1Body = {
       prompt: renderedPrompt,
@@ -95,18 +103,12 @@ export class BedrockDeepSeekProvider implements AiProvider {
       top_p: 0.9,
     };
 
-    // Dynamic import so tests without the package installed don't fail
-    // at module-load time. The type assertion is necessary because
-    // TypeScript models the dynamic import as a namespace whose properties
-    // are only the module's top-level exports — `InvokeModelCommand` lives
-    // behind a re-export (`export * from "./commands"`) and isn't surfaced
-    // on the synthesized namespace type even though it works at runtime.
-    type BedrockModule = {
+    type BedrockRuntimeModule = {
       InvokeModelCommand: new (input: unknown) => {
         send: (cmd: unknown) => Promise<{ body?: unknown }>;
       };
     };
-    const mod = (await import("@aws-sdk/client-bedrock")) as unknown as BedrockModule;
+    const mod = (await import("@aws-sdk/client-bedrock-runtime")) as unknown as BedrockRuntimeModule;
     const command = new mod.InvokeModelCommand({
       modelId: this.modelId,
       contentType: "application/json",
@@ -138,18 +140,28 @@ export class BedrockDeepSeekProvider implements AiProvider {
     const latencyMs = Date.now() - start;
 
     // Parse the response body. SDK returns a Uint8Array; Bedrock sends JSON.
-    const text = decodeResponseBody(response.body);
-    const parsed = tryParse(text);
+    const rawText = decodeResponseBody(response.body);
+    const parsed = tryParse(rawText);
 
-    // R1 may emit a <think>...</think> block; strip it before parsing.
-    // extractJsonObject already does this, but we also want to capture the
-    // raw text for the response wrapper.
-    const cleanedText = stripReasoning(text);
+    // DeepSeek R1 returns { choices: [{ text: "..." }] }. We take the first
+    // choice's text. R1 frequently continues the conversation with a
+    // synthesized "User:" / "Assistant:" turn even when instructed not to
+    // (the model treats the prompt as the start of an open-ended chat
+    // session). We truncate at the first "User:" / "Human:" marker so
+    // only the first response makes it into the JSON parser.
+    const textFromChoices = parsed?.choices?.[0]?.text;
+    const fullText = textFromChoices ?? rawText;
+    const firstTurn = fullText.split(/\n+(?:User|Human):/i)[0] ?? fullText;
 
-    // Pull token counts. DeepSeek R1 reports { input_tokens, output_tokens }
-    // OR { prompt_tokens, completion_tokens } depending on the integration.
-    const inputTokens = parsed?.usage?.input_tokens ?? parsed?.usage?.prompt_tokens ?? 0;
-    const outputTokens = parsed?.usage?.output_tokens ?? parsed?.usage?.completion_tokens ?? 0;
+    // The model is also prone to emitting <think>...</think> reasoning
+    // blocks — strip them defensively.
+    const cleanedText = stripReasoning(firstTurn);
+
+    // Pull token counts. DeepSeek R1 uses `prompt_tokens` / `completion_tokens`.
+    const inputTokens =
+      parsed?.usage?.input_tokens ?? parsed?.usage?.prompt_tokens ?? 0;
+    const outputTokens =
+      parsed?.usage?.output_tokens ?? parsed?.usage?.completion_tokens ?? 0;
 
     return {
       text: cleanedText,
@@ -163,11 +175,6 @@ export class BedrockDeepSeekProvider implements AiProvider {
 function decodeResponseBody(body: unknown): string {
   if (typeof body === "string") return body;
   if (body instanceof Uint8Array) return new TextDecoder().decode(body);
-  // Some SDK return types wrap the body in a stream. Caller is async —
-  // we can't await here, so fall through to empty. The async-typed SDK
-  // body variant is the common AWS SDK v3 stream, but InvokeModelCommand
-  // in Node.js typically resolves to a Uint8Array. (If you need the
-  // stream path, convert decodeResponseBody to async.)
   return "";
 }
 

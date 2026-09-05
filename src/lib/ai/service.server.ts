@@ -178,9 +178,17 @@ export class BrainBoltAiService {
       }
 
       // Build a quiz shell around the parsed questions and run validateQuiz.
+      // First map each model-shape question to the canonical BrainBolt
+      // shape (the model emits `question` / `correct_answer` / etc., the
+      // validator expects `text` / `correctIndex` / etc.). Drop any
+      // questions we can't map cleanly.
+      const rawQuestions = (parsedByVersion as { questions: unknown[] }).questions;
+      const mappedQuestions = rawQuestions
+        .map(modelQuestionToCanonical)
+        .filter((q): q is BrainBoltQuestion => q !== null);
       const candidate: BrainBoltQuiz = {
         ...emptyQuizShell(),
-        questions: (parsedByVersion as { questions: unknown[] }).questions as BrainBoltQuestion[],
+        questions: mappedQuestions,
       };
       const report = validateQuiz(candidate);
 
@@ -203,8 +211,27 @@ export class BrainBoltAiService {
       // surface as a warning (partial draft), not a hard error.
       const warnings: string[] = [...report.warnings.map((w) => w.message)];
       const got = candidate.questions.length;
+      if (got === 0) {
+        // Every question failed mapping. Treat as validation failure so
+        // the creator sees the friendly error rather than a confusing empty
+        // draft.
+        return await this.recordAndReturn(supabaseAdmin, {
+          draft: null,
+          warnings,
+          error: "validation_failed",
+          principalId,
+          capability: "ai.generate_questions",
+          promptVersion: "generate_questions_v1",
+          inputTokens,
+          outputTokens,
+          latencyMs,
+          success: false,
+        });
+      }
       if (got !== req.count) {
-        warnings.push(`Brain Bolt AI returned ${got} questions; you asked for ${req.count}.`);
+        warnings.push(
+          `Brain Bolt AI returned ${got} question${got === 1 ? "" : "s"}; you asked for ${req.count}.`,
+        );
       }
 
       // Only return the first N questions if the model overshot. Never
@@ -323,7 +350,22 @@ export class BrainBoltAiService {
         return { question: null, warnings: [], error: "invalid_output" };
       }
 
-      const newQuestion = (parsedByVersion as { question: unknown }).question as BrainBoltQuestion;
+      const newQuestion = modelQuestionToCanonical(
+        (parsedByVersion as { question: unknown }).question,
+      );
+      if (!newQuestion) {
+        recordArgs.success = false;
+        recordArgs.errorKind = "validation_failed";
+        recordArgs.inputTokens = inputTokens;
+        recordArgs.outputTokens = outputTokens;
+        recordArgs.latencyMs = latencyMs;
+        await recordUsage(supabaseAdmin, this.buildUsageRecord(recordArgs));
+        return {
+          question: null,
+          warnings: ["Returned question could not be mapped to a known type."],
+          error: "validation_failed",
+        };
+      }
       const report = validateQuiz({
         ...emptyQuizShell(),
         questions: [newQuestion],
@@ -429,6 +471,141 @@ export class BrainBoltAiService {
       success: args.success,
       errorKind: args.errorKind,
     };
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Model output → canonical Brain Bolt question shape                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The model emits questions in a "natural" shape with field names that
+ * LLMs tend to follow reliably (`question`, `correct_answer` as text, etc.).
+ * The canonical Brain Bolt shape uses `text`, `correctIndex`, and other
+ * fields that match the question-registry and validateQuiz expectations.
+ *
+ * This mapper converts model output to the canonical shape. It also does
+ * defensive defaults (clamping range, defaulting tolerance) so the
+ * downstream validateQuiz gate is more likely to accept the draft.
+ *
+ * Returns `null` for individual questions that can't be mapped cleanly
+ * (e.g. unknown type, missing required fields). The caller is expected
+ * to drop the nulls before passing to validateQuiz.
+ */
+export function modelQuestionToCanonical(raw: unknown): BrainBoltQuestion | null {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const type = typeof r.type === "string" ? r.type : null;
+  const text = typeof r.question === "string"
+    ? r.question
+    : typeof r.text === "string"
+      ? r.text
+      : null;
+  if (!type || !text) return null;
+
+  switch (type) {
+    case "mcq": {
+      const options = Array.isArray(r.options)
+        ? r.options.filter((o): o is string => typeof o === "string" && o.length > 0)
+        : [];
+      if (options.length < 2) return null;
+      const correctAnswer =
+        typeof r.correct_answer === "string"
+          ? r.correct_answer
+          : typeof r.correctIndex === "number"
+            ? options[r.correctIndex] ?? null
+            : null;
+      if (correctAnswer === null) return null;
+      // Resolve text → index.
+      const correctIndex = options.findIndex(
+        (o) => o.toLowerCase().trim() === correctAnswer.toLowerCase().trim(),
+      );
+      if (correctIndex === -1) return null;
+      return {
+        type: "mcq",
+        text,
+        options,
+        correctIndex,
+      };
+    }
+    case "true_false": {
+      if (typeof r.correct === "boolean") {
+        return { type: "true_false", text, correct: r.correct };
+      }
+      if (typeof r.correct_answer === "string") {
+        const v = r.correct_answer.trim().toLowerCase();
+        if (v === "true" || v === "t" || v === "yes") {
+          return { type: "true_false", text, correct: true };
+        }
+        if (v === "false" || v === "f" || v === "no") {
+          return { type: "true_false", text, correct: false };
+        }
+      }
+      return null;
+    }
+    case "number": {
+      const correctNumber =
+        typeof r.correct_number === "number"
+          ? r.correct_number
+          : typeof r.correctNumber === "number"
+            ? r.correctNumber
+            : null;
+      const min = typeof r.min === "number" ? r.min : null;
+      const max = typeof r.max === "number" ? r.max : null;
+      if (correctNumber === null || min === null || max === null) return null;
+      const tolerance =
+        typeof r.tolerance === "number" && r.tolerance >= 0
+          ? r.tolerance
+          : Math.max((max - min) * 0.1, 1);
+      const format =
+        typeof r.format === "string" &&
+        ["general", "year", "decimal", "percentage", "currency"].includes(r.format)
+          ? (r.format as "general" | "year" | "decimal" | "percentage" | "currency")
+          : "general";
+      return {
+        type: "number",
+        text,
+        correctNumber,
+        min,
+        max,
+        tolerance,
+        format,
+      };
+    }
+    case "type": {
+      const acceptedAnswers = Array.isArray(r.accepted_answers)
+        ? r.accepted_answers.filter((a): a is string => typeof a === "string" && a.length > 0)
+        : Array.isArray(r.acceptedAnswers)
+          ? r.acceptedAnswers.filter((a): a is string => typeof a === "string" && a.length > 0)
+          : [];
+      if (acceptedAnswers.length === 0) return null;
+      return { type: "type", text, acceptedAnswers };
+    }
+    case "ordering": {
+      const items = Array.isArray(r.items)
+        ? r.items.filter((i): i is string => typeof i === "string" && i.length > 0)
+        : [];
+      if (items.length < 2) return null;
+      return { type: "ordering", text, items };
+    }
+    case "feedback": {
+      return { type: "feedback", text };
+    }
+    case "map_pin": {
+      const lat = typeof r.lat === "number" ? r.lat : null;
+      const lng = typeof r.lng === "number" ? r.lng : null;
+      if (lat === null || lng === null) return null;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
+      const maxDistanceKm =
+        typeof r.max_distance_km === "number" && r.max_distance_km > 0
+          ? r.max_distance_km
+          : typeof r.maxDistanceKm === "number" && r.maxDistanceKm > 0
+            ? r.maxDistanceKm
+            : 5000;
+      return { type: "map_pin", text, lat, lng, maxDistanceKm };
+    }
+    default:
+      return null;
   }
 }
 

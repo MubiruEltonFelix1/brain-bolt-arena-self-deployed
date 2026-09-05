@@ -6,8 +6,7 @@
 // Usage:  bun scripts/bedrock-smoke.mjs
 
 import "dotenv/config";
-import { BedrockClient } from "@aws-sdk/client-bedrock";
-import { InvokeModelCommand } from "@aws-sdk/client-bedrock/dist-cjs/commands/InvokeModelCommand.js";
+import * as bedrock from "@aws-sdk/client-bedrock-runtime";
 
 const region = process.env.AWS_REGION;
 const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
@@ -24,12 +23,12 @@ if (!region || !accessKeyId || !secretAccessKey) {
 console.log(`[smoke] region=${region}  modelId=${modelId}`);
 console.log(`[smoke] accessKeyId=${accessKeyId.slice(0, 8)}...`);
 
-const client = new BedrockClient({ region });
+const client = new bedrock.BedrockRuntimeClient({ region });
 
 // This is the EXACT prompt format the production provider renders in
 // src/lib/ai/providers/bedrock-deepseek.server.ts. If this fails, the
 // production provider fails too.
-const system = `You are a quiz question generator. Output ONLY valid JSON in the form {"questions": [...]}. No commentary, no markdown fences.`;
+const system = `You are a quiz question generator. Output ONLY valid JSON in the form {"questions": [...]}. Use "question" (not "text") and "correct_answer" (the EXACT TEXT of the correct option, not an index). No commentary, no markdown fences, no trailing conversation.`;
 const user = `Topic: Photosynthesis
 Number of questions: 1
 Difficulty: easy
@@ -37,7 +36,7 @@ Question types allowed: mcq
 
 Output a single multiple-choice question about photosynthesis.`;
 
-const renderedPrompt = `${system}\n\nHuman: ${user}\n\nAssistant:`;
+const renderedPrompt = `${system}\n\nInstruction: ${user}\n\nResponse:`;
 
 const body = {
   prompt: renderedPrompt,
@@ -46,7 +45,7 @@ const body = {
   top_p: 0.9,
 };
 
-const command = new InvokeModelCommand({
+const command = new bedrock.InvokeModelCommand({
   modelId,
   contentType: "application/json",
   accept: "application/json",
@@ -66,20 +65,27 @@ try {
   console.log(`\n[smoke] response received in ${elapsed}ms`);
   console.log(`[smoke] raw text (first 800 chars):\n---\n${text.slice(0, 800)}\n---`);
   console.log(`[smoke] raw text length: ${text.length} chars`);
-  // Check for a JSON object in the response.
-  const firstBrace = text.indexOf("{");
-  const lastBrace = text.lastIndexOf("}");
+  // Parse the same way the production provider does:
+  //   1. Pull `choices[0].text` if present
+  //   2. Strip any multi-turn continuation (R1 emits "User:..." even when
+  //      told not to)
+  //   3. Find the first JSON object
+  const firstTurn = text.split(/\n+User:/i)[0] ?? text;
+  // Find the first '{' and last '}' in the first turn.
+  const firstBrace = firstTurn.indexOf("{");
+  const lastBrace = firstTurn.lastIndexOf("}");
   if (firstBrace >= 0 && lastBrace > firstBrace) {
-    const candidate = text.slice(firstBrace, lastBrace + 1);
+    const candidate = firstTurn.slice(firstBrace, lastBrace + 1);
     try {
       const parsed = JSON.parse(candidate);
       console.log(`\n[smoke] JSON parsed successfully. Keys: ${Object.keys(parsed).join(", ")}`);
       if (parsed.questions && Array.isArray(parsed.questions)) {
         console.log(`[smoke] questions.length = ${parsed.questions.length}`);
-        console.log(`[smoke] first question type = ${parsed.questions[0]?.type}`);
+        console.log(`[smoke] first question type = ${parsed.questions[0]?.type ?? "(missing)"}`);
+        console.log(`[smoke] first question keys = ${Object.keys(parsed.questions[0] ?? {}).join(", ")}`);
         console.log(`\n[smoke] ✅ CHAT TEMPLATE WORKS — production provider should succeed.`);
       } else {
-        console.log(`\n[smoke] ⚠️  JSON parsed but no "questions" array. Production provider would return invalid_output.`);
+        console.log(`\n[smoke] ⚠️  JSON parsed but no "questions" array.`);
         console.log(`[smoke] parsed: ${JSON.stringify(parsed).slice(0, 400)}`);
       }
     } catch (e) {
@@ -88,7 +94,6 @@ try {
     }
   } else {
     console.log(`\n[smoke] ⚠️  No JSON object found in response.`);
-    console.log(`[smoke] Production provider would return invalid_output.`);
   }
 } catch (e) {
   const elapsed = Date.now() - start;

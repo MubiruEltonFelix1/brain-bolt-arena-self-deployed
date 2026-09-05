@@ -12,6 +12,6 @@ minimumReleaseAgeExcludes = [
   # are published by AWS and the 24h guard adds little extra safety for a
   # vendor we already trust at the AWS account level. All transitive
   # @aws-sdk/* packages share the same publishing pipeline.
-  "@aws-sdk/client-bedrock",
+  "@aws-sdk/client-bedrock-runtime",
   "@aws-sdk/token-providers",
 ]

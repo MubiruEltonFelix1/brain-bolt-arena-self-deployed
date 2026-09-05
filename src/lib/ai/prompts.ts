@@ -35,23 +35,39 @@ const regeneratedQuestionSchema = z.object({
 
 const SYSTEM_GENERATE_V1 = `You are the question generator for Brain Bolt — a fast, fair, live-multiplayer quiz game used in classrooms, competitions and live events.
 
-Your job is to produce a JSON object with one key: "questions". Each entry is one Brain Bolt question. Output ONLY valid JSON — no commentary, no markdown fences, no chain-of-thought.
+Your job is to produce a JSON object with one key: "questions". Each entry is one Brain Bolt question. Output ONLY valid JSON — no commentary, no markdown fences, no chain-of-thought, no trailing conversation.
 
-Strict rules — every question MUST satisfy these:
-- The question prompt (text) is concrete and unambiguous.
-- For MCQ / image_mcq / image_reveal / audio: exactly one correct option, 2-6 distinct non-empty options.
-- For true_false: the correct boolean is well-defined.
-- For number: the correctNumber lies within [min, max] and tolerance is non-negative.
-- For ordering: items are unique and not empty.
-- For type: acceptedAnswers has at least one non-empty entry.
-- For map_pin: lat in [-90, 90], lng in [-180, 180], maxDistanceKm positive.
-- Never invent media URLs — if you would need an image or audio file, output only questions whose type does NOT need media (mcq, true_false, number, type, ordering, feedback, map_pin).
+CRITICAL OUTPUT SCHEMA — use these exact field names:
+- "question" (string): the question prompt shown to players. NOT "text" — use "question".
+- "type" (string): one of mcq, true_false, number, type, ordering, feedback, map_pin
+- "options" (string array, 2-6 items, required for mcq): the choices
+- "correct_answer" (string): for MCQ, the EXACT text of the correct option. NOT an index — the text itself. The server resolves to an index.
+- "correct" (boolean, required for true_false): true if the statement is true, false if false
+- "correct_number" (number, required for "number" type): the target number
+- "min" (number, required for "number" type): low end of acceptable range
+- "max" (number, required for "number" type): high end of acceptable range
+- "tolerance" (number, optional for "number" type): acceptable deviation
+- "format" (string, optional for "number" type): one of "general", "year", "decimal", "percentage", "currency"
+- "accepted_answers" (string array, required for "type" questions): accepted phrasings
+- "items" (string array, required for "ordering" questions): in correct order
+- "lat" (number, required for "map_pin" type): latitude in [-90, 90]
+- "lng" (number, required for "map_pin" type): longitude in [-180, 180]
+- "max_distance_km" (number, optional for "map_pin" type): tolerance radius; default 5000
+
+Strict rules:
+- For MCQ: "options" must be 2-6 distinct non-empty strings; "correct_answer" must be the EXACT TEXT of one of the options (not an index).
+- For true_false: "correct" is true or false.
+- For number: correct_number must be in [min, max].
+- For ordering: items must be unique.
+- For type: accepted_answers must have at least one non-empty entry.
+- For map_pin: lat in [-90, 90], lng in [-180, 180].
+- Never invent media URLs — output only questions whose type does NOT need media.
 - Match the requested difficulty: easy = high-school level, medium = undergraduate, hard = specialist.
 
 Hard limits:
 - Return exactly the number of questions requested. Not fewer. Not more.
-- Use ONLY the question types the creator asked for. If they asked for mcq and true_false, do not produce number or ordering.
-- Output JSON only. No "Here are the questions:" preamble, no trailing commentary.`;
+- Use ONLY the question types the creator asked for.
+- Output JSON only. No preamble, no trailing commentary, no follow-up conversation.`;
 
 function buildUserGenerateV1(req: GenerateQuestionsRequest): string {
   const lines: string[] = [];
@@ -72,30 +88,28 @@ function buildUserGenerateV1(req: GenerateQuestionsRequest): string {
     );
   }
   lines.push("");
-  lines.push("Output schema (single JSON object):");
+  lines.push("");
+  lines.push("Output schema (use these exact field names):");
   lines.push(
     JSON.stringify(
       {
         questions: [
-          // One example per type is enough to anchor the schema.
           req.types.includes("mcq")
             ? {
                 type: "mcq",
-                text: "Example?",
+                question: "Example?",
                 options: ["A", "B", "C", "D"],
-                correctIndex: 0,
-                pointValue: 1000,
-                timeLimitSec: 20,
+                correct_answer: "A",
               }
             : null,
           req.types.includes("true_false")
-            ? { type: "true_false", text: "Example statement.", correct: true }
+            ? { type: "true_false", question: "Example statement.", correct: true }
             : null,
           req.types.includes("number")
             ? {
                 type: "number",
-                text: "Example year?",
-                correctNumber: 1989,
+                question: "Example year?",
+                correct_number: 1989,
                 min: 1950,
                 max: 2000,
                 tolerance: 2,
@@ -105,27 +119,27 @@ function buildUserGenerateV1(req: GenerateQuestionsRequest): string {
           req.types.includes("type")
             ? {
                 type: "type",
-                text: "Example short answer?",
-                acceptedAnswers: ["example"],
+                question: "Example short answer?",
+                accepted_answers: ["example"],
               }
             : null,
           req.types.includes("ordering")
             ? {
                 type: "ordering",
-                text: "Example sequence?",
+                question: "Example sequence?",
                 items: ["first", "second", "third"],
               }
             : null,
           req.types.includes("feedback")
-            ? { type: "feedback", text: "Example feedback prompt?" }
+            ? { type: "feedback", question: "Example feedback prompt?" }
             : null,
           req.types.includes("map_pin")
             ? {
                 type: "map_pin",
-                text: "Locate Paris",
+                question: "Locate Paris",
                 lat: 48.8566,
                 lng: 2.3522,
-                maxDistanceKm: 5000,
+                max_distance_km: 5000,
               }
             : null,
         ].filter(Boolean),
@@ -151,7 +165,17 @@ Output ONLY a JSON object with one key: "question". The new question must:
 - For map_pin, change lat/lng (within reason) or the prompt.
 - Never invent media URLs.
 
-Output JSON only. No commentary, no markdown fences.`;
+CRITICAL OUTPUT SCHEMA — use these exact field names:
+- "question" (string): the prompt text
+- "type" (string): SAME type as the original
+- For mcq: "options" (string array), "correct_answer" (EXACT TEXT of correct option, NOT an index)
+- For true_false: "correct" (boolean)
+- For number: "correct_number", "min", "max", optional "tolerance" and "format"
+- For type: "accepted_answers" (string array)
+- For ordering: "items" (string array)
+- For map_pin: "lat" (number), "lng" (number), optional "max_distance_km"
+
+Output JSON only. No commentary, no markdown fences, no trailing conversation.`;
 
 function buildUserRegenerateV1(req: RegenerateQuestionRequest): string {
   const lines: string[] = [];
@@ -197,10 +221,42 @@ export function extractJsonObject(text: string): unknown | null {
   if (fenceMatch && fenceMatch[1]) s = fenceMatch[1].trim();
 
   // Find the first '{' and last '}' (defensive: ignore surrounding prose).
+  // Use bracket-balancing rather than the last '}' to avoid swallowing
+  // JSON from a follow-up "Assistant:" turn (the model occasionally
+  // emits a second response that gets concatenated).
   const firstBrace = s.indexOf("{");
-  const lastBrace = s.lastIndexOf("}");
-  if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) return null;
-  const candidate = s.slice(firstBrace, lastBrace + 1);
+  if (firstBrace === -1) return null;
+  let depth = 0;
+  let endIdx = -1;
+  let inString = false;
+  let escape = false;
+  for (let i = firstBrace; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") depth++;
+    else if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        endIdx = i;
+        break;
+      }
+    }
+  }
+  if (endIdx === -1) return null;
+  const candidate = s.slice(firstBrace, endIdx + 1);
   try {
     return JSON.parse(candidate);
   } catch {
