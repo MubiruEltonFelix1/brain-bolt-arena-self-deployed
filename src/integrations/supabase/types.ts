@@ -1136,7 +1136,10 @@ export type Database = {
         Returns: string;
       };
       current_principal_id: { Args: never; Returns: string };
-      end_question_early: { Args: { p_session_id: string }; Returns: undefined };
+      end_question_early: {
+        Args: { p_session_id: string; p_expected_started_at?: string | null };
+        Returns: undefined;
+      };
       evaluate_question_answer: {
         Args: {
           p_answer: Json;
@@ -1404,7 +1407,7 @@ export type Database = {
       principal_for_user: { Args: { p_user: string }; Returns: string };
       resume_session: { Args: { p_session_id: string }; Returns: undefined };
       reveal_current_question: {
-        Args: { p_session_id: string };
+        Args: { p_session_id: string; p_expected_started_at?: string | null };
         Returns: undefined;
       };
       run_autonomous_scheduler: {

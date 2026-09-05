@@ -9,78 +9,33 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
-import { Route as IndexRouteImport } from './routes/index'
-import { Route as AdminRouteImport } from './routes/admin'
-import { Route as ArenaRouteImport } from './routes/arena'
-import { Route as AuthRouteImport } from './routes/auth'
-import { Route as BrandingRouteImport } from './routes/branding'
-import { Route as CompetitionsRouteImport } from './routes/competitions'
-import { Route as DashboardRouteImport } from './routes/dashboard'
-import { Route as LeaguesRouteImport } from './routes/leagues'
-import { Route as ProfileRouteImport } from './routes/profile'
-import { Route as RequestHostingRouteImport } from './routes/request-hosting'
-import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as TrainingRouteImport } from './routes/training'
-import { Route as ArenaIndexRouteImport } from './routes/arena.index'
-import { Route as ArenaQuizIdRouteImport } from './routes/arena.$quizId'
-import { Route as DebugMapRouteImport } from './routes/debug.map'
-import { Route as HostSessionIdRouteImport } from './routes/host.$sessionId'
-import { Route as JoinCodeRouteImport } from './routes/join.$code'
+import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
+import { Route as RequestHostingRouteImport } from './routes/request-hosting'
+import { Route as ProfileRouteImport } from './routes/profile'
+import { Route as LeaguesRouteImport } from './routes/leagues'
+import { Route as DashboardRouteImport } from './routes/dashboard'
+import { Route as CompetitionsRouteImport } from './routes/competitions'
+import { Route as BrandingRouteImport } from './routes/branding'
+import { Route as AuthRouteImport } from './routes/auth'
+import { Route as ArenaRouteImport } from './routes/arena'
+import { Route as AdminRouteImport } from './routes/admin'
+import { Route as IndexRouteImport } from './routes/index'
 import { Route as LeaguesIndexRouteImport } from './routes/leagues.index'
-import { Route as LeaguesIdRouteImport } from './routes/leagues.$id'
-import { Route as PlaySessionIdRouteImport } from './routes/play.$sessionId'
+import { Route as ArenaIndexRouteImport } from './routes/arena.index'
 import { Route as QuizzesIdRouteImport } from './routes/quizzes.$id'
+import { Route as PlaySessionIdRouteImport } from './routes/play.$sessionId'
+import { Route as LeaguesIdRouteImport } from './routes/leagues.$id'
+import { Route as JoinCodeRouteImport } from './routes/join.$code'
+import { Route as HostSessionIdRouteImport } from './routes/host.$sessionId'
+import { Route as DebugMapRouteImport } from './routes/debug.map'
+import { Route as ArenaQuizIdRouteImport } from './routes/arena.$quizId'
 import { Route as ArenaQuizIdIndexRouteImport } from './routes/arena.$quizId.index'
 import { Route as ArenaQuizIdPlayRouteImport } from './routes/arena.$quizId.play'
 
-const IndexRoute = IndexRouteImport.update({
-  id: '/',
-  path: '/',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AdminRoute = AdminRouteImport.update({
-  id: '/admin',
-  path: '/admin',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ArenaRoute = ArenaRouteImport.update({
-  id: '/arena',
-  path: '/arena',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AuthRoute = AuthRouteImport.update({
-  id: '/auth',
-  path: '/auth',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const BrandingRoute = BrandingRouteImport.update({
-  id: '/branding',
-  path: '/branding',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const CompetitionsRoute = CompetitionsRouteImport.update({
-  id: '/competitions',
-  path: '/competitions',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const DashboardRoute = DashboardRouteImport.update({
-  id: '/dashboard',
-  path: '/dashboard',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LeaguesRoute = LeaguesRouteImport.update({
-  id: '/leagues',
-  path: '/leagues',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ProfileRoute = ProfileRouteImport.update({
-  id: '/profile',
-  path: '/profile',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const RequestHostingRoute = RequestHostingRouteImport.update({
-  id: '/request-hosting',
-  path: '/request-hosting',
+const TrainingRoute = TrainingRouteImport.update({
+  id: '/training',
+  path: '/training',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
@@ -88,34 +43,54 @@ const SitemapDotxmlRoute = SitemapDotxmlRouteImport.update({
   path: '/sitemap.xml',
   getParentRoute: () => rootRouteImport,
 } as any)
-const TrainingRoute = TrainingRouteImport.update({
-  id: '/training',
-  path: '/training',
+const RequestHostingRoute = RequestHostingRouteImport.update({
+  id: '/request-hosting',
+  path: '/request-hosting',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ArenaIndexRoute = ArenaIndexRouteImport.update({
+const ProfileRoute = ProfileRouteImport.update({
+  id: '/profile',
+  path: '/profile',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LeaguesRoute = LeaguesRouteImport.update({
+  id: '/leagues',
+  path: '/leagues',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DashboardRoute = DashboardRouteImport.update({
+  id: '/dashboard',
+  path: '/dashboard',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CompetitionsRoute = CompetitionsRouteImport.update({
+  id: '/competitions',
+  path: '/competitions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const BrandingRoute = BrandingRouteImport.update({
+  id: '/branding',
+  path: '/branding',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AuthRoute = AuthRouteImport.update({
+  id: '/auth',
+  path: '/auth',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ArenaRoute = ArenaRouteImport.update({
+  id: '/arena',
+  path: '/arena',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminRoute = AdminRouteImport.update({
+  id: '/admin',
+  path: '/admin',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
-  getParentRoute: () => ArenaRoute,
-} as any)
-const ArenaQuizIdRoute = ArenaQuizIdRouteImport.update({
-  id: '/$quizId',
-  path: '/$quizId',
-  getParentRoute: () => ArenaRoute,
-} as any)
-const DebugMapRoute = DebugMapRouteImport.update({
-  id: '/debug/map',
-  path: '/debug/map',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const HostSessionIdRoute = HostSessionIdRouteImport.update({
-  id: '/host/$sessionId',
-  path: '/host/$sessionId',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const JoinCodeRoute = JoinCodeRouteImport.update({
-  id: '/join/$code',
-  path: '/join/$code',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LeaguesIndexRoute = LeaguesIndexRouteImport.update({
@@ -123,20 +98,45 @@ const LeaguesIndexRoute = LeaguesIndexRouteImport.update({
   path: '/',
   getParentRoute: () => LeaguesRoute,
 } as any)
-const LeaguesIdRoute = LeaguesIdRouteImport.update({
-  id: '/$id',
-  path: '/$id',
-  getParentRoute: () => LeaguesRoute,
+const ArenaIndexRoute = ArenaIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ArenaRoute,
+} as any)
+const QuizzesIdRoute = QuizzesIdRouteImport.update({
+  id: '/quizzes/$id',
+  path: '/quizzes/$id',
+  getParentRoute: () => rootRouteImport,
 } as any)
 const PlaySessionIdRoute = PlaySessionIdRouteImport.update({
   id: '/play/$sessionId',
   path: '/play/$sessionId',
   getParentRoute: () => rootRouteImport,
 } as any)
-const QuizzesIdRoute = QuizzesIdRouteImport.update({
-  id: '/quizzes/$id',
-  path: '/quizzes/$id',
+const LeaguesIdRoute = LeaguesIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => LeaguesRoute,
+} as any)
+const JoinCodeRoute = JoinCodeRouteImport.update({
+  id: '/join/$code',
+  path: '/join/$code',
   getParentRoute: () => rootRouteImport,
+} as any)
+const HostSessionIdRoute = HostSessionIdRouteImport.update({
+  id: '/host/$sessionId',
+  path: '/host/$sessionId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const DebugMapRoute = DebugMapRouteImport.update({
+  id: '/debug/map',
+  path: '/debug/map',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ArenaQuizIdRoute = ArenaQuizIdRouteImport.update({
+  id: '/$quizId',
+  path: '/$quizId',
+  getParentRoute: () => ArenaRoute,
 } as any)
 const ArenaQuizIdIndexRoute = ArenaQuizIdIndexRouteImport.update({
   id: '/',
@@ -319,74 +319,11 @@ export interface RootRouteChildren {
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
-    '/': {
-      id: '/'
-      path: '/'
-      fullPath: '/'
-      preLoaderRoute: typeof IndexRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/admin': {
-      id: '/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof AdminRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/arena': {
-      id: '/arena'
-      path: '/arena'
-      fullPath: '/arena'
-      preLoaderRoute: typeof ArenaRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/auth': {
-      id: '/auth'
-      path: '/auth'
-      fullPath: '/auth'
-      preLoaderRoute: typeof AuthRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/branding': {
-      id: '/branding'
-      path: '/branding'
-      fullPath: '/branding'
-      preLoaderRoute: typeof BrandingRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/competitions': {
-      id: '/competitions'
-      path: '/competitions'
-      fullPath: '/competitions'
-      preLoaderRoute: typeof CompetitionsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/dashboard': {
-      id: '/dashboard'
-      path: '/dashboard'
-      fullPath: '/dashboard'
-      preLoaderRoute: typeof DashboardRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/leagues': {
-      id: '/leagues'
-      path: '/leagues'
-      fullPath: '/leagues'
-      preLoaderRoute: typeof LeaguesRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/profile': {
-      id: '/profile'
-      path: '/profile'
-      fullPath: '/profile'
-      preLoaderRoute: typeof ProfileRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/request-hosting': {
-      id: '/request-hosting'
-      path: '/request-hosting'
-      fullPath: '/request-hosting'
-      preLoaderRoute: typeof RequestHostingRouteImport
+    '/training': {
+      id: '/training'
+      path: '/training'
+      fullPath: '/training'
+      preLoaderRoute: typeof TrainingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/sitemap.xml': {
@@ -396,46 +333,74 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof SitemapDotxmlRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/training': {
-      id: '/training'
-      path: '/training'
-      fullPath: '/training'
-      preLoaderRoute: typeof TrainingRouteImport
+    '/request-hosting': {
+      id: '/request-hosting'
+      path: '/request-hosting'
+      fullPath: '/request-hosting'
+      preLoaderRoute: typeof RequestHostingRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/arena/': {
-      id: '/arena/'
+    '/profile': {
+      id: '/profile'
+      path: '/profile'
+      fullPath: '/profile'
+      preLoaderRoute: typeof ProfileRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/leagues': {
+      id: '/leagues'
+      path: '/leagues'
+      fullPath: '/leagues'
+      preLoaderRoute: typeof LeaguesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/dashboard': {
+      id: '/dashboard'
+      path: '/dashboard'
+      fullPath: '/dashboard'
+      preLoaderRoute: typeof DashboardRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/competitions': {
+      id: '/competitions'
+      path: '/competitions'
+      fullPath: '/competitions'
+      preLoaderRoute: typeof CompetitionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/branding': {
+      id: '/branding'
+      path: '/branding'
+      fullPath: '/branding'
+      preLoaderRoute: typeof BrandingRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/auth': {
+      id: '/auth'
+      path: '/auth'
+      fullPath: '/auth'
+      preLoaderRoute: typeof AuthRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/arena': {
+      id: '/arena'
+      path: '/arena'
+      fullPath: '/arena'
+      preLoaderRoute: typeof ArenaRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/': {
+      id: '/'
       path: '/'
-      fullPath: '/arena/'
-      preLoaderRoute: typeof ArenaIndexRouteImport
-      parentRoute: typeof ArenaRoute
-    }
-    '/arena/$quizId': {
-      id: '/arena/$quizId'
-      path: '/$quizId'
-      fullPath: '/arena/$quizId'
-      preLoaderRoute: typeof ArenaQuizIdRouteImport
-      parentRoute: typeof ArenaRoute
-    }
-    '/debug/map': {
-      id: '/debug/map'
-      path: '/debug/map'
-      fullPath: '/debug/map'
-      preLoaderRoute: typeof DebugMapRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/host/$sessionId': {
-      id: '/host/$sessionId'
-      path: '/host/$sessionId'
-      fullPath: '/host/$sessionId'
-      preLoaderRoute: typeof HostSessionIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/join/$code': {
-      id: '/join/$code'
-      path: '/join/$code'
-      fullPath: '/join/$code'
-      preLoaderRoute: typeof JoinCodeRouteImport
+      fullPath: '/'
+      preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/leagues/': {
@@ -445,12 +410,19 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LeaguesIndexRouteImport
       parentRoute: typeof LeaguesRoute
     }
-    '/leagues/$id': {
-      id: '/leagues/$id'
-      path: '/$id'
-      fullPath: '/leagues/$id'
-      preLoaderRoute: typeof LeaguesIdRouteImport
-      parentRoute: typeof LeaguesRoute
+    '/arena/': {
+      id: '/arena/'
+      path: '/'
+      fullPath: '/arena/'
+      preLoaderRoute: typeof ArenaIndexRouteImport
+      parentRoute: typeof ArenaRoute
+    }
+    '/quizzes/$id': {
+      id: '/quizzes/$id'
+      path: '/quizzes/$id'
+      fullPath: '/quizzes/$id'
+      preLoaderRoute: typeof QuizzesIdRouteImport
+      parentRoute: typeof rootRouteImport
     }
     '/play/$sessionId': {
       id: '/play/$sessionId'
@@ -459,12 +431,40 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlaySessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/quizzes/$id': {
-      id: '/quizzes/$id'
-      path: '/quizzes/$id'
-      fullPath: '/quizzes/$id'
-      preLoaderRoute: typeof QuizzesIdRouteImport
+    '/leagues/$id': {
+      id: '/leagues/$id'
+      path: '/$id'
+      fullPath: '/leagues/$id'
+      preLoaderRoute: typeof LeaguesIdRouteImport
+      parentRoute: typeof LeaguesRoute
+    }
+    '/join/$code': {
+      id: '/join/$code'
+      path: '/join/$code'
+      fullPath: '/join/$code'
+      preLoaderRoute: typeof JoinCodeRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/host/$sessionId': {
+      id: '/host/$sessionId'
+      path: '/host/$sessionId'
+      fullPath: '/host/$sessionId'
+      preLoaderRoute: typeof HostSessionIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/debug/map': {
+      id: '/debug/map'
+      path: '/debug/map'
+      fullPath: '/debug/map'
+      preLoaderRoute: typeof DebugMapRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/arena/$quizId': {
+      id: '/arena/$quizId'
+      path: '/$quizId'
+      fullPath: '/arena/$quizId'
+      preLoaderRoute: typeof ArenaQuizIdRouteImport
+      parentRoute: typeof ArenaRoute
     }
     '/arena/$quizId/': {
       id: '/arena/$quizId/'
