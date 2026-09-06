@@ -28,8 +28,13 @@ import {
 } from "@/lib/ai/types";
 
 import { PROMPT_VERSIONS, emptyQuizShell, extractJsonObject } from "@/lib/ai/prompts";
-import { validateQuiz, type BrainBoltQuestion, type BrainBoltQuiz } from "@/lib/quiz/validate";
-import { estimateCost } from "@/lib/ai/cost-table";
+import {
+  validateQuiz,
+  type BrainBoltQuestion,
+  type BrainBoltQuiz,
+} from "@/lib/quiz/validate";
+import { DEFAULT_MODEL_ID, estimateCost } from "@/lib/ai/cost-table";
+import { BedrockDeepSeekV3Provider } from "@/lib/ai/providers/bedrock-deepseek-v3.server";
 import { BedrockDeepSeekProvider } from "@/lib/ai/providers/bedrock-deepseek.server";
 import { recordUsage } from "@/lib/ai/usage-log.server";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -48,16 +53,27 @@ export class BrainBoltAiService {
   constructor(opts: BrainBoltAiServiceOptions = {}) {
     if (opts.provider) {
       this.provider = opts.provider;
-    } else {
-      const providerName = process.env.BRAINBOLT_AI_PROVIDER ?? "bedrock-deepseek";
-      const modelId = process.env.BRAINBOLT_AI_MODEL ?? "us.deepseek.r1-v1:0";
-      switch (providerName) {
-        case "bedrock-deepseek":
-          this.provider = new BedrockDeepSeekProvider(modelId);
-          break;
-        default:
-          throw new Error(`BrainBoltAiService: unknown BRAINBOLT_AI_PROVIDER "${providerName}"`);
-      }
+      return;
+    }
+    // Pick a provider by BRAINBOLT_AI_PROVIDER env (default: bedrock-deepseek-v3).
+    // Pick a model by BRAINBOLT_AI_MODEL env (default: DeepSeek V3.2).
+    //
+    // R1 is still supported — set BRAINBOLT_AI_PROVIDER=bedrock-deepseek and
+    // BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0 to revert. Useful if V3.2
+    // misbehaves for a specific topic.
+    const providerName = process.env.BRAINBOLT_AI_PROVIDER ?? "bedrock-deepseek-v3";
+    const modelId = process.env.BRAINBOLT_AI_MODEL ?? DEFAULT_MODEL_ID;
+    switch (providerName) {
+      case "bedrock-deepseek-v3":
+        this.provider = new BedrockDeepSeekV3Provider(modelId);
+        break;
+      case "bedrock-deepseek":
+        this.provider = new BedrockDeepSeekProvider(modelId);
+        break;
+      default:
+        throw new Error(
+          `BrainBoltAiService: unknown BRAINBOLT_AI_PROVIDER "${providerName}"`,
+        );
     }
   }
 

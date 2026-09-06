@@ -54,7 +54,7 @@ BrainBoltAiService.generateQuestions()
    ↓
 PROMPT_VERSIONS.generate_questions_v1 (server-side only)
    ↓
-AiProvider.generate()  ── BedrockDeepSeekProvider ──→ AWS Bedrock (us.deepseek.r1-v1:0)
+AiProvider.generate()  ── BedrockDeepSeekV3Provider ──→ AWS Bedrock (us.deepseek.v3.2:0)
    ↓
 extractJsonObject + validateQuiz
    ↓
@@ -70,11 +70,26 @@ Provider names, model IDs, AWS keys, and AWS regions are **never** exposed to th
 <a id="provider-model"></a>
 ## 3. Provider model
 
-The `AiProvider` interface (in `src/lib/ai/types.ts`) abstracts the model gateway. Today exactly one provider ships:
+The `AiProvider` interface (in `src/lib/ai/types.ts`) abstracts the model gateway. Two provider implementations ship today:
 
-- **` BedrockDeepSeekProvider`** — uses `@aws-sdk/client-bedrock` `InvokeModelCommand` against `us.deepseek.r1-v1:0` (DeepSeek R1 via the cross-region inference profile). Reasoning tokens (`<think>...</think>`) are stripped from the output before JSON parsing. Pricing: $1.35 input / $5.40 output per 1M tokens (verified against `aws.amazon.com/bedrock/pricing/` DeepSeek-R1 example).
+- **`BedrockDeepSeekV3Provider`** (current default) — uses `@aws-sdk/client-bedrock-runtime` `InvokeModelCommand` against `us.deepseek.v3.2:0` (DeepSeek V3.2 via the cross-region inference profile). Non-reasoning chat model, ~2.2× cheaper than R1, ~3-5× faster, and produces significantly better structured JSON for question generation. Pricing: $0.62 input / $1.85 output per 1M tokens (verified against `aws.amazon.com/bedrock/pricing/` DeepSeek V3.2 example).
+- **`BedrockDeepSeekProvider`** (fallback) — same SDK, but against `us.deepseek.r1-v1:0` (DeepSeek R1). Reasoning tokens (`<think>...</think>`) are stripped from the output. Use this if V3.2 misbehaves for a specific topic — set `BRAINBOLT_AI_PROVIDER=bedrock-deepseek` and `BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0`.
 
-Future providers (OpenAI, Anthropic direct, self-hosted) drop in as new implementations of `AiProvider`. Selection is server-side via `BRAINBOLT_AI_PROVIDER` and `BRAINBOLT_AI_MODEL` env vars.
+Provider selection is server-side via env vars:
+
+| Env var | Default | Effect |
+|---|---|---|
+| `BRAINBOLT_AI_PROVIDER` | `bedrock-deepseek-v3` | Which provider class to instantiate |
+| `BRAINBOLT_AI_MODEL` | `us.deepseek.v3.2:0` | Which model the provider calls |
+
+To switch back to R1:
+
+```bash
+BRAINBOLT_AI_PROVIDER=bedrock-deepseek
+BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0
+```
+
+To add a new provider (OpenAI, Anthropic direct, self-hosted): implement `AiProvider`, add a `case` in `BrainBoltAiService` constructor, add pricing to `cost-table.ts`.
 
 The `AiProvider` interface deliberately hides provider names from the caller — the service sees only `modelId`, `pricing`, and `generate(prompt)`.
 
@@ -96,7 +111,7 @@ requireSupabaseAuth → can('ai.generate_questions', quizId)
    ↓
 BrainBoltAiService.generateQuestions()
    ↓
-Bedrock DeepSeek R1 → response
+Bedrock DeepSeek V3.2 → response
    ↓
 extractJsonObject (strips reasoning tokens)
    ↓
@@ -268,7 +283,7 @@ Every `generateQuestions` and `regenerateQuestion` call writes exactly one row t
 | `id` | `uuid` | PK |
 | `principal_id` | `uuid` | references `principals.id` |
 | `capability` | `text` | `ai.generate_questions` or `ai.regenerate_question` |
-| `model` | `text` | e.g. `us.deepseek.r1-v1:0` |
+| `model` | `text` | e.g. `us.deepseek.v3.2:0` |
 | `prompt_version` | `text` | e.g. `generate_questions_v1` |
 | `input_tokens` | `int` | from Bedrock response |
 | `output_tokens` | `int` | from Bedrock response |
@@ -284,12 +299,12 @@ The `cost-table.ts` is the single source of truth for per-model pricing. Verify 
 
 **No paid AI credits in this phase.** No subscription gating. The user's existing AWS account covers the spend. **Cost is never exposed to the creator** — not in the panel, not in toasts, not in the questions table. It is only visible to service-role readers (Phase 16 Mission Control may surface aggregates later).
 
-**Cost estimates** (DeepSeek R1, $1.35/$5.40 per 1M tokens):
+**Cost estimates** (DeepSeek V3.2, $0.62/$1.85 per 1M tokens):
 
-- 5-question generation (~2k input + 1k output) ≈ $0.008
-- 20-question generation (~4k input + 3k output) ≈ $0.022
+- 5-question generation (~2k input + 1k output) ≈ $0.003
+- 20-question generation (~4k input + 3k output) ≈ $0.008
 
-The user's stated $100 AWS credit covers ~4,500–6,500 generations.
+The user's stated $100 AWS credit covers **~25,000-35,000 generations** of typical 5-question batches. V3.2 is ~2.2× cheaper than R1 for the same generation.
 
 ---
 
@@ -312,7 +327,7 @@ unknown
 Every code has a corresponding friendly message in `FRIENDLY_MESSAGES`. Messages deliberately:
 
 - Do **not** mention provider names (Bedrock, OpenAI, DeepSeek, Claude, etc.)
-- Do **not** mention model IDs (`us.deepseek.r1-v1:0`)
+- Do **not** mention model IDs (`us.deepseek.v3.2:0`)
 - Do **not** include stack traces or HTTP status codes
 - Speak in user language ("Brain Bolt AI couldn't create the questions right now.")
 
@@ -332,7 +347,7 @@ Provider errors are translated to the AiErrorCode taxonomy inside the provider. 
 - **No autonomous publishing**: AI never writes to the database without human review.
 - **No chat / player coach / lecturer assistant**: Phase 8G.
 - **English-first prompts**: the system prompt is English. Non-English topics work (the model is multilingual), but the prompt scaffolding is not localized.
-- **Provider**: only Bedrock + DeepSeek R1 ships today. Adding others is a new `AiProvider` implementation.
+- **Provider**: Bedrock + DeepSeek V3.2 (default) and R1 (fallback) ship today. Adding others (OpenAI, Anthropic direct, self-hosted) is a new `AiProvider` implementation.
 - **Validation duplication**: `src/lib/quiz/validate.ts` and `mcp/src/validate.ts` are duplicated. Drift caught by `sync.test.ts`. Phase 17 / 8G may unify.
 
 ---

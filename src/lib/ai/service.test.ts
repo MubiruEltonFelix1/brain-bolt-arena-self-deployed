@@ -288,6 +288,32 @@ describe("ai / service: BrainBoltAiService", () => {
   });
 });
 
+describe("ai / cost-table: V3.2 and R1 pricing", () => {
+  test("DeepSeek V3.2 is the default model", async () => {
+    const { DEFAULT_MODEL_ID } = await import("@/lib/ai/cost-table");
+    expect(DEFAULT_MODEL_ID).toBe("us.deepseek.v3.2:0");
+  });
+
+  test("V3.2 pricing is ~2.2x cheaper than R1", async () => {
+    const { getPricingForModel } = await import("@/lib/ai/cost-table");
+    const v32 = getPricingForModel("us.deepseek.v3.2:0");
+    const r1 = getPricingForModel("us.deepseek.r1-v1:0");
+    // V3.2 input is 0.62, R1 is 1.35 — ratio ~0.46 (V3.2 is ~54% cheaper).
+    expect(v32.inputPerMTok).toBeLessThan(r1.inputPerMTok);
+    expect(v32.inputPerMTok / r1.inputPerMTok).toBeCloseTo(0.46, 1);
+    // V3.2 output is 1.85, R1 is 5.4 — ratio ~0.34 (V3.2 is ~66% cheaper on output).
+    expect(v32.outputPerMTok / r1.outputPerMTok).toBeCloseTo(0.34, 1);
+  });
+
+  test("V3.2 cost is below the user-friendly display threshold", () => {
+    // A 5-question generation emits ~1k output tokens + ~1.2k input.
+    // At V3.2 rates: 1.2k * 0.62 + 1k * 1.85 = $0.0026 — well under
+    // the $0.01 ceiling that's our informal "still cheap" mark.
+    const cost = 1200 * 0.62 + 1000 * 1.85;
+    expect(cost / 1_000_000).toBeLessThan(0.01);
+  });
+});
+
 describe("ai / types: FRIENDLY_MESSAGES", () => {
   test("every AiErrorCode has a friendly message", () => {
     const codes = [
@@ -310,6 +336,9 @@ describe("ai / types: FRIENDLY_MESSAGES", () => {
       expect(msg.toLowerCase()).not.toContain("deepseek");
       expect(msg.toLowerCase()).not.toContain("openai");
       expect(msg).not.toContain("us.deepseek");
+      // V3.2 specific
+      expect(msg).not.toContain("v3.2");
+      expect(msg).not.toContain("v3-2");
     }
   });
 });

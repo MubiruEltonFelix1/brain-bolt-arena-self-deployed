@@ -1,7 +1,10 @@
-// Smoke test for the Bedrock + DeepSeek R1 integration.
+// Smoke test for the Bedrock + DeepSeek integration.
 // Loads .env, calls InvokeModelCommand with the same prompt format the
 // production provider uses, and prints the raw response so we can verify
-// the chat template actually works against us.deepseek.r1-v1:0.
+// the chat template actually works against the configured model.
+//
+// Defaults to V3.2 (the current production default). Set
+// BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0 to test against R1 instead.
 //
 // Usage:  bun scripts/bedrock-smoke.mjs
 
@@ -11,7 +14,7 @@ import * as bedrock from "@aws-sdk/client-bedrock-runtime";
 const region = process.env.AWS_REGION;
 const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
 const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-const modelId = process.env.BRAINBOLT_AI_MODEL ?? "us.deepseek.r1-v1:0";
+const modelId = process.env.BRAINBOLT_AI_MODEL ?? "us.deepseek.v3.2:0";
 
 if (!region || !accessKeyId || !secretAccessKey) {
   console.error(
@@ -20,14 +23,17 @@ if (!region || !accessKeyId || !secretAccessKey) {
   process.exit(1);
 }
 
-console.log(`[smoke] region=${region}  modelId=${modelId}`);
+const isR1 = modelId.includes("r1");
+console.log(`[smoke] region=${region}  modelId=${modelId}  (${isR1 ? "R1" : "V3.2"} chat template)`);
 console.log(`[smoke] accessKeyId=${accessKeyId.slice(0, 8)}...`);
 
 const client = new bedrock.BedrockRuntimeClient({ region });
 
-// This is the EXACT prompt format the production provider renders in
-// src/lib/ai/providers/bedrock-deepseek.server.ts. If this fails, the
-// production provider fails too.
+// This is the EXACT prompt format the production provider renders.
+// V3.2 uses DeepSeek's native chat template; R1 uses a Human:/Assistant
+// framing that the model also tolerates. See
+// src/lib/ai/providers/bedrock-deepseek-v3.server.ts and
+// src/lib/ai/providers/bedrock-deepseek.server.ts.
 const system = `You are a quiz question generator. Output ONLY valid JSON in the form {"questions": [...]}. Use "question" (not "text") and "correct_answer" (the EXACT TEXT of the correct option, not an index). No commentary, no markdown fences, no trailing conversation.`;
 const user = `Topic: Photosynthesis
 Number of questions: 1
@@ -36,13 +42,15 @@ Question types allowed: mcq
 
 Output a single multiple-choice question about photosynthesis.`;
 
-const renderedPrompt = `${system}\n\nInstruction: ${user}\n\nResponse:`;
+const renderedPrompt = isR1
+  ? `${system}\n\nInstruction: ${user}\n\nResponse:`
+  : `<|begin▁of▁sentence|><|User|>${system}\n\n${user}<|Assistant|>`;
 
 const body = {
   prompt: renderedPrompt,
   max_tokens: 1024,
   temperature: 0.4,
-  top_p: 0.9,
+  ...(isR1 ? { top_p: 0.9 } : {}),
 };
 
 const command = new bedrock.InvokeModelCommand({
