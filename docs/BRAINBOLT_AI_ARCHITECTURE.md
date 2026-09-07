@@ -27,6 +27,7 @@ This document describes the architecture shipped in Phase 8E (AI service foundat
 ---
 
 <a id="what-it-is"></a>
+
 ## 1. What it is
 
 A creator opens a normal Brain Bolt Quiz, describes the questions they want, and receives a validated AI-generated **draft**. The draft is reviewed and edited in the existing editor; accepted questions are inserted into the same `questions` table as human-written ones, with `is_playable=false` by default.
@@ -38,6 +39,7 @@ This is the **first user-facing AI capability** in Brain Bolt. Future capabiliti
 ---
 
 <a id="trust-boundary"></a>
+
 ## 2. Trust boundary
 
 ```text
@@ -54,7 +56,7 @@ BrainBoltAiService.generateQuestions()
    ↓
 PROMPT_VERSIONS.generate_questions_v1 (server-side only)
    ↓
-AiProvider.generate()  ── BedrockDeepSeekV3Provider ──→ AWS Bedrock (us.deepseek.v3.2:0)
+AiProvider.generate()  ── BedrockDeepSeekProvider ──→ AWS Bedrock (us.deepseek.r1-v1:0)
    ↓
 extractJsonObject + validateQuiz
    ↓
@@ -68,25 +70,26 @@ Provider names, model IDs, AWS keys, and AWS regions are **never** exposed to th
 ---
 
 <a id="provider-model"></a>
+
 ## 3. Provider model
 
 The `AiProvider` interface (in `src/lib/ai/types.ts`) abstracts the model gateway. Two provider implementations ship today:
 
-- **`BedrockDeepSeekV3Provider`** (current default) — uses `@aws-sdk/client-bedrock-runtime` `InvokeModelCommand` against `us.deepseek.v3.2:0` (DeepSeek V3.2 via the cross-region inference profile). Non-reasoning chat model, ~2.2× cheaper than R1, ~3-5× faster, and produces significantly better structured JSON for question generation. Pricing: $0.62 input / $1.85 output per 1M tokens (verified against `aws.amazon.com/bedrock/pricing/` DeepSeek V3.2 example).
-- **`BedrockDeepSeekProvider`** (fallback) — same SDK, but against `us.deepseek.r1-v1:0` (DeepSeek R1). Reasoning tokens (`<think>...</think>`) are stripped from the output. Use this if V3.2 misbehaves for a specific topic — set `BRAINBOLT_AI_PROVIDER=bedrock-deepseek` and `BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0`.
+- **`BedrockDeepSeekProvider`** (current default) — uses `@aws-sdk/client-bedrock-runtime` `InvokeModelCommand` against `us.deepseek.r1-v1:0` (DeepSeek R1 via the cross-region inference profile). Reasoning model — `<think>...</think>` blocks are stripped from output before parsing. Pricing: $1.35 input / $5.40 output per 1M tokens (verified against `aws.amazon.com/bedrock/pricing/` DeepSeek-R1 example).
+- **`BedrockDeepSeekV3Provider`** (alternative) — same SDK, but against `us.deepseek.v3.2:0` (DeepSeek V3.2). Non-reasoning chat model, ~2.2× cheaper, ~3-5× faster, and produces cleaner structured JSON for question generation. Pricing: $0.62 input / $1.85 output per 1M tokens (verified against `aws.amazon.com/bedrock/pricing/` DeepSeek V3.2 example). Opt in with `BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3` and `BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0`.
 
 Provider selection is server-side via env vars:
 
-| Env var | Default | Effect |
-|---|---|---|
-| `BRAINBOLT_AI_PROVIDER` | `bedrock-deepseek-v3` | Which provider class to instantiate |
-| `BRAINBOLT_AI_MODEL` | `us.deepseek.v3.2:0` | Which model the provider calls |
+| Env var                 | Default               | Effect                              |
+| ----------------------- | --------------------- | ----------------------------------- |
+| `BRAINBOLT_AI_PROVIDER` | `bedrock-deepseek`    | Which provider class to instantiate |
+| `BRAINBOLT_AI_MODEL`    | `us.deepseek.r1-v1:0` | Which model the provider calls      |
 
-To switch back to R1:
+To switch to V3.2:
 
 ```bash
-BRAINBOLT_AI_PROVIDER=bedrock-deepseek
-BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0
+BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3
+BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0
 ```
 
 To add a new provider (OpenAI, Anthropic direct, self-hosted): implement `AiProvider`, add a `case` in `BrainBoltAiService` constructor, add pricing to `cost-table.ts`.
@@ -96,6 +99,7 @@ The `AiProvider` interface deliberately hides provider names from the caller —
 ---
 
 <a id="end-to-end-flow"></a>
+
 ## 4. End-to-end flow (UI → DB)
 
 ```text
@@ -111,7 +115,7 @@ requireSupabaseAuth → can('ai.generate_questions', quizId)
    ↓
 BrainBoltAiService.generateQuestions()
    ↓
-Bedrock DeepSeek V3.2 → response
+Bedrock DeepSeek R1 → response
    ↓
 extractJsonObject (strips reasoning tokens)
    ↓
@@ -136,6 +140,7 @@ Existing Quiz save flow persists as normal
 ---
 
 <a id="request-structure"></a>
+
 ## 5. Request structure
 
 `generateQuestions` input (zod-validated server-side):
@@ -163,6 +168,7 @@ Server enforces:
 ---
 
 <a id="generation-flow"></a>
+
 ## 6. Generation flow
 
 1. Server composes `system` + `user` prompt from `PROMPT_VERSIONS.generate_questions_v1`. The system prompt explicitly forbids chain-of-thought, markdown fences, and preamble — the model is told to output JSON only.
@@ -179,6 +185,7 @@ For **regenerate** (one question), the same flow applies with `regenerate_questi
 ---
 
 <a id="validation-pipeline"></a>
+
 ## 7. Validation pipeline
 
 AI output goes through three validation gates:
@@ -194,6 +201,7 @@ The `src/lib/quiz/validate.ts` and `mcp/src/validate.ts` files are intentionally
 ---
 
 <a id="draft-model"></a>
+
 ## 8. Draft model
 
 Drafts are **client state** — no separate draft table, no persistence beyond the panel's local React state.
@@ -215,6 +223,7 @@ The creator then toggles `is_playable=true` per question via the existing editor
 ---
 
 <a id="human-review"></a>
+
 ## 9. Human review
 
 The AI is an assistant, not the authority. Every generated question must pass through the human-review surface before it can be played:
@@ -230,6 +239,7 @@ No mechanism exists for AI content to bypass this path. The provider cannot writ
 ---
 
 <a id="saving"></a>
+
 ## 10. Saving
 
 AI-generated questions persist through the **existing** quiz/question write path. The AI panel uses the same `supabase.from("questions").insert(...)` pattern the editor already uses for manual additions. RLS, ownership, and the Principal-aware `can(...)` resolver apply unchanged.
@@ -253,6 +263,7 @@ This preserves all existing ownership, RLS, Principal and capability rules. Ther
 ---
 
 <a id="authorization"></a>
+
 ## 11. Authorization
 
 The `ai.generate_questions` capability is added to `public.can(...)` in `supabase/migrations/20260822120000_phase_8e_ai_question_builder.sql`. It sits as a new `ELSIF p_action LIKE 'ai.%' THEN` arm inside the existing IF chain in `20260816124500_phase_7l_authorization_completion.sql`.
@@ -274,24 +285,25 @@ Unknown `ai.*` actions are explicitly denied (a future `ai.analyze_quiz` action,
 ---
 
 <a id="usage-logging-cost"></a>
+
 ## 12. Usage logging & cost
 
 Every `generateQuestions` and `regenerateQuestion` call writes exactly one row to `ai_usage_log`:
 
-| Column | Type | Notes |
-|---|---|---|
-| `id` | `uuid` | PK |
-| `principal_id` | `uuid` | references `principals.id` |
-| `capability` | `text` | `ai.generate_questions` or `ai.regenerate_question` |
-| `model` | `text` | e.g. `us.deepseek.v3.2:0` |
-| `prompt_version` | `text` | e.g. `generate_questions_v1` |
-| `input_tokens` | `int` | from Bedrock response |
-| `output_tokens` | `int` | from Bedrock response |
-| `latency_ms` | `int` | wall-clock from server side |
-| `estimated_cost_usd` | `numeric(10,6)` | computed from `cost-table.ts` |
-| `success` | `boolean` | false if provider/validation failed |
-| `error_kind` | `text` | null on success; one of the AiErrorCode set (closed via CHECK constraint) |
-| `created_at` | `timestamptz` | default `now()` |
+| Column               | Type            | Notes                                                                     |
+| -------------------- | --------------- | ------------------------------------------------------------------------- |
+| `id`                 | `uuid`          | PK                                                                        |
+| `principal_id`       | `uuid`          | references `principals.id`                                                |
+| `capability`         | `text`          | `ai.generate_questions` or `ai.regenerate_question`                       |
+| `model`              | `text`          | e.g. `us.deepseek.v3.2:0`                                                 |
+| `prompt_version`     | `text`          | e.g. `generate_questions_v1`                                              |
+| `input_tokens`       | `int`           | from Bedrock response                                                     |
+| `output_tokens`      | `int`           | from Bedrock response                                                     |
+| `latency_ms`         | `int`           | wall-clock from server side                                               |
+| `estimated_cost_usd` | `numeric(10,6)` | computed from `cost-table.ts`                                             |
+| `success`            | `boolean`       | false if provider/validation failed                                       |
+| `error_kind`         | `text`          | null on success; one of the AiErrorCode set (closed via CHECK constraint) |
+| `created_at`         | `timestamptz`   | default `now()`                                                           |
 
 RLS is enabled with no explicit policy — `INSERT/UPDATE/DELETE/SELECT` denied for everyone except service_role (which bypasses RLS). The server function uses `supabaseAdmin`.
 
@@ -309,6 +321,7 @@ The user's stated $100 AWS credit covers **~25,000-35,000 generations** of typic
 ---
 
 <a id="error-handling"></a>
+
 ## 13. Error handling
 
 `AiErrorCode` is the closed set of error kinds:
@@ -338,6 +351,7 @@ Provider errors are translated to the AiErrorCode taxonomy inside the provider. 
 ---
 
 <a id="limitations"></a>
+
 ## 14. Limitations
 
 - **Media**: the AI does not generate image or audio URLs. `image_mcq`, `image_reveal`, and `audio` are excluded from `SUPPORTED_AI_TYPES`. The prompt explicitly forbids inventing media URLs. Creators upload media through the existing editor storage path.
@@ -347,12 +361,13 @@ Provider errors are translated to the AiErrorCode taxonomy inside the provider. 
 - **No autonomous publishing**: AI never writes to the database without human review.
 - **No chat / player coach / lecturer assistant**: Phase 8G.
 - **English-first prompts**: the system prompt is English. Non-English topics work (the model is multilingual), but the prompt scaffolding is not localized.
-- **Provider**: Bedrock + DeepSeek V3.2 (default) and R1 (fallback) ship today. Adding others (OpenAI, Anthropic direct, self-hosted) is a new `AiProvider` implementation.
+- **Provider**: Bedrock + DeepSeek R1 (default) and V3.2 (alternative) ship today. Adding others (OpenAI, Anthropic direct, self-hosted) is a new `AiProvider` implementation.
 - **Validation duplication**: `src/lib/quiz/validate.ts` and `mcp/src/validate.ts` are duplicated. Drift caught by `sync.test.ts`. Phase 17 / 8G may unify.
 
 ---
 
 <a id="out-of-scope"></a>
+
 ## 15. What is out of scope
 
 Explicitly not part of Phase 8E / 8F (later phases per `docs/ROADMAP.md`):
@@ -368,6 +383,7 @@ Explicitly not part of Phase 8E / 8F (later phases per `docs/ROADMAP.md`):
 ---
 
 <a id="related-docs"></a>
+
 ## 16. Related docs
 
 - [ARCHITECTURE_CONSTITUTION.md](ARCHITECTURE_CONSTITUTION.md) — overall principles

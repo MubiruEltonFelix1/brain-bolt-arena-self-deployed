@@ -3,8 +3,8 @@
 // production provider uses, and prints the raw response so we can verify
 // the chat template actually works against the configured model.
 //
-// Defaults to V3.2 (the current production default). Set
-// BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0 to test against R1 instead.
+// Defaults to R1 (the current production default). Set
+// BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0 to test against V3.2 instead.
 //
 // Usage:  bun scripts/bedrock-smoke.mjs
 
@@ -14,17 +14,17 @@ import * as bedrock from "@aws-sdk/client-bedrock-runtime";
 const region = process.env.AWS_REGION;
 const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
 const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-const modelId = process.env.BRAINBOLT_AI_MODEL ?? "us.deepseek.v3.2:0";
+const modelId = process.env.BRAINBOLT_AI_MODEL ?? "us.deepseek.r1-v1:0";
 
 if (!region || !accessKeyId || !secretAccessKey) {
-  console.error(
-    "Missing AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in .env",
-  );
+  console.error("Missing AWS_REGION / AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY in .env");
   process.exit(1);
 }
 
 const isR1 = modelId.includes("r1");
-console.log(`[smoke] region=${region}  modelId=${modelId}  (${isR1 ? "R1" : "V3.2"} chat template)`);
+console.log(
+  `[smoke] region=${region}  modelId=${modelId}  (${isR1 ? "R1" : "V3.2"} chat template)`,
+);
 console.log(`[smoke] accessKeyId=${accessKeyId.slice(0, 8)}...`);
 
 const client = new bedrock.BedrockRuntimeClient({ region });
@@ -90,7 +90,9 @@ try {
       if (parsed.questions && Array.isArray(parsed.questions)) {
         console.log(`[smoke] questions.length = ${parsed.questions.length}`);
         console.log(`[smoke] first question type = ${parsed.questions[0]?.type ?? "(missing)"}`);
-        console.log(`[smoke] first question keys = ${Object.keys(parsed.questions[0] ?? {}).join(", ")}`);
+        console.log(
+          `[smoke] first question keys = ${Object.keys(parsed.questions[0] ?? {}).join(", ")}`,
+        );
         console.log(`\n[smoke] ✅ CHAT TEMPLATE WORKS — production provider should succeed.`);
       } else {
         console.log(`\n[smoke] ⚠️  JSON parsed but no "questions" array.`);

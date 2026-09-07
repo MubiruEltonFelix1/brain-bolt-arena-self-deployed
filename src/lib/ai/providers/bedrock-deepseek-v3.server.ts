@@ -1,4 +1,10 @@
-// Bedrock provider for DeepSeek V3.2 — current production default.
+// Bedrock provider for DeepSeek V3.2 — opt-in alternative.
+//
+// R1 is the current production default; switch to V3.2 by setting
+// BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3 and
+// BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0. V3.2 is cheaper and faster but
+// stays off the default path because R1 has been more reliable for
+// structured output in production so far.
 //
 // Server-only (.server.ts suffix prevents Vite from bundling into the
 // client). AWS_* env vars are read inside the class methods — never at
@@ -92,8 +98,7 @@ export class BedrockDeepSeekV3Provider implements AiProvider {
     // DeepSeek V3.2 chat template. Single user turn containing system +
     // user; the model emits a single assistant response. No multi-turn
     // continuation issues (unlike R1).
-    const renderedPrompt =
-      `<|begin▁of▁sentence|><|User|>${prompt.system}\n\n${prompt.user}<|Assistant|>`;
+    const renderedPrompt = `<|begin▁of▁sentence|><|User|>${prompt.system}\n\n${prompt.user}<|Assistant|>`;
 
     const body: DeepSeekV3Body = {
       prompt: renderedPrompt,
@@ -106,7 +111,8 @@ export class BedrockDeepSeekV3Provider implements AiProvider {
         send: (cmd: unknown) => Promise<{ body?: unknown }>;
       };
     };
-    const mod = (await import("@aws-sdk/client-bedrock-runtime")) as unknown as BedrockRuntimeModule;
+    const mod =
+      (await import("@aws-sdk/client-bedrock-runtime")) as unknown as BedrockRuntimeModule;
     const command = new mod.InvokeModelCommand({
       modelId: this.modelId,
       contentType: "application/json",

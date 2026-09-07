@@ -28,11 +28,7 @@ import {
 } from "@/lib/ai/types";
 
 import { PROMPT_VERSIONS, emptyQuizShell, extractJsonObject } from "@/lib/ai/prompts";
-import {
-  validateQuiz,
-  type BrainBoltQuestion,
-  type BrainBoltQuiz,
-} from "@/lib/quiz/validate";
+import { validateQuiz, type BrainBoltQuestion, type BrainBoltQuiz } from "@/lib/quiz/validate";
 import { DEFAULT_MODEL_ID, estimateCost } from "@/lib/ai/cost-table";
 import { BedrockDeepSeekV3Provider } from "@/lib/ai/providers/bedrock-deepseek-v3.server";
 import { BedrockDeepSeekProvider } from "@/lib/ai/providers/bedrock-deepseek.server";
@@ -55,13 +51,14 @@ export class BrainBoltAiService {
       this.provider = opts.provider;
       return;
     }
-    // Pick a provider by BRAINBOLT_AI_PROVIDER env (default: bedrock-deepseek-v3).
-    // Pick a model by BRAINBOLT_AI_MODEL env (default: DeepSeek V3.2).
+    // Pick a provider by BRAINBOLT_AI_PROVIDER env (default: bedrock-deepseek).
+    // Pick a model by BRAINBOLT_AI_MODEL env (default: DeepSeek R1).
     //
-    // R1 is still supported — set BRAINBOLT_AI_PROVIDER=bedrock-deepseek and
-    // BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0 to revert. Useful if V3.2
-    // misbehaves for a specific topic.
-    const providerName = process.env.BRAINBOLT_AI_PROVIDER ?? "bedrock-deepseek-v3";
+    // V3.2 is still supported — set BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3
+    // and BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0 to opt in. V3.2 is cheaper
+    // and faster, but R1 stays the default because its structured-output
+    // quality has been more reliable in production so far.
+    const providerName = process.env.BRAINBOLT_AI_PROVIDER ?? "bedrock-deepseek";
     const modelId = process.env.BRAINBOLT_AI_MODEL ?? DEFAULT_MODEL_ID;
     switch (providerName) {
       case "bedrock-deepseek-v3":
@@ -71,9 +68,7 @@ export class BrainBoltAiService {
         this.provider = new BedrockDeepSeekProvider(modelId);
         break;
       default:
-        throw new Error(
-          `BrainBoltAiService: unknown BRAINBOLT_AI_PROVIDER "${providerName}"`,
-        );
+        throw new Error(`BrainBoltAiService: unknown BRAINBOLT_AI_PROVIDER "${providerName}"`);
     }
   }
 
@@ -512,11 +507,8 @@ export function modelQuestionToCanonical(raw: unknown): BrainBoltQuestion | null
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   const type = typeof r.type === "string" ? r.type : null;
-  const text = typeof r.question === "string"
-    ? r.question
-    : typeof r.text === "string"
-      ? r.text
-      : null;
+  const text =
+    typeof r.question === "string" ? r.question : typeof r.text === "string" ? r.text : null;
   if (!type || !text) return null;
 
   switch (type) {
@@ -529,7 +521,7 @@ export function modelQuestionToCanonical(raw: unknown): BrainBoltQuestion | null
         typeof r.correct_answer === "string"
           ? r.correct_answer
           : typeof r.correctIndex === "number"
-            ? options[r.correctIndex] ?? null
+            ? (options[r.correctIndex] ?? null)
             : null;
       if (correctAnswer === null) return null;
       // Resolve text → index.

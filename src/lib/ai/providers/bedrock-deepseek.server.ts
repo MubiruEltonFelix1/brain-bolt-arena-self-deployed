@@ -2,10 +2,9 @@
 // to call InvokeModelCommand against us.deepseek.r1-v1:0 (DeepSeek R1
 // via the cross-region inference profile).
 //
-// DEPRECATED as the default — V3.2 is now the production default
-// (BedrockDeepSeekV3Provider). R1 is still here as a fallback. Set
-// BRAINBOLT_AI_PROVIDER=bedrock-deepseek and
-// BRAINBOLT_AI_MODEL=us.deepseek.r1-v1:0 to revert.
+// Current production default. V3.2 (BedrockDeepSeekV3Provider) remains
+// available as an opt-in — set BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3
+// and BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0 to switch.
 //
 // Server-only. The .server.ts suffix prevents Vite from bundling this into
 // the client. AWS_* env vars are read inside the class methods — never at
@@ -92,8 +91,7 @@ export class BedrockDeepSeekProvider implements AiProvider {
     // instruction block as a single user turn and emits a single
     // completion. We then strip any multi-turn continuation (subsequent
     // Human:/Assistant: blocks) before parsing.
-    const renderedPrompt =
-      `${prompt.system}\n\n` + `Instruction: ${prompt.user}\n\n` + `Response:`;
+    const renderedPrompt = `${prompt.system}\n\n` + `Instruction: ${prompt.user}\n\n` + `Response:`;
 
     const body: DeepSeekR1Body = {
       prompt: renderedPrompt,
@@ -107,7 +105,8 @@ export class BedrockDeepSeekProvider implements AiProvider {
         send: (cmd: unknown) => Promise<{ body?: unknown }>;
       };
     };
-    const mod = (await import("@aws-sdk/client-bedrock-runtime")) as unknown as BedrockRuntimeModule;
+    const mod =
+      (await import("@aws-sdk/client-bedrock-runtime")) as unknown as BedrockRuntimeModule;
     const command = new mod.InvokeModelCommand({
       modelId: this.modelId,
       contentType: "application/json",
@@ -157,10 +156,8 @@ export class BedrockDeepSeekProvider implements AiProvider {
     const cleanedText = stripReasoning(firstTurn);
 
     // Pull token counts. DeepSeek R1 uses `prompt_tokens` / `completion_tokens`.
-    const inputTokens =
-      parsed?.usage?.input_tokens ?? parsed?.usage?.prompt_tokens ?? 0;
-    const outputTokens =
-      parsed?.usage?.output_tokens ?? parsed?.usage?.completion_tokens ?? 0;
+    const inputTokens = parsed?.usage?.input_tokens ?? parsed?.usage?.prompt_tokens ?? 0;
+    const outputTokens = parsed?.usage?.output_tokens ?? parsed?.usage?.completion_tokens ?? 0;
 
     return {
       text: cleanedText,

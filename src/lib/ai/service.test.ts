@@ -289,9 +289,9 @@ describe("ai / service: BrainBoltAiService", () => {
 });
 
 describe("ai / cost-table: V3.2 and R1 pricing", () => {
-  test("DeepSeek V3.2 is the default model", async () => {
+  test("DeepSeek R1 is the default model", async () => {
     const { DEFAULT_MODEL_ID } = await import("@/lib/ai/cost-table");
-    expect(DEFAULT_MODEL_ID).toBe("us.deepseek.v3.2:0");
+    expect(DEFAULT_MODEL_ID).toBe("us.deepseek.r1-v1:0");
   });
 
   test("V3.2 pricing is ~2.2x cheaper than R1", async () => {
