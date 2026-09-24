@@ -537,5 +537,29 @@ export function createMarkers({ q, yes }) {
       marker: "ai_usage_log table exists + ai.* branch in public.can() (Phase 8E AI Builder)",
       applied: () => tableExists("ai_usage_log") && fnBodyLike("can", "ai.%"),
     },
+    {
+      // Phase 21 replaced three functions rather than creating anything new, so
+      // there is no table or column to probe. `fnExists` would be a FALSE
+      // POSITIVE here: reveal_current_question and end_question_early existed
+      // before this migration. The distinctive change is the added
+      // `p_expected_started_at` parameter, which changes the function's
+      // identity arguments — so the 2-arg signature is the marker.
+      file: "20260823090000_phase_21_hosted_session_expiration.sql",
+      marker:
+        "reveal_current_question + end_question_early accept p_expected_started_at (Phase 21 stale-state guard)",
+      applied: () =>
+        yes(
+          `SELECT to_regprocedure('public.reveal_current_question(uuid,timestamp with time zone)') IS NOT NULL AND to_regprocedure('public.end_question_early(uuid,timestamp with time zone)') IS NOT NULL`,
+        ),
+    },
+    {
+      file: "20260823120000_phase_9b_arena_publication_platform.sql",
+      marker:
+        "arena_run_answers + platform_settings tables and quizzes.arena_category column exist (Phase 9B Arena publication)",
+      applied: () =>
+        tableExists("arena_run_answers") &&
+        tableExists("platform_settings") &&
+        colExists("quizzes", "arena_category"),
+    },
   ];
 }
