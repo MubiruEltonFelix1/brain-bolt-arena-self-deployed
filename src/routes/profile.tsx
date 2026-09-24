@@ -237,8 +237,12 @@ function ProfilePage() {
   if (authLoading || loading || !profile) {
     return (
       <HostShell title="Profile">
-        <div className="min-h-[60vh] grid place-items-center font-mono text-foreground/40 text-sm">
-          LOADING...
+        <div
+          className="min-h-[60vh] grid place-items-center font-mono text-foreground/40 text-sm uppercase tracking-widest"
+          role="status"
+          aria-busy="true"
+        >
+          Loading…
         </div>
       </HostShell>
     );

@@ -87,11 +87,17 @@ export function QuestionIntro({
         <span>{meta.icon}</span>
       </div>
 
-      <h2
-        className="font-display text-4xl sm:text-6xl uppercase italic tracking-tight animate-fade-in"
+      <p
+        className="font-mono text-[10px] sm:text-xs uppercase tracking-[0.3em] mb-2 animate-fade-in"
         style={{ color }}
       >
-        {meta.name}
+        {meta.tagline}
+      </p>
+      <h2
+        className="font-display text-3xl sm:text-5xl uppercase italic tracking-tight animate-fade-in"
+        style={{ color }}
+      >
+        {meta.label}
       </h2>
       <p className="mt-2 font-mono text-xs sm:text-sm uppercase text-foreground/70">
         {meta.description}

@@ -44,8 +44,8 @@ export function HostAuthorizationCard({
 
   const t = authorization.authorization_type;
   const label =
-    t === "single" ? "Single session"
-    : t === "bundle" ? "Session bundle"
+    t === "single" ? "Single game"
+    : t === "bundle" ? "Game bundle"
     : "Time-based access";
 
   const detail =
@@ -53,7 +53,7 @@ export function HostAuthorizationCard({
       ? authorization.expires_at
         ? `Expires ${new Date(authorization.expires_at).toLocaleDateString()}`
         : "No expiry set"
-      : `${authorization.remaining_sessions ?? 0} session${(authorization.remaining_sessions ?? 0) === 1 ? "" : "s"} remaining`;
+      : `${authorization.remaining_sessions ?? 0} game${(authorization.remaining_sessions ?? 0) === 1 ? "" : "s"} left to host`;
 
   return (
     <div className="border border-volt/50 bg-card p-4 flex items-center justify-between gap-4 flex-wrap">

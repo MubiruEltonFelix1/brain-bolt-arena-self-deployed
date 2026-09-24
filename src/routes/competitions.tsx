@@ -100,8 +100,12 @@ function CompetitionsPage() {
     setPreparingId(null);
     if (error) return toastError(error, { context: "prepare session" });
     const row = Array.isArray(data) ? data[0] : null;
-    if (!row) return toast.error("Could not prepare the session");
-    toast.success(row.created ? `Lobby open · code ${row.code}` : `Lobby already open · code ${row.code}`);
+    if (!row) return toast.error("We couldn't open the lobby. Please try again.");
+    toast.success(
+      row.created
+        ? `Lobby open — Game PIN ${row.code}`
+        : `Lobby already open — Game PIN ${row.code}`,
+    );
     await load();
     navigate({ to: "/host/$sessionId", params: { sessionId: row.session_id } });
   }

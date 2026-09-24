@@ -22,6 +22,7 @@ import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useHostStatus } from "@/hooks/use-host-status";
 import { toastError, logActionError } from "@/lib/errors";
+import { questionTypeLabel } from "@/lib/question-presentation";
 import { toast } from "sonner";
 
 export const Route = createFileRoute("/admin")({
@@ -441,12 +442,12 @@ function AdminPage() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {[
                   { label: "Registered players", value: platform?.total_players },
-                  { label: "Live / open sessions", value: platform?.live_sessions },
+                  { label: "Live games now", value: platform?.live_sessions },
                   { label: "Competitions", value: platform?.total_competitions },
                   { label: "Arena plays", value: platform?.arena_plays },
                   { label: "Quizzes", value: platform?.total_quizzes },
                   { label: "Arena challenges", value: platform?.arena_quizzes },
-                  { label: "Sessions · 7d", value: platform?.sessions_last_7d },
+                  { label: "Games hosted · 7d", value: platform?.sessions_last_7d },
                   { label: "Results · 7d", value: platform?.results_last_7d },
                 ].map((m) => (
                   <div key={m.label} className="border border-border bg-card p-4">
@@ -469,7 +470,7 @@ function AdminPage() {
                   <span className="text-foreground/40">Last 7d vs prior 7d</span>
                   {(
                     [
-                      ["sessions", "Sessions"],
+                      ["sessions", "Games"],
                       ["answers", "Answers"],
                       ["new_players", "Players"],
                       ["results", "Results"],
@@ -502,7 +503,7 @@ function AdminPage() {
                   </span>
                   <div>
                     <p className="font-mono text-[10px] uppercase text-pink-shock">On air</p>
-                    <h2 className="font-display text-3xl italic uppercase mt-1">Live sessions</h2>
+                    <h2 className="font-display text-3xl italic uppercase mt-1">Live games</h2>
                   </div>
                 </div>
                 <div className="text-right font-mono text-[10px] uppercase tracking-widest text-foreground/40">
@@ -514,7 +515,7 @@ function AdminPage() {
               </div>
               {liveSessions.length === 0 ? (
                 <div className="border border-border bg-card p-8 text-center font-mono text-xs uppercase text-foreground/40">
-                  No sessions running right now
+                  No games running right now
                 </div>
               ) : (
                 <div className="border border-border bg-card">
@@ -621,7 +622,7 @@ function AdminPage() {
             <section className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div className="border border-border bg-card p-4 space-y-4">
                 <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
-                  Session funnel
+                  Game funnel
                 </p>
                 {funnel ? (
                   <>
@@ -630,7 +631,7 @@ function AdminPage() {
                         {funnel.completion_rate ?? 0}%
                       </p>
                       <p className="font-mono text-[10px] uppercase text-foreground/50 mt-1">
-                        of {funnel.total_sessions.toLocaleString()} sessions reached end
+                        of {funnel.total_sessions.toLocaleString()} games reached the end
                       </p>
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-3 pt-3 border-t border-border">
@@ -680,7 +681,7 @@ function AdminPage() {
                     <div key={qt.question_type}>
                       <div className="flex justify-between gap-3 font-mono text-[10px] uppercase tracking-widest">
                         <span className="text-foreground/70 truncate">
-                          {qt.question_type.replace(/_/g, " ")}
+                          {questionTypeLabel(qt.question_type)}
                         </span>
                         <span className="text-foreground/50 shrink-0">
                           {qt.answers.toLocaleString()} ·{" "}
@@ -760,7 +761,7 @@ function AdminPage() {
                 </div>
                 {topHosts.length === 0 ? (
                   <div className="p-6 text-center font-mono text-xs uppercase text-foreground/40">
-                    No sessions yet
+                    No games yet
                   </div>
                 ) : (
                   topHosts.map((h, i) => (
@@ -775,7 +776,7 @@ function AdminPage() {
                         {h.display_name}
                       </p>
                       <span className="font-mono text-xs text-foreground/70">
-                        {h.sessions.toLocaleString()} {h.sessions === 1 ? "session" : "sessions"}
+                        {h.sessions.toLocaleString()} {h.sessions === 1 ? "game" : "games"}
                       </span>
                     </div>
                   ))
@@ -845,7 +846,7 @@ const gridStroke = "var(--border)";
 const dayTick = (v: unknown) => String(v).slice(5); // YYYY-MM-DD → MM-DD
 
 const sessionsConfig = {
-  sessions: { label: "Sessions", color: "var(--volt)" },
+  sessions: { label: "Games", color: "var(--volt)" },
   participants: { label: "Players joined", color: "var(--cyan-jolt)" },
 } satisfies ChartConfig;
 
@@ -1079,7 +1080,7 @@ function formatDuration(seconds: number | null) {
 }
 
 const hoursConfig = {
-  sessions: { label: "Sessions", color: "var(--volt)" },
+  sessions: { label: "Games", color: "var(--volt)" },
   answers: { label: "Answers", color: "var(--cyan-jolt)" },
 } satisfies ChartConfig;
 
@@ -1114,7 +1115,7 @@ function HoursChart({ data }: { data: HourStat[] }) {
               formatter={(value, name) =>
                 value == null
                   ? "—"
-                  : `${Number(value).toLocaleString()} ${name === "sessions" ? "sessions" : "answers"}`
+                  : `${Number(value).toLocaleString()} ${name === "sessions" ? "games" : "answers"}`
               }
             />
           }
@@ -1179,8 +1180,8 @@ function UserRow({
 
   const status = user.is_active
     ? user.authorization_type === "time"
-      ? `Time · until ${user.expires_at ? new Date(user.expires_at).toLocaleDateString() : "—"}`
-      : `${user.authorization_type ?? ""} · ${user.remaining_sessions ?? 0} left`
+      ? `Time-based · expires ${user.expires_at ? new Date(user.expires_at).toLocaleDateString() : "—"}`
+      : `${user.authorization_type === "single" ? "Single game" : "Game bundle"} · ${user.remaining_sessions ?? 0} left to host`
     : user.status
       ? `Inactive (${user.status})`
       : "No authorization";
@@ -1205,7 +1206,7 @@ function UserRow({
           onClick={() => setOpen((v) => !v)}
           className="border border-border px-3 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt"
         >
-          {open ? "Close" : "Manage"}
+          {open ? "Close" : "Edit access"}
         </button>
       </div>
 
@@ -1219,14 +1220,16 @@ function UserRow({
                 onChange={(e) => setType(e.target.value as typeof type)}
                 className="w-full mt-1 bg-background border border-border px-3 py-2 font-mono text-xs uppercase"
               >
-                <option value="single">Single</option>
-                <option value="bundle">Bundle</option>
+                <option value="single">Single game</option>
+                <option value="bundle">Game bundle</option>
                 <option value="time">Time-based</option>
               </select>
             </label>
             {type === "bundle" && (
               <label className="block">
-                <span className="font-mono text-[10px] uppercase text-foreground/60">Sessions</span>
+                <span className="font-mono text-[10px] uppercase text-foreground/60">
+                  Games in the bundle
+                </span>
                 <input
                   type="number"
                   min={1}
@@ -1268,7 +1271,7 @@ function UserRow({
               {(user.authorization_type === "single" || user.authorization_type === "bundle") && (
                 <button
                   onClick={() => {
-                    const n = parseInt(prompt("Add how many sessions?", "5") || "0");
+                    const n = parseInt(prompt("How many extra games should this host be able to run?", "5") || "0");
                     if (n > 0) onExtend(user.auth_id!, n, undefined);
                   }}
                   className="border border-border px-3 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt"

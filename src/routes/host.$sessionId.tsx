@@ -18,6 +18,13 @@ import { BrandBanner } from "@/components/BrandBanner";
 import type { BrandingProfile } from "@/lib/branding";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { useCoalescedCallback } from "@/hooks/use-coalesced-callback";
+import { JoinPanel } from "@/components/lobby/JoinPanel";
+import { PlayerWall } from "@/components/lobby/PlayerWall";
+import { GameStatusBadge } from "@/components/GameStatusBadge";
+import { useViewportWidth } from "@/hooks/use-viewport-width";
+import { displayJoinUrl, formatGameCode, joinUrlFor, lobbyLayout, MIN_QR_PX } from "@/lib/lobby-layout";
+import { gameState, playerCountShort } from "@/lib/terminology";
+import { getAnswerKind, getQuestionType } from "@/lib/question-registry";
 
 export const Route = createFileRoute("/host/$sessionId")({
   component: HostControl,
@@ -25,7 +32,7 @@ export const Route = createFileRoute("/host/$sessionId")({
     <LiveScreenState
       spinner={false}
       title="Control room disconnected"
-      message="The competition keeps running on our servers. Reconnect to regain the controls."
+      message="The game keeps running on our servers. Reconnect to regain the controls."
       action={{ label: "RECONNECT", onClick: () => window.location.reload() }}
     />
   ),
@@ -112,6 +119,10 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [prevRanks, setPrevRanks] = useState<Map<string, number>>(new Map());
   const [now, setNow] = useState(() => getServerAdjustedNow());
   const [qrExpanded, setQrExpanded] = useState(false);
+  const [linkCopied, setLinkCopied] = useState(false);
+  // Presentation mode: fills a projector/TV screen with the board. Purely a
+  // client-side browser API — it does not touch session state.
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const [branding, setBranding] = useState<BrandingProfile | null>(null);
   const [confirmEndEarly, setConfirmEndEarly] = useState(false);
   const [confirmSkip, setConfirmSkip] = useState(false);
@@ -385,14 +396,14 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   }
 
   async function startGame() {
-    if (questions.length === 0) return toast.error("Add questions first");
+    if (questions.length === 0) return toast.error("Add at least one question first");
     // Legacy sessions may lack a stored order; rebuild it from PLAYABLE questions only.
     // Sessions that already have an order keep it untouched — later exclusions never
     // mutate a live or historical session.
     const playable = questions.filter((q) => q.is_playable !== false);
     if (playable.length === 0)
       return toast.error(
-        "This quiz has no playable questions. Enable at least one question before playing.",
+        "Nothing to play yet. Include at least one question in this quiz before starting the game.",
       );
     await runControl(async () => {
       setAnswersForRound([]);
@@ -483,7 +494,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
         toastError(error, { context: "togglePause (pause/resume_session)" });
         return;
       }
-      toast.success(isPaused ? "Session resumed" : "Session paused");
+      toast.success(isPaused ? "Game resumed" : "Game paused");
     });
   }
 
@@ -497,7 +508,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
         toastError(error, { context: "addTime (add_question_time)" });
         return;
       }
-      toast.success(`+${seconds}s added to the current question`);
+      toast.success(`Added ${seconds} seconds to this question`);
       setMoreOpen(false);
     });
   }
@@ -517,7 +528,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
         return;
       }
       const row = Array.isArray(data) ? data[0] : data;
-      toast.success("Question skipped — no points awarded");
+      toast.success("Question skipped — no points awarded to anyone");
       if (row?.ended) await finalizeLeague();
     });
   }
@@ -652,14 +663,26 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     revealed,
   ]);
 
+  // Hooks must run on every render, so viewport measurement and the fullscreen
+  // listener live above the `!session` early return.
+  const viewportWidth = useViewportWidth();
+
+  useEffect(() => {
+    function onChange() {
+      setIsFullscreen(!!document.fullscreenElement);
+    }
+    document.addEventListener("fullscreenchange", onChange);
+    return () => document.removeEventListener("fullscreenchange", onChange);
+  }, []);
+
   if (!session) {
     return (
       <HostShell>
         {loadFailed ? (
           <LiveScreenState
             spinner={false}
-            title="Can't load this competition"
-            message="The competition keeps running on our servers even while this screen is disconnected."
+            title="Can't load this game"
+            message="The game keeps running on our servers even while this screen is disconnected."
             action={{
               label: "RETRY",
               onClick: () => {
@@ -699,106 +722,138 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     }
   }
 
-  const joinUrl =
-    typeof window !== "undefined" ? `${window.location.origin}/join/${session.code}` : "";
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const joinUrl = origin ? joinUrlFor(origin, session.code) : "";
   const totalVotes = roundStats.reduce((s, r) => s + r.vote_count, 0);
   const isLastRound = currentIndex + 1 >= totalRounds;
 
+  const layout = lobbyLayout(viewportWidth);
+  const inLobby = session.status === "lobby";
+  const stateCopy = gameState(session.status, isPaused);
+
+  function copyJoinLink() {
+    if (!joinUrl) return;
+    navigator.clipboard.writeText(joinUrl).then(
+      () => {
+        setLinkCopied(true);
+        window.setTimeout(() => setLinkCopied(false), 2000);
+      },
+      () => toast.error("Couldn't copy the link. Select it and copy manually."),
+    );
+  }
+
+  function toggleFullscreen() {
+    if (typeof document === "undefined") return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => undefined);
+    } else {
+      void document.documentElement.requestFullscreen().catch(() => {
+        toast.error("This browser blocked fullscreen. Press F11 instead.");
+      });
+    }
+  }
+
   return (
     <HostShell title="Host">
-      <div className="max-w-5xl mx-auto px-6 py-8 pb-32 space-y-8">
+      <div
+        className={`mx-auto px-4 sm:px-6 py-8 pb-32 space-y-8 ${inLobby ? "max-w-[1400px]" : "max-w-5xl"}`}
+      >
         {branding && <BrandBanner branding={branding} />}
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div>
-            <p className="font-mono text-xs uppercase text-foreground/60">Now hosting</p>
-            <h1 className="font-display text-4xl italic uppercase">{session.quiz?.title}</h1>
-          </div>
-          <div className="flex items-center gap-4">
-            <div className="text-right">
-              <p className="font-mono text-[10px] uppercase text-foreground/60">Game code</p>
-              <p className="font-display text-4xl italic text-volt tracking-widest">
-                {session.code}
-              </p>
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <p className="font-mono text-xs uppercase text-foreground/60">Now hosting</p>
+              <GameStatusBadge status={session.status} paused={isPaused} />
             </div>
-            <button
-              onClick={() => {
-                navigator.clipboard.writeText(joinUrl);
-                toast.success("Join link copied");
-              }}
-              className="font-mono text-xs uppercase border border-border px-3 py-2 hover:border-volt hover:text-volt"
-            >
-              Copy link
-            </button>
+            <h1 className="mt-1 font-display text-3xl sm:text-4xl italic uppercase break-words">
+              {session.quiz?.title}
+            </h1>
+            <p className="mt-2 text-sm text-foreground/60">{stateCopy.detail}</p>
           </div>
+          {!inLobby && (
+            <div className="flex items-center gap-4">
+              <div className="text-right">
+                <p className="font-mono text-[10px] uppercase text-foreground/60">Game PIN</p>
+                <p className="font-display text-4xl italic text-volt tracking-widest tabular-nums">
+                  {session.code}
+                </p>
+              </div>
+              <button
+                onClick={copyJoinLink}
+                className="font-mono text-xs uppercase border border-border px-3 py-2 hover:border-volt hover:text-volt"
+              >
+                {linkCopied ? "Copied" : "Copy join link"}
+              </button>
+            </div>
+          )}
         </div>
 
-        <div className="grid lg:grid-cols-[1fr_320px] gap-6">
+        {/* While players are joining, the join information owns the whole width.
+            Once the game starts we fall back to the narrow control-room grid. */}
+        <div className={inLobby ? "space-y-6" : "grid lg:grid-cols-[1fr_320px] gap-6"}>
           <div className="space-y-4">
-            {session.status === "lobby" && (
-              <div className="bg-card border border-border p-8 space-y-6">
-                <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-6">
-                  <div>
-                    <p className="font-mono text-xs uppercase text-volt">Lobby</p>
-                    <h2 className="font-display text-3xl italic uppercase mt-1">Waiting room</h2>
-                    <p className="text-foreground/60 text-sm mt-2">
-                      Share <span className="text-volt font-mono">{joinUrl}</span> or the 6-digit
-                      code.
-                    </p>
-                  </div>
-                  {joinUrl && (
+            {inLobby && joinUrl && (
+              <JoinPanel
+                code={session.code}
+                joinUrl={joinUrl}
+                layout={layout}
+                copied={linkCopied}
+                onCopyLink={copyJoinLink}
+                onEnlarge={() => setQrExpanded(true)}
+              />
+            )}
+
+            {inLobby && (
+              <PlayerWall
+                players={participants.map((p) => ({
+                  id: p.id,
+                  nickname: p.nickname,
+                  avatarId: p.avatar_id,
+                  teamColor: teams.find((t) => t.id === p.team_id)?.color ?? null,
+                }))}
+                layout={layout}
+              />
+            )}
+
+            {inLobby && session.team_mode && (
+              <div className="bg-card border border-border p-5 space-y-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="font-mono text-xs uppercase text-foreground/60">
+                    Teams ({teams.length})
+                  </p>
+                  <div className="flex gap-2">
                     <button
-                      type="button"
-                      onClick={() => setQrExpanded(true)}
-                      title="Tap to enlarge"
-                      className="flex flex-col items-center gap-2 border border-volt/30 bg-background p-3 rounded-md shrink-0 hover:border-volt transition-colors cursor-zoom-in"
+                      onClick={createTeam}
+                      className="min-h-11 font-mono text-xs uppercase border border-border px-3 hover:border-volt"
                     >
-                      <div className="bg-white p-2 rounded-sm">
-                        <QRCodeSVG
-                          value={joinUrl}
-                          size={128}
-                          level="M"
-                          bgColor="#ffffff"
-                          fgColor="#0A0A0C"
-                        />
-                      </div>
-                      <p className="font-mono text-[10px] uppercase tracking-widest text-volt">
-                        Scan · Tap to enlarge
-                      </p>
+                      Add team
                     </button>
-                  )}
+                    <button
+                      onClick={autoAssignTeams}
+                      className="min-h-11 font-mono text-xs uppercase border border-border px-3 hover:border-volt"
+                    >
+                      Auto-balance
+                    </button>
+                  </div>
                 </div>
-                {session.team_mode && (
-                  <div className="space-y-3">
-                    <div className="flex items-center justify-between">
-                      <p className="font-mono text-xs uppercase text-foreground/60">
-                        Teams ({teams.length})
-                      </p>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={createTeam}
-                          className="font-mono text-xs uppercase border border-border px-3 py-1 hover:border-volt"
-                        >
-                          + Team
-                        </button>
-                        <button
-                          onClick={autoAssignTeams}
-                          className="font-mono text-xs uppercase border border-border px-3 py-1 hover:border-volt"
-                        >
-                          Auto-balance
-                        </button>
-                      </div>
-                    </div>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                      {teams.map((t) => (
+                {teams.length === 0 ? (
+                  <p className="text-sm text-foreground/60">
+                    No teams yet. Add teams, then auto-balance to spread the players across them.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {teams.map((t) => {
+                      const size = participants.filter((p) => p.team_id === t.id).length;
+                      return (
                         <div key={t.id} className="border border-border p-3 bg-background">
                           <div className="size-3 mb-1" style={{ background: t.color }} />
                           <p className="font-bold text-sm truncate">{t.name}</p>
                           <p className="font-mono text-[10px] text-foreground/40">
-                            {participants.filter((p) => p.team_id === t.id).length} players
+                            {size} {size === 1 ? "player" : "players"}
                           </p>
                         </div>
-                      ))}
-                    </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -909,58 +964,14 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
                 <div className="grid sm:grid-cols-2 gap-3">
                   {currentQuestion.question_type === "true_false" ? (
                     <>
-                      <div className="p-4 border border-volt/40 bg-volt/5 font-display text-2xl italic text-volt text-center">
+                      <div className="p-4 border border-volt/30 bg-volt/5 font-display text-2xl italic text-volt text-center">
                         TRUE
                       </div>
-                      <div className="p-4 border border-pink-shock/40 bg-pink-shock/5 font-display text-2xl italic text-pink-shock text-center">
+                      <div className="p-4 border border-pink-shock/30 bg-pink-shock/10 font-display text-2xl italic text-pink-shock text-center">
                         FALSE
                       </div>
                     </>
-                  ) : currentQuestion.question_type === "map_pin" ? (
-                    <div className="sm:col-span-2 p-6 border border-cyan-jolt/40 bg-cyan-jolt/5 text-center">
-                      <p className="font-display text-3xl italic text-cyan-jolt">
-                        🗺️ MAP PIN CHALLENGE
-                      </p>
-                      <p className="font-mono text-xs uppercase text-foreground/60 mt-2">
-                        Players are dropping pins on the world map
-                      </p>
-                    </div>
-                  ) : currentQuestion.question_type === "number" ? (
-                    <div className="sm:col-span-2 p-6 border border-amber-spark/40 bg-amber-spark/5 text-center">
-                      <p className="font-display text-3xl italic text-amber-spark">
-                        🎯 CLOSEST NUMBER WINS
-                      </p>
-                      <p className="font-mono text-xs uppercase text-foreground/60 mt-2">
-                        Guess between {(currentQuestion.number_min ?? 0).toLocaleString()} —{" "}
-                        {(currentQuestion.number_max ?? 100).toLocaleString()}
-                      </p>
-                    </div>
-                  ) : currentQuestion.question_type === "type" ? (
-                    <div className="sm:col-span-2 p-6 border border-volt/40 bg-volt/5 text-center">
-                      <p className="font-display text-3xl italic text-volt">⌨️ TYPE THE ANSWER</p>
-                      <p className="font-mono text-xs uppercase text-foreground/60 mt-2">
-                        Players are typing their answer
-                      </p>
-                    </div>
-                  ) : currentQuestion.question_type === "feedback" ? (
-                    <div className="sm:col-span-2 p-6 border border-cyan-jolt/40 bg-cyan-jolt/5 text-center">
-                      <p className="font-display text-3xl italic text-cyan-jolt">
-                        💬 OPEN FEEDBACK
-                      </p>
-                      <p className="font-mono text-xs uppercase text-foreground/60 mt-2">
-                        Collecting free-form responses — no scoring
-                      </p>
-                    </div>
-                  ) : currentQuestion.question_type === "ordering" ? (
-                    <div className="sm:col-span-2 p-6 border border-pink-shock/40 bg-pink-shock/5 text-center">
-                      <p className="font-display text-3xl italic text-pink-shock">
-                        🔀 ORDERING CHALLENGE
-                      </p>
-                      <p className="font-mono text-xs uppercase text-foreground/60 mt-2">
-                        {currentQuestion.options.length} items · players drag into order
-                      </p>
-                    </div>
-                  ) : (
+                  ) : getAnswerKind(currentQuestion.question_type) === "choice" ? (
                     currentQuestion.options.map((opt, i) => (
                       <div
                         key={i}
@@ -972,6 +983,8 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
                         <span className="font-medium">{opt}</span>
                       </div>
                     ))
+                  ) : (
+                    <WaitingOnPlayersPanel question={currentQuestion} />
                   )}
                 </div>
 
@@ -1003,7 +1016,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             {session.status === "ended" && (
               <div className="bg-card border border-border p-8 space-y-6">
                 <div className="text-center space-y-2">
-                  <p className="font-mono text-xs uppercase text-volt">Match complete</p>
+                  <p className="font-mono text-xs uppercase text-volt">Game complete</p>
                   <h2 className="font-display text-5xl italic uppercase">GG WP</h2>
                 </div>
                 <Podium participants={participants} />
@@ -1012,6 +1025,9 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             )}
           </div>
 
+          {/* The player wall is the lobby's own roster; a second, scoreless copy
+              beside it would only compete with the join information. */}
+          {!inLobby && (
           <aside className="space-y-6">
             <div className="bg-card border border-border p-4">
               <p className="font-mono text-[10px] uppercase text-foreground/60 mb-3">
@@ -1076,6 +1092,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
               </div>
             )}
           </aside>
+          )}
         </div>
       </div>
       {qrExpanded && joinUrl && (
@@ -1083,62 +1100,72 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
           role="dialog"
           aria-modal="true"
           aria-label="Enlarged join QR code"
-          onClick={() => setQrExpanded(false)}
           onKeyDown={(e) => {
             if (e.key === "Escape") setQrExpanded(false);
           }}
           tabIndex={-1}
           ref={(el) => el?.focus()}
-          className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm flex items-center justify-center p-6 outline-none"
+          // Scrolls rather than clips: on a short, wide display (a laptop docked
+          // to a projector, for example) the QR plus the PIN is taller than the
+          // viewport. `min-h-full` + centring means it still centres when there
+          // is room and scrolls when there is not.
+          className="fixed inset-0 z-50 bg-background/95 backdrop-blur-sm overflow-y-auto outline-none"
         >
           <button
             type="button"
-            onClick={(e) => {
-              e.stopPropagation();
-              setQrExpanded(false);
-            }}
+            onClick={() => setQrExpanded(false)}
             aria-label="Close"
-            className="absolute top-4 right-4 size-12 border border-volt/40 text-volt font-display text-2xl hover:bg-volt hover:text-background transition-colors"
+            className="fixed top-4 right-4 z-10 size-12 border border-volt/40 bg-background text-volt font-display text-2xl hover:bg-volt hover:text-background transition-colors"
           >
             ✕
           </button>
           <div
-            onClick={(e) => e.stopPropagation()}
-            className="flex flex-col items-center gap-6 border-2 border-volt/40 bg-card p-6 md:p-10 rounded-lg max-w-[95vw]"
+            onClick={() => setQrExpanded(false)}
+            className="min-h-full flex items-center justify-center p-6"
           >
-            <p className="font-mono text-xs uppercase tracking-widest text-volt">Scan to join</p>
-            <div className="bg-white p-4 rounded-md">
-              <QRCodeSVG
-                value={joinUrl}
-                size={Math.min(
-                  560,
-                  Math.floor(
-                    Math.min(
-                      typeof window !== "undefined" ? window.innerWidth : 560,
-                      typeof window !== "undefined" ? window.innerHeight : 560,
-                    ) * 0.7,
-                  ),
-                )}
-                level="M"
-                bgColor="#ffffff"
-                fgColor="#0A0A0C"
-              />
-            </div>
-            <div className="text-center space-y-2">
-              <p className="font-display text-4xl md:text-5xl italic text-volt tracking-widest">
-                {session.code}
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className="flex flex-col items-center gap-6 border-2 border-volt/30 bg-card p-6 md:p-10 max-w-[95vw]"
+            >
+              <p className="font-mono text-xs uppercase tracking-widest text-volt">Scan to join</p>
+              <div className="bg-white p-4">
+                <QRCodeSVG
+                  value={joinUrl}
+                  // Fullscreen is an enhancement of the in-lobby QR, never the
+                  // only route to it — so it always renders at least as large as
+                  // the scannable floor and tops out well inside the viewport.
+                  size={Math.max(MIN_QR_PX, Math.min(560, Math.round(viewportWidth * 0.45)))}
+                  level="M"
+                  bgColor="#ffffff"
+                  fgColor="#0A0A0C"
+                  title={`Join game ${session.code} — open ${joinUrl}`}
+                  style={{ width: "100%", height: "auto", maxWidth: 560 }}
+                />
+              </div>
+              <div className="text-center space-y-2">
+                <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                  Game Pin
+                </p>
+                <p className="font-display text-4xl md:text-6xl italic text-volt tracking-widest tabular-nums">
+                  {formatGameCode(session.code)}
+                </p>
+                <p className="font-mono text-xs md:text-sm text-foreground/70 break-all">
+                  {displayJoinUrl(joinUrl)}
+                </p>
+              </div>
+              <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">
+                Press Esc or tap outside to go back
               </p>
-              <p className="font-mono text-xs md:text-sm text-foreground/70 break-all">{joinUrl}</p>
             </div>
-            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">
-              Tap anywhere or press Esc to close
-            </p>
           </div>
         </div>
       )}
       {isPaused && session.status === "active" && (
-        <div className="fixed top-14 inset-x-0 z-30 py-2 bg-amber-spark/15 border-y border-amber-spark/50 text-center font-mono text-[11px] uppercase tracking-widest text-amber-spark">
-          ⏸ Session paused — players are frozen. Resume to continue.
+        <div
+          role="status"
+          className="fixed top-14 inset-x-0 z-30 py-2 bg-amber-spark/15 border-y border-amber-spark/30 text-center font-mono text-[11px] uppercase tracking-widest text-amber-spark"
+        >
+          Paused — players are frozen. Resume to carry on.
         </div>
       )}
       {confirmEndEarly && currentQuestion && (
@@ -1190,16 +1217,24 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
         if (!showStart && !showActive && !showNext && !showEnded) return null;
         return (
           <div className="fixed bottom-0 inset-x-0 z-40 bg-background/95 backdrop-blur border-t border-border">
-            <div className="max-w-5xl mx-auto px-6 py-3 flex gap-3 items-center relative">
+            <div className="max-w-[1400px] mx-auto px-4 sm:px-6 py-3 flex flex-wrap gap-3 items-center relative">
               {showStart && (
-                <button
-                  onClick={startGame}
-                  disabled={controlPending}
-                  className="flex-1 disabled:opacity-60 bg-volt text-background font-display text-xl py-3 skew-cta"
-                >
-                  START MATCH · {participants.length}{" "}
-                  {participants.length === 1 ? "PLAYER" : "PLAYERS"}
-                </button>
+                <>
+                  <button
+                    onClick={startGame}
+                    disabled={controlPending}
+                    className="flex-1 min-w-[220px] disabled:opacity-60 bg-volt text-background font-display text-xl py-3 skew-cta"
+                  >
+                    {controlPending ? "STARTING…" : `START GAME · ${playerCountShort(participants.length)}`}
+                  </button>
+                  <button
+                    onClick={toggleFullscreen}
+                    className="min-h-11 font-mono text-xs uppercase border border-border px-4 hover:border-volt hover:text-volt focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt"
+                    title="Fill the screen with the game board — best on a projector"
+                  >
+                    {isFullscreen ? "Exit fullscreen" : "Fullscreen"}
+                  </button>
+                </>
               )}
               {showActive && (
                 <>
@@ -1207,15 +1242,15 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
                     onClick={togglePause}
                     disabled={controlPending}
                     className="font-mono text-xs uppercase border border-border px-4 py-3 hover:border-volt hover:text-volt min-w-[110px]"
-                    title={isPaused ? "Resume the session" : "Pause the session"}
+                    title={isPaused ? "Resume — players can answer again" : "Pause — freeze every player"}
                   >
                     {isPaused ? "▶ RESUME" : "⏸ PAUSE"}
                   </button>
                   <button
                     onClick={() => setConfirmEndEarly(true)}
-                    className="flex-1 bg-volt text-background font-display text-xl py-3 skew-cta"
+                    className="flex-1 min-w-[200px] bg-volt text-background font-display text-xl py-3 skew-cta"
                   >
-                    END QUESTION EARLY
+                    REVEAL ANSWER NOW
                   </button>
                   <div className="relative">
                     <button
@@ -1266,7 +1301,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
                   disabled={controlPending}
                   className="flex-1 disabled:opacity-60 bg-volt text-background font-display text-xl py-3 skew-cta"
                 >
-                  {isLastRound ? "END MATCH" : "NEXT QUESTION →"}
+                  {isLastRound ? "FINISH GAME" : "NEXT QUESTION →"}
                 </button>
               )}
               {showEnded && (
@@ -1341,6 +1376,45 @@ function Stat({ label, value }: { label: string; value: string }) {
     <div className="border border-border p-3 bg-background">
       <p className="text-[10px] text-foreground/40">{label}</p>
       <p className="font-display text-xl italic text-volt">{value}</p>
+    </div>
+  );
+}
+
+/**
+ * Shown on the host board while players work on a question whose answer is not
+ * a simple lettered choice (map pin, number, typed, ordering, feedback). The
+ * name, hint and accent all come from the question-type registry, so this one
+ * panel covers every non-choice type instead of a branch per type.
+ */
+function WaitingOnPlayersPanel({ question }: { question: Question }) {
+  const def = getQuestionType(question.question_type);
+  const accent = `var(--${def.accent})`;
+
+  let detail = def.playerHint;
+  if (question.question_type === "number") {
+    detail = `Guessing between ${(question.number_min ?? 0).toLocaleString()} and ${(question.number_max ?? 100).toLocaleString()}`;
+  } else if (question.question_type === "ordering") {
+    const n = question.options.length;
+    detail = `${n} ${n === 1 ? "item" : "items"} to drag into order`;
+  } else if (question.question_type === "feedback") {
+    detail = "Collecting free-form responses — no scoring";
+  }
+
+  return (
+    <div
+      className="sm:col-span-2 p-6 border text-center"
+      style={{
+        borderColor: `color-mix(in oklab, ${accent} 40%, transparent)`,
+        background: `color-mix(in oklab, ${accent} 5%, transparent)`,
+      }}
+    >
+      <p className="font-display text-3xl italic" style={{ color: accent }}>
+        <span aria-hidden="true" className="mr-2">
+          {def.icon}
+        </span>
+        {def.label}
+      </p>
+      <p className="font-mono text-xs uppercase text-foreground/60 mt-2">{detail}</p>
     </div>
   );
 }

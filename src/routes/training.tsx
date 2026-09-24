@@ -148,7 +148,7 @@ function IntroCard({ question, onStart }: { question: DemoQuestion; onStart: () 
     >
       <div className="text-6xl mb-3">{meta.icon}</div>
       <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/60">
-        {meta.name}
+        {meta.label}
       </p>
       <h2 className="mt-2 font-display text-2xl italic uppercase text-volt">
         Get Ready...
@@ -242,7 +242,7 @@ function QuestionCard({
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <span className="font-mono text-[10px] uppercase text-foreground/60">
-          {getQuestionMeta(question.type).name}
+          {getQuestionMeta(question.type).label}
         </span>
         <span className="font-display italic text-xl text-volt">
           {Math.ceil(remainingMs / 1000)}s

@@ -74,3 +74,27 @@ export function isOfficial(creatorName?: string | null): boolean {
   const n = (creatorName ?? "").trim().toLowerCase();
   return n === "" || n === "brain bolt" || n === "brainbolt";
 }
+
+/* ---------------- Category accent ---------------- */
+
+/** The four Brain Bolt accents, in the order the hash cycles through them. */
+export const BRAND_ACCENTS = ["volt", "pink-shock", "cyan-jolt", "amber-spark"] as const;
+
+export type BrandAccent = (typeof BRAND_ACCENTS)[number];
+
+/**
+ * Stable, deterministic accent for a free-text category. The same category
+ * always gets the same colour (case- and whitespace-insensitively) so a
+ * challenge's identity does not shift between renders or sessions. Uncategorised
+ * content falls back to volt — the primary brand accent.
+ */
+export function arenaCategoryAccent(category?: string | null): BrandAccent {
+  const key = (category ?? "").trim().toLowerCase();
+  if (!key) return "volt";
+  return BRAND_ACCENTS[hash(key) % BRAND_ACCENTS.length];
+}
+
+/** The same accent as a CSS custom-property reference, for inline styles. */
+export function categoryAccentVar(category?: string | null): string {
+  return `var(--${arenaCategoryAccent(category)})`;
+}

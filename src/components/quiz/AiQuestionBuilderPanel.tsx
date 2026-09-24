@@ -31,6 +31,7 @@ import { questionToDbRow } from "@/lib/quiz/validate";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { getQuestionType } from "@/lib/question-registry";
+import { toastError } from "@/lib/errors";
 
 type DraftQuestion = import("@/lib/quiz/validate").BrainBoltQuestion;
 
@@ -262,11 +263,14 @@ export function AiQuestionBuilderPanel({
           .insert(insertRows as any)
           .select("*");
         if (insErr) {
-          toast.error(insErr.message);
+          toastError(insErr, {
+            context: "ai question insert",
+            fallback: "We couldn't add the generated questions to your quiz. Please try again.",
+          });
           return;
         }
         toast.success(
-          `${inserted?.length ?? rows.length} AI-generated questions added (excluded from play until you enable them).`,
+          `${inserted?.length ?? rows.length} AI-generated questions added. They're excluded from play until you include them.`,
         );
         if (inserted && inserted.length > 0) {
           await onInsert(inserted as Array<Record<string, unknown>>);
@@ -376,7 +380,7 @@ export function AiQuestionBuilderPanel({
                       className="accent-volt"
                     />
                     <span className="font-mono text-[11px] uppercase">
-                      {getQuestionType(t).name}
+                      {getQuestionType(t).label}
                     </span>
                   </label>
                 );
@@ -495,7 +499,7 @@ function DraftCard({
     >
       <div className="flex items-center justify-between gap-2">
         <span className={`font-mono text-[10px] uppercase tracking-widest text-${accent}`}>
-          {getQuestionType(question.type).icon} {getQuestionType(question.type).name}
+          {getQuestionType(question.type).icon} {getQuestionType(question.type).label}
         </span>
         <div className="flex items-center gap-1">
           <button

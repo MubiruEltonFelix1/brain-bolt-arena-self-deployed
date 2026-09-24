@@ -137,7 +137,9 @@ function RequestHosting() {
             </label>
 
             <label className="block">
-              <span className="font-mono text-[10px] uppercase text-foreground/60">Expected participants</span>
+              <span className="font-mono text-[10px] uppercase text-foreground/60">
+                How many players do you expect?
+              </span>
               <div className="mt-1 grid grid-cols-3 gap-2">
                 {(["1-25", "26-50", "51-100"] as Size[]).map((s) => (
                   <button

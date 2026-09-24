@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
-import { arenaArtwork, difficultyTheme, isOfficial } from "@/lib/arena-visuals";
-import { estimatedMinutes, formatUpdated, type ArenaListItem } from "@/lib/arena";
+import { arenaArtwork, categoryAccentVar, difficultyTheme, isOfficial } from "@/lib/arena-visuals";
+import { estimatedMinutes, type ArenaListItem } from "@/lib/arena";
+import { challengeMetaLine } from "@/lib/terminology";
 
 /* ---------------- Artwork ---------------- */
 
@@ -70,6 +71,29 @@ export function OfficialBadge() {
   );
 }
 
+/**
+ * Free-text category, in whichever brand accent that category hashes to. Kept
+ * in one place so a category looks the same on the home page, the detail page
+ * and the search results.
+ */
+export function CategoryChip({ category }: { category?: string | null }) {
+  const label = (category ?? "").trim();
+  if (!label) return null;
+  const color = categoryAccentVar(label);
+  return (
+    <span
+      className="font-mono text-[10px] uppercase tracking-widest px-2 py-1 border"
+      style={{
+        color,
+        borderColor: `color-mix(in oklab, ${color} 40%, transparent)`,
+        background: `color-mix(in oklab, ${color} 12%, transparent)`,
+      }}
+    >
+      {label}
+    </span>
+  );
+}
+
 export function StatusChip({ label, color }: { label: string; color: string }) {
   return (
     <span
@@ -81,38 +105,17 @@ export function StatusChip({ label, color }: { label: string; color: string }) {
   );
 }
 
-/* ---------------- Metadata row ---------------- */
-
-export function MetaGrid({ item }: { item: ArenaListItem }) {
-  const minutes = estimatedMinutes(item);
-  return (
-    <dl className="grid grid-cols-2 gap-x-4 gap-y-2 border-t border-border pt-4 font-mono text-[10px] uppercase tracking-widest">
-      <Meta label="Questions" value={String(item.question_count)} />
-      <Meta label="Duration" value={`~${minutes} min`} />
-      <Meta label="Plays" value={item.play_count.toLocaleString()} />
-      <Meta label="Avg accuracy" value={item.avg_accuracy != null ? `${item.avg_accuracy}%` : "—"} />
-    </dl>
-  );
-}
-
-export function Meta({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <dt className="text-foreground/40">{label}</dt>
-      <dd className="text-foreground/85 mt-0.5">{value}</dd>
-    </div>
-  );
-}
-
 /* ---------------- Featured hero ---------------- */
 
 export function ArenaHero({
   item,
   ribbon = "Featured",
+  personalBest,
 }: {
   item: ArenaListItem;
   /** Future sponsored slots reuse this exact layout with a different ribbon. */
   ribbon?: string;
+  personalBest?: number | null;
 }) {
   const theme = difficultyTheme(item.difficulty);
   const minutes = estimatedMinutes(item);
@@ -142,6 +145,7 @@ export function ArenaHero({
               {ribbon}
             </span>
             <DifficultyChip difficulty={item.difficulty} />
+            <CategoryChip category={item.arena_category} />
             {isOfficial(item.creator_name) && <OfficialBadge />}
           </div>
 
@@ -155,18 +159,28 @@ export function ArenaHero({
           </div>
 
           <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
-            {item.question_count} questions · ~{minutes} min ·{" "}
-            {item.play_count.toLocaleString()} plays
+            {challengeMetaLine({
+              questionCount: item.question_count,
+              minutes,
+              playCount: item.play_count,
+            })}
+            {personalBest != null && (
+              <>
+                {" · "}
+                <span className="text-volt">your best {personalBest.toLocaleString()}</span>
+              </>
+            )}
           </p>
 
           <div className="flex flex-wrap gap-3 pt-1">
             <Link
               to="/arena/$quizId"
               params={{ quizId: item.id }}
-              className="inline-block px-8 py-3 font-display text-xl skew-cta active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-2"
+              aria-label={`Play Bolt: ${item.title}`}
+              className="inline-block px-8 py-3 font-display text-xl uppercase italic skew-cta active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-2"
               style={{ background: theme.color, color: "var(--background)" }}
             >
-              PLAY NOW
+              Play Bolt
             </Link>
           </div>
         </div>
@@ -181,17 +195,22 @@ export function ArenaCard({
   item,
   played,
   featured,
+  personalBest,
 }: {
   item: ArenaListItem;
   played: boolean;
   featured?: boolean;
+  /** The signed-in player's best score on this challenge, when they have one. */
+  personalBest?: number | null;
 }) {
   const theme = difficultyTheme(item.difficulty);
+  const minutes = estimatedMinutes(item);
 
   return (
     <Link
       to="/arena/$quizId"
       params={{ quizId: item.id }}
+      aria-label={`Play Bolt: ${item.title}`}
       className="group block focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt"
     >
       <article
@@ -208,8 +227,8 @@ export function ArenaCard({
           className="h-32"
         />
 
-        <div className="p-5 flex flex-col gap-4 flex-1">
-          <div className="flex items-start justify-between gap-3">
+        <div className="p-5 flex flex-col gap-3 flex-1">
+          <div className="flex flex-wrap items-start justify-between gap-2">
             <DifficultyChip difficulty={item.difficulty} />
             {featured ? (
               <StatusChip label="Featured" color={theme.color} />
@@ -229,19 +248,29 @@ export function ArenaCard({
             </p>
           </div>
 
-          <MetaGrid item={item} />
-
-          <div className="flex items-center justify-between gap-3 pt-1">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">
-              Updated {formatUpdated(item.last_updated)}
-            </p>
-            <span
-              className="font-mono text-[10px] uppercase tracking-widest transition-transform motion-safe:group-hover:translate-x-1"
-              style={{ color: theme.color }}
-            >
-              View →
-            </span>
+          <div className="flex flex-wrap items-center gap-2">
+            <CategoryChip category={item.arena_category} />
+            {personalBest != null && (
+              <span className="font-mono text-[10px] uppercase tracking-widest text-volt">
+                Your best {personalBest.toLocaleString()}
+              </span>
+            )}
           </div>
+
+          <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+            {challengeMetaLine({
+              questionCount: item.question_count,
+              minutes,
+              playCount: item.play_count,
+            })}
+          </p>
+
+          <span
+            className="inline-flex w-full items-center justify-center border py-3 font-display text-lg italic uppercase tracking-tight transition-colors motion-safe:group-hover:bg-volt motion-safe:group-hover:text-background"
+            style={{ borderColor: theme.color, color: theme.color }}
+          >
+            Play Bolt
+          </span>
         </div>
       </article>
     </Link>

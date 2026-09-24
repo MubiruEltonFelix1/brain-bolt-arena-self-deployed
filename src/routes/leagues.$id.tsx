@@ -133,7 +133,7 @@ function LeagueDetail() {
   async function changeStatus(next: LeagueStatus) {
     const { error } = await supabase.from("leagues").update({ status: next } as never).eq("id", id);
     if (error) return toastError(error, { context: "change status" });
-    toast.success(`Status → ${STATUS_LABEL[next]}`);
+    toast.success(`Season status updated to ${STATUS_LABEL[next]}`);
     load();
   }
 

@@ -1,11 +1,19 @@
 // Central question-type registry.
 //
-// One place that knows what a question type is called, how it looks in the
-// intro screen, what shape its answer takes and the small pure helpers every
-// surface (host, player, Arena, Training) needs to grade or render it.
+// One place that knows HOW a question type behaves — the shape its answer
+// takes and the small pure helpers every surface (host, player, Arena,
+// Training) needs to grade or render it. What a type is *called* lives in
+// `@/lib/question-presentation`, which this module merges in so every
+// consumer of `getQuestionType()` gets both.
 //
-// Adding a question type means adding an entry here plus its body in
-// `src/components/question/QuestionBodies.tsx` — not editing three routes.
+// Adding a question type means adding its wording to `question-presentation.ts`,
+// its behaviour here, and its body to `src/components/question/QuestionRenderer.tsx`.
+
+import {
+  FALLBACK_PRESENTATION,
+  getQuestionPresentation,
+  type QuestionPresentation,
+} from "./question-presentation";
 
 export const INTRO_DURATION_MS = 5000;
 
@@ -24,11 +32,11 @@ export type QuestionTypeId =
 /** How the player's answer is expressed. Drives which body component renders. */
 export type AnswerKind = "choice" | "order" | "geo" | "number" | "text";
 
-export type QuestionTypeDef = {
-  icon: string;
-  name: string;
-  description: string;
-  accent: "volt" | "pink-shock" | "cyan-jolt" | "amber-spark";
+export type QuestionAccent = "volt" | "pink-shock" | "cyan-jolt" | "amber-spark";
+
+/** Behaviour of a type — everything that is NOT user-facing wording. */
+export type QuestionBehaviour = {
+  accent: QuestionAccent;
   /** Shape of the submitted answer. */
   answerKind: AnswerKind;
   /** False only for opinion collection (no correct answer, no points). */
@@ -37,101 +45,46 @@ export type QuestionTypeDef = {
   media: "image" | "image_reveal" | "audio" | "map" | null;
 };
 
-const REGISTRY: Record<string, QuestionTypeDef> = {
-  mcq: {
-    icon: "🧠",
-    name: "Quick Pick",
-    description: "Choose the correct answer",
-    accent: "volt",
-    answerKind: "choice",
-    scored: true,
-    media: null,
-  },
-  image_mcq: {
-    icon: "🧠",
-    name: "Quick Pick",
-    description: "Choose the correct answer",
-    accent: "volt",
-    answerKind: "choice",
-    scored: true,
-    media: "image",
-  },
-  true_false: {
-    icon: "⚖️",
-    name: "Fact or Fiction",
-    description: "Decide what is true",
-    accent: "pink-shock",
-    answerKind: "choice",
-    scored: true,
-    media: null,
-  },
-  number: {
-    icon: "🎯",
-    name: "Closest Shot",
-    description: "Get as close as possible",
-    accent: "amber-spark",
-    answerKind: "number",
-    scored: true,
-    media: null,
-  },
-  image_reveal: {
-    icon: "👀",
-    name: "Mystery Reveal",
-    description: "Identify before the image appears",
-    accent: "cyan-jolt",
-    answerKind: "choice",
-    scored: true,
-    media: "image_reveal",
-  },
-  audio: {
-    icon: "🎧",
-    name: "Sound Detective",
-    description: "Listen carefully",
-    accent: "cyan-jolt",
-    answerKind: "choice",
-    scored: true,
-    media: "audio",
-  },
-  ordering: {
-    icon: "🧩",
-    name: "Sequence Master",
-    description: "Arrange everything correctly",
-    accent: "pink-shock",
-    answerKind: "order",
-    scored: true,
-    media: null,
-  },
-  type: {
-    icon: "✍️",
-    name: "Thought Bubble",
-    description: "Share your answer",
-    accent: "volt",
-    answerKind: "text",
-    scored: true,
-    media: null,
-  },
-  feedback: {
-    icon: "💬",
-    name: "Voice of the Crowd",
-    description: "Tell us what you think",
-    accent: "cyan-jolt",
-    answerKind: "text",
-    scored: false,
-    media: null,
-  },
-  map_pin: {
-    icon: "🗺️",
-    name: "Pin Drop",
-    description: "Find it on the map",
-    accent: "cyan-jolt",
-    answerKind: "geo",
-    scored: true,
-    media: "map",
-  },
+/**
+ * A fully-described question type. The wording fields (`label`, `tagline`,
+ * `description`, `icon`, `helpText`, `playerHint`) come from
+ * `@/lib/question-presentation` — the single source for every user-facing
+ * string. Add or rename a type's wording there, never here.
+ */
+export type QuestionTypeDef = QuestionPresentation & QuestionBehaviour;
+
+const BEHAVIOUR: Record<string, QuestionBehaviour> = {
+  mcq: { accent: "volt", answerKind: "choice", scored: true, media: null },
+  image_mcq: { accent: "volt", answerKind: "choice", scored: true, media: "image" },
+  true_false: { accent: "pink-shock", answerKind: "choice", scored: true, media: null },
+  number: { accent: "amber-spark", answerKind: "number", scored: true, media: null },
+  image_reveal: { accent: "cyan-jolt", answerKind: "choice", scored: true, media: "image_reveal" },
+  audio: { accent: "cyan-jolt", answerKind: "choice", scored: true, media: "audio" },
+  ordering: { accent: "pink-shock", answerKind: "order", scored: true, media: null },
+  type: { accent: "volt", answerKind: "text", scored: true, media: null },
+  feedback: { accent: "cyan-jolt", answerKind: "text", scored: false, media: null },
+  map_pin: { accent: "cyan-jolt", answerKind: "geo", scored: true, media: "map" },
 };
 
+function buildRegistry(): Record<string, QuestionTypeDef> {
+  const out: Record<string, QuestionTypeDef> = {};
+  for (const [id, behaviour] of Object.entries(BEHAVIOUR)) {
+    out[id] = { ...getQuestionPresentation(id), ...behaviour };
+  }
+  return out;
+}
+
+const REGISTRY: Record<string, QuestionTypeDef> = buildRegistry();
+
+/**
+ * Fallback for an unknown id: neutral wording ("Question") with the safest
+ * behaviour (a lettered choice body). Never the raw id, and never a label that
+ * claims to be a specific type the payload did not actually ask for.
+ */
+const DEFAULT_TYPE: QuestionTypeDef = { ...FALLBACK_PRESENTATION, ...BEHAVIOUR.mcq };
+
 export function getQuestionType(type: string): QuestionTypeDef {
-  return REGISTRY[type] ?? REGISTRY.mcq;
+  return REGISTRY[type] ?? DEFAULT_TYPE;
 }
 
 export function getAnswerKind(type: string): AnswerKind {

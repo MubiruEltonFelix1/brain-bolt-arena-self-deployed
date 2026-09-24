@@ -45,16 +45,16 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
     <div className="flex min-h-screen items-center justify-center bg-background px-6">
       <div className="max-w-md text-center">
         <h1 className="font-display text-3xl uppercase italic text-pink-shock">
-          System fault
+          Something went wrong
         </h1>
         <p className="mt-2 text-sm text-foreground/60">
           {safeErrorMessage(error)}
         </p>
         <button
           onClick={() => { router.invalidate(); reset(); }}
-          className="mt-6 bg-volt text-background font-display text-lg px-6 py-3 skew-cta"
+          className="mt-6 min-h-11 bg-volt text-background font-display text-lg uppercase italic px-6 py-3 skew-cta"
         >
-          RETRY
+          Try again
         </button>
       </div>
     </div>

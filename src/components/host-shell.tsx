@@ -60,10 +60,11 @@ export function HostShell({ children, title }: { children: ReactNode; title?: st
   if (loading || !user) {
     return (
       <div
-        className="min-h-screen grid place-items-center font-mono text-foreground/50 text-sm"
+        className="min-h-screen grid place-items-center font-mono text-foreground/50 text-sm uppercase tracking-widest"
         aria-busy="true"
+        role="status"
       >
-        LOADING...
+        Loading…
       </div>
     );
   }

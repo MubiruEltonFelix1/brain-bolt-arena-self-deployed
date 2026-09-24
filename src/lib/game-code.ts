@@ -30,7 +30,7 @@ export async function lookupGameCode(code: string): Promise<GameCodeLookup | nul
 
 /** Plain-language explanation of what a code represents. */
 export function describeGameCode(info: GameCodeLookup): { label: string; detail: string } {
-  const title = info.competition_title ?? info.quiz_title ?? "Quiz match";
+  const title = info.competition_title ?? info.quiz_title ?? "Quiz game";
   if (info.kind === "scheduled" && info.scheduled_start_at) {
     const start = new Date(info.scheduled_start_at);
     const soon = start.getTime() - Date.now();
@@ -39,15 +39,15 @@ export function describeGameCode(info: GameCodeLookup): { label: string; detail:
         ? `Starts ${start.toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`
         : "Starting now";
     return {
-      label: "Scheduled competition",
+      label: "Scheduled game",
       detail: `${title} · ${when}${info.autonomous ? " · runs automatically" : ""}`,
     };
   }
   if (info.session_status === "lobby") {
-    return { label: "Live lobby", detail: `${title} · the host is waiting for players` };
+    return { label: "Open — join now", detail: `${title} · the host is waiting for players` };
   }
   if (info.session_status === "ended") {
-    return { label: "Finished", detail: `${title} · this match has already ended` };
+    return { label: "Already finished", detail: `${title} · this game has ended` };
   }
-  return { label: "Match in progress", detail: `${title} · you can still jump in` };
+  return { label: "In progress", detail: `${title} · you can still jump in` };
 }

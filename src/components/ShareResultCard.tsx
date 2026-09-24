@@ -150,7 +150,7 @@ export function ShareCardVisual({
 
       <div style={{ marginTop: 72 }}>
         <div style={{ fontSize: 14, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.subtext, fontWeight: 600 }}>
-          {data.leagueName ? data.leagueName : "Quiz Session"}
+          {data.leagueName ? data.leagueName : "Brain Bolt game"}
         </div>
         <div style={{ marginTop: 12, fontSize: 40, fontWeight: 700, letterSpacing: "-0.02em", lineHeight: 1.1, color: theme.text }}>
           {data.quizTitle}

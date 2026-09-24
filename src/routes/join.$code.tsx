@@ -115,9 +115,14 @@ function JoinPage() {
     if (error || !row) {
       if (error?.message?.includes("not accepting")) {
         logActionError(error, "join game (session not accepting)");
-        toast.error("Session not joinable");
+        toast.error("This game has already started", {
+          description: "Ask the host to open a new game, then join with the new PIN.",
+        });
       } else {
-        toastError(error, { context: "join game", fallback: "Could not join this session." });
+        toastError(error, {
+          context: "join game",
+          fallback: "We couldn't get you into the game. Check the Game PIN and try again.",
+        });
       }
       return;
     }
@@ -136,9 +141,9 @@ function JoinPage() {
       return (
         <LiveScreenState
           spinner={false}
-          title="Match not found"
-          message={`No live match is using code ${code}. Double-check the code with your host.`}
-          action={{ label: "BACK TO ARENA", onClick: () => navigate({ to: "/" }) }}
+          title="Game not found"
+          message={`No live game is using PIN ${code}. Check the digits with your host and try again.`}
+          action={{ label: "BACK TO START", onClick: () => navigate({ to: "/" }) }}
         />
       );
     }
@@ -146,13 +151,13 @@ function JoinPage() {
       return (
         <LiveScreenState
           spinner={false}
-          title="Can't reach the arena"
-          message="Your connection dropped while loading this match. Nothing has been lost."
+          title="Can't reach the game"
+          message="Your connection dropped while loading. Nothing has been lost — try again."
           action={{ label: "TRY AGAIN", onClick: () => { setLoadError(null); setAttempt((a) => a + 1); } }}
         />
       );
     }
-    return <LiveScreenState title="Finding your match" message={`Looking up code ${code}...`} />;
+    return <LiveScreenState title="Looking up your game" message={`Finding the game with PIN ${code}…`} />;
   }
 
 

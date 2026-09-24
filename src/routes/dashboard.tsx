@@ -125,7 +125,7 @@ function Dashboard() {
     if (!qs || qs.length === 0) {
       setCreatingId(null);
       toast.error(
-        "This quiz has no playable questions. Enable at least one question before starting.",
+        "Nothing to play yet. Include at least one question before starting a game.",
       );
       return;
     }
@@ -226,11 +226,11 @@ function Dashboard() {
           <div className="flex items-end justify-between">
             <h2 className="font-display text-3xl italic uppercase">Leagues</h2>
             <Link to="/leagues" className="font-mono text-xs uppercase text-volt hover:underline">
-              Manage →
+              Open leagues →
             </Link>
           </div>
           <p className="text-foreground/60 text-sm mt-2">
-            Group recurring matches into seasons. Player nicknames carry across sessions.
+            Group recurring games into seasons. Player nicknames carry across every game night.
           </p>
         </div>
       </div>

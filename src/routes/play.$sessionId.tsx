@@ -42,6 +42,7 @@ export const Route = createFileRoute("/play/$sessionId")({
 
 type Session = {
   id: string;
+  code: string;
   status: string;
   current_question_index: number;
   current_question_started_at: string | null;
@@ -182,7 +183,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (!identity) return;
     const { data: s, error: sErr } = await supabase
       .from("sessions")
-      .select("id,status,current_question_index,current_question_started_at,current_question_revealed,team_mode,question_order,quiz_id,league_id,paused_at,time_added_ms,quiz:quizzes(time_per_question,title),branding:branding_profiles(id,owner_principal_id,organization_name,logo_url,primary_color,secondary_color)")
+      .select("id,code,status,current_question_index,current_question_started_at,current_question_revealed,team_mode,question_order,quiz_id,league_id,paused_at,time_added_ms,quiz:quizzes(time_per_question,title),branding:branding_profiles(id,owner_principal_id,organization_name,logo_url,primary_color,secondary_color)")
       .eq("id", sessionId)
       .maybeSingle();
     if (sErr) { setLoadFailed(true); return; }
@@ -431,15 +432,25 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
 
   if (identity === undefined) {
-    return <LiveScreenState title="Loading your seat" message="Restoring your place in this match." />;
+    return (
+      <LiveScreenState title="Getting you back in" message="Restoring your place in this game." />
+    );
   }
 
   if (!identity) {
     return (
       <div className="min-h-screen grid place-items-center bg-background px-6">
         <div className="text-center space-y-4">
-          <p className="font-display text-3xl italic uppercase">No active session</p>
-          <Link to="/" className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta inline-block">Back to arena</Link>
+          <p className="font-display text-3xl italic uppercase">You're not in a game</p>
+          <p className="text-foreground/60 text-sm max-w-xs mx-auto">
+            Enter your host's Game PIN to join.
+          </p>
+          <Link
+            to="/"
+            className="inline-flex min-h-11 items-center bg-volt text-background font-display text-lg uppercase italic px-6 py-3 skew-cta"
+          >
+            Join a game
+          </Link>
         </div>
       </div>
     );
@@ -449,16 +460,16 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       return (
         <LiveScreenState
           spinner={false}
-          title="Can't reach the match"
-          message="We couldn't load this match right now. Your score is stored on the server — nothing is lost."
+          title="Can't reach the game"
+          message="We couldn't load this game right now. Your score is stored on the server — nothing is lost."
           action={{ label: "TRY AGAIN", onClick: () => { setLoadFailed(false); void loadState(); } }}
         />
       );
     }
     return (
       <LiveScreenState
-        title={connStatus === "offline" ? "Waiting for connection" : "Connecting to the match"}
-        message={connStatus === "offline" ? "You appear to be offline. We'll reconnect automatically." : "Syncing with the live arena..."}
+        title={connStatus === "offline" ? "Waiting for connection" : "Joining the game"}
+        message={connStatus === "offline" ? "You appear to be offline. We'll reconnect automatically." : "Syncing with the live game…"}
       />
     );
   }
@@ -472,7 +483,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     const rows = (data as MyAnswer[] | null) ?? [];
     if (rows.length) setMyAnswers(rows);
     if (rows.some((a) => a.question_id === questionId)) {
-      toast.success("Answer received");
+      toast.success("Answer locked in");
       return;
     }
     answeredQuestionId.current = null;
@@ -630,7 +641,13 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
 
       <div className="flex-1 px-6 py-8 max-w-md w-full mx-auto">
-        {session.status === "lobby" && <LobbyView count={participants.length} />}
+        {session.status === "lobby" && (
+          <LobbyView
+            count={participants.length}
+            quizTitle={session.quiz?.title ?? "Your game"}
+            code={session.code}
+          />
+        )}
 
         {session.status === "active" && currentQuestion && inIntro && (
           <QuestionIntro
@@ -714,18 +731,42 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   );
 }
 
-function LobbyView({ count }: { count: number }) {
+function LobbyView({
+  count,
+  quizTitle,
+  code,
+}: {
+  count: number;
+  quizTitle: string;
+  code: string;
+}) {
   return (
     <div className="text-center space-y-8 animate-float">
-      <div className="inline-flex items-center gap-2 px-3 py-1 border border-volt/30 bg-volt/5">
-        <span className="size-2 bg-volt rounded-full animate-pulse" />
-        <span className="font-mono text-[10px] uppercase tracking-widest text-volt">In lobby</span>
+      <div className="inline-flex items-center gap-2 px-3 py-1 border border-volt/30 bg-volt/10">
+        <span aria-hidden="true" className="size-2 bg-volt rounded-full animate-pulse" />
+        <span className="font-mono text-[10px] uppercase tracking-widest text-volt">
+          You're in
+        </span>
       </div>
-      <h2 className="font-display text-5xl italic uppercase leading-none">
-        Locked in.<br /><span className="text-volt">Stand by.</span>
-      </h2>
+
+      {/* Which game am I in? Always answered, never implied. */}
+      <div className="space-y-2">
+        <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+          Game Pin {code}
+        </p>
+        <h2 className="font-display text-3xl sm:text-4xl italic uppercase leading-none">
+          {quizTitle}
+        </h2>
+      </div>
+
+      <p className="font-display text-4xl italic uppercase leading-none text-volt">
+        Stand by
+      </p>
       <p className="font-mono text-sm text-foreground/60 uppercase tracking-widest">
-        {count} {count === 1 ? "player" : "players"} ready
+        {count} {count === 1 ? "player" : "players"} joined
+      </p>
+      <p className="text-foreground/50 text-sm max-w-xs mx-auto">
+        Waiting for the host to start. The first question appears here automatically.
       </p>
     </div>
   );

@@ -7,6 +7,12 @@ import { useAuthUser } from "@/hooks/use-auth-user";
 import { MapPicker } from "@/components/MapPicker";
 import { AiQuestionBuilderPanel } from "@/components/quiz/AiQuestionBuilderPanel";
 import type { GeoRegion } from "@/lib/question-registry";
+import {
+  questionTypeHelpText,
+  questionTypeLabel,
+  questionTypeListLabel,
+  questionTypeOptions,
+} from "@/lib/question-presentation";
 import type { CountryRegion } from "@/lib/geo/country-regions";
 import {
   toastError,
@@ -118,7 +124,21 @@ Required columns
 question_type   One of: multiple_choice, true_false, text, free_text,
                 closest_number, map_pin, image_reveal, audio, ordering,
                 matching. Aliases accepted (mcq, tf, number, geo, etc).
+                These short tokens are the file format's own vocabulary —
+                see "What each question type does" below for plain English.
 question        The prompt shown to players.
+
+What each question type does
+----------------------------
+multiple_choice   ${questionTypeHelpText("mcq")}
+true_false        ${questionTypeHelpText("true_false")}
+closest_number    ${questionTypeHelpText("number")}
+text              ${questionTypeHelpText("type")}
+free_text         ${questionTypeHelpText("feedback")}
+map_pin           ${questionTypeHelpText("map_pin")}
+image_reveal      ${questionTypeHelpText("image_reveal")}
+audio             ${questionTypeHelpText("audio")}
+ordering          ${questionTypeHelpText("ordering")}
 
 Common optional columns
 -----------------------
@@ -603,7 +623,9 @@ function QuizEditor() {
       })();
 
       if (qtype === "matching") {
-        errors.push(`Row ${lineNo}: "matching" question type is not yet supported in gameplay`);
+        errors.push(
+          `Row ${lineNo}: "Match the Pairs" questions cannot be played yet — use another type for now`,
+        );
         return;
       }
 
@@ -898,7 +920,7 @@ function QuizEditor() {
     const { error } = await supabase.from("questions").insert(payload);
     if (error) {
       logActionError(error, "CSV import");
-      setCsvErrors([...errors, `Import failed: ${safeErrorMessage(error)}`]);
+      setCsvErrors([...errors, `We couldn't import that file — ${safeErrorMessage(error)}`]);
       return;
     }
     setCsvErrors(errors);
@@ -985,7 +1007,7 @@ function QuizEditor() {
               {excludedCount > 0 && (
                 <span className="text-foreground/40">
                   {" "}
-                  · {questions.length - excludedCount} playable
+                  · {questions.length - excludedCount} ready to play
                 </span>
               )}
             </h2>
@@ -1004,7 +1026,7 @@ function QuizEditor() {
                     disabled={excludedCount === 0}
                     className="border border-border px-3 py-2.5 font-mono text-xs uppercase hover:border-volt hover:text-volt disabled:opacity-30 disabled:hover:border-border disabled:hover:text-foreground"
                   >
-                    Enable all
+                    Include all
                   </button>
                   <button
                     onClick={() => setAllPlayable(false)}
@@ -1074,7 +1096,17 @@ function QuizEditor() {
               <EmptyState
                 eyebrow="Questions"
                 title="Add your first question"
-                body="Pick a question type above — multiple choice, true/false, numeric, ordering, image reveal, audio, map pin, text or open feedback. You can also import a CSV."
+                body={`Pick a question type above — ${questionTypeListLabel([
+                  "mcq",
+                  "true_false",
+                  "number",
+                  "ordering",
+                  "image_reveal",
+                  "audio",
+                  "map_pin",
+                  "type",
+                  "feedback",
+                ]).toLowerCase()}. You can also import a CSV.`}
               />
             )}
           </div>
@@ -1464,45 +1496,16 @@ function QuestionEditor({
 
       <div className="flex flex-wrap items-center gap-2">
         <span className="font-mono text-[10px] uppercase text-foreground/60">Type</span>
-        {(
-          [
-            "mcq",
-            "true_false",
-            "image_mcq",
-            "image_reveal",
-            "audio",
-            "map_pin",
-            "number",
-            "type",
-            "feedback",
-            "ordering",
-          ] as QuestionType[]
-        ).map((t) => (
+        {questionTypeOptions().map(({ id: t, label, helpText }) => (
           <button
             key={t}
             type="button"
             onClick={() => changeType(t)}
+            title={helpText}
+            aria-pressed={local.question_type === t}
             className={`font-mono text-[10px] uppercase px-2 py-1 border ${local.question_type === t ? "border-volt bg-volt/10 text-volt" : "border-border text-foreground/60 hover:border-volt/60"}`}
           >
-            {t === "mcq"
-              ? "Multiple choice"
-              : t === "true_false"
-                ? "True / False"
-                : t === "image_mcq"
-                  ? "Image MCQ"
-                  : t === "image_reveal"
-                    ? "🖼️ Image Reveal"
-                    : t === "audio"
-                      ? "🎧 Audio"
-                      : t === "map_pin"
-                        ? "📍 Map pin"
-                        : t === "number"
-                          ? "🎯 Closest number"
-                          : t === "type"
-                            ? "⌨️ Type answer"
-                            : t === "ordering"
-                              ? "🔀 Ordering"
-                              : "💬 Open feedback"}
+            {label}
           </button>
         ))}
         <label
