@@ -15,6 +15,7 @@ production database bug that had disabled the Save Result feature entirely.
 | RC-4 | `signUp` navigated to the dashboard even when **no session** was returned (confirmation-required projects). | `auth.tsx:36-46` | bounce back to the sign-in form |
 | RC-5 | Save Result used `window.location.href` (full reload); `FinalView` reported "Saved" from `isGuest` alone, before and regardless of the claim result. | `play.$sessionId.tsx:1464,752` | results view discarded, misleading state |
 | RC-6 | `create_session_claim` / `create_arena_claim` call `gen_random_bytes(32)` while pinned to `search_path = 'public'`; pgcrypto lives in `extensions`. | live DB: `42883 function gen_random_bytes(integer) does not exist` | **Save Result never worked at all** |
+| RC-7 | The landing page had **no auth awareness**. A signed-in visitor still saw "Sign in" / "Host"; clicking one sent them to `/auth`, which auto-redirects an authenticated user straight back to `next` (= `/`). Zero document requests, no visible change, same page. **This is what "sign in and host just refresh the page" actually was.** | `index.tsx` read no auth state at all | "it just refreshes" |
 
 ### RC-6 in detail
 
@@ -78,10 +79,10 @@ retains EXECUTE.
 | Gate | Result |
 |---|---|
 | `bunx tsc --noEmit` | **PASS** |
-| `bun test` | **608 pass / 0 fail** across 28 files (baseline 530/23) |
+| `bun test` | **612 pass / 0 fail** across 28 files (baseline 530/23) |
 | `bun run build` | **PASS** (`✓ built in 11.14s`) |
 | ESLint on new modules | **0 problems** |
-| Browser journey (real Chromium) | **40/40 checks** |
+| Browser journey (real Chromium) | **47/47 checks** |
 
 `bun run lint` is **broken repo-wide and unrelated to this phase**: every file
 trips `prettier/prettier Delete ␍` (CRLF checkout vs Prettier's LF default), and
@@ -105,6 +106,11 @@ never leaks between them.
 - **D — Sign-out** ends the session, leaves no stale auth storage, keeps guest
   play working, and re-gates the dashboard.
 - **E — Pixel 8 mobile** repeats journey A.
+- **F — The landing page reflects a signed-in visitor.** Signs in through the
+  landing nav itself, then asserts the "Sign in" control is gone, "Dashboard"
+  and "Profile" replace it, the account nav survives a reload, and the Game PIN
+  box is still there. Added after RC-7; the earlier guest-only probe could not
+  see the bug because it never signed anyone in.
 
 The load-bearing assertion is **A11**: a marker planted on `window` before the
 handoff must survive it. The old `window.location.href` lost it (full reload);

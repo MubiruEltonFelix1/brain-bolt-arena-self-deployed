@@ -74,6 +74,37 @@ describe("active gameplay is not coupled to auth", () => {
   });
 });
 
+describe("the landing page reflects auth state", () => {
+  test("it reads the auth store", () => {
+    expect(INDEX).toContain("useAuthState");
+    expect(INDEX).toContain("signedIn");
+  });
+
+  test("a signed-in visitor is offered the account surface, not a sign-in form", () => {
+    // /auth sends an authenticated visitor straight back to their destination,
+    // so a persistent "Sign in" control bounced them home again and looked like
+    // the page reloading and doing nothing.
+    const nav = INDEX.slice(INDEX.indexOf("<nav"), INDEX.indexOf("</nav>"));
+    expect(nav).toContain("{signedIn ? (");
+    // Both sides of the branch must live in the nav: the account surface for a
+    // signed-in visitor, the sign-in controls for a guest.
+    expect(nav).toContain('to="/dashboard"');
+    expect(nav).toContain('to="/profile"');
+    expect(nav).toContain('startSignIn("sign-in")');
+    expect(nav).toContain('startSignIn("host")');
+  });
+
+  test("the sign-in entry point refuses to run once signed in", () => {
+    // Covers the window before the auth store settles.
+    expect(INDEX).toMatch(/function startSignIn[\s\S]{0,300}if \(signedIn\) return;/);
+  });
+
+  test("guests keep the sign-in and host controls", () => {
+    expect(INDEX).toContain('startSignIn("sign-in")');
+    expect(INDEX).toContain('startSignIn("host")');
+  });
+});
+
 describe("account-dependent actions are gated", () => {
   test("hosting requires authentication", () => {
     expect(HOST).toContain("gateSuspended");

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { describeGameCode, lookupGameCode, type GameCodeLookup } from "@/lib/game-code";
 import { authSearch, rememberReturnIntent } from "@/lib/return-intent";
+import { useAuthState } from "@/lib/auth-state";
 
 export const Route = createFileRoute("/")({
   component: Landing,
@@ -13,6 +14,12 @@ function Landing() {
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [lookup, setLookup] = useState<GameCodeLookup | null>(null);
+
+  // The landing page stays usable while the session is still being restored,
+  // and an undeterminable session must not hide the sign-in controls. Only a
+  // definitively signed-in visitor gets the account navigation.
+  const { user, status } = useAuthState();
+  const signedIn = status === "authenticated" && user != null;
 
   async function handleJoin(e: React.FormEvent) {
     e.preventDefault();
@@ -61,6 +68,9 @@ function Landing() {
    * through the sign-in instead of dropping the player on the dashboard.
    */
   function startSignIn(reason: "host" | "sign-in") {
+    // Guards the brief window before the auth store settles: a signed-in
+    // visitor who triggers this would be bounced straight back here.
+    if (signedIn) return;
     const clean = code.replace(/\D/g, "");
     const destination = /^\d{6}$/.test(clean) ? `/join/${clean}` : "/";
     rememberReturnIntent({ path: destination, reason });
@@ -83,20 +93,42 @@ function Landing() {
           >
             Arena
           </Link>
-          <button
-            type="button"
-            onClick={() => startSignIn("sign-in")}
-            className="font-mono text-xs uppercase text-foreground/60 hover:text-volt"
-          >
-            Sign in
-          </button>
-          <button
-            type="button"
-            onClick={() => startSignIn("host")}
-            className="px-4 py-1.5 border border-volt text-volt font-mono text-xs hover:bg-volt hover:text-background transition-colors uppercase"
-          >
-            Host
-          </button>
+          {signedIn ? (
+            // A signed-in visitor has no use for "Sign in": /auth would send
+            // them straight back here again, which reads as the page reloading
+            // and doing nothing. Offer the account surface instead.
+            <>
+              <Link
+                to="/profile"
+                className="font-mono text-xs uppercase text-foreground/60 hover:text-volt"
+              >
+                Profile
+              </Link>
+              <Link
+                to="/dashboard"
+                className="px-4 py-1.5 border border-volt text-volt font-mono text-xs hover:bg-volt hover:text-background transition-colors uppercase"
+              >
+                Dashboard
+              </Link>
+            </>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => startSignIn("sign-in")}
+                className="font-mono text-xs uppercase text-foreground/60 hover:text-volt"
+              >
+                Sign in
+              </button>
+              <button
+                type="button"
+                onClick={() => startSignIn("host")}
+                className="px-4 py-1.5 border border-volt text-volt font-mono text-xs hover:bg-volt hover:text-background transition-colors uppercase"
+              >
+                Host
+              </button>
+            </>
+          )}
         </div>
       </nav>
 
@@ -197,13 +229,22 @@ function Landing() {
             >
               Play Arena
             </Link>
-            <button
-              type="button"
-              onClick={() => startSignIn("sign-in")}
-              className="mt-3 block w-full text-center font-mono text-[10px] uppercase tracking-widest text-foreground/50 hover:text-volt"
-            >
-              Sign up to save your scores →
-            </button>
+            {signedIn ? (
+              <Link
+                to="/profile"
+                className="mt-3 block w-full text-center font-mono text-[10px] uppercase tracking-widest text-foreground/50 hover:text-volt"
+              >
+                Your scores are saved to your profile →
+              </Link>
+            ) : (
+              <button
+                type="button"
+                onClick={() => startSignIn("sign-in")}
+                className="mt-3 block w-full text-center font-mono text-[10px] uppercase tracking-widest text-foreground/50 hover:text-volt"
+              >
+                Sign up to save your scores →
+              </button>
+            )}
           </div>
         </section>
 

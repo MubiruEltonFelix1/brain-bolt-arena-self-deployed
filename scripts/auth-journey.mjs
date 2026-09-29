@@ -489,6 +489,54 @@ try {
     check("E7: mobile saved confirmation", true);
     await ctx.close();
   }
+
+  // ── Journey F: the landing page reflects a signed-in visitor ────────────────
+  currentJourney = "F: signed-in landing page";
+  {
+    const ctx = await browser.createBrowserContext();
+    const page = await ctx.newPage();
+    activePage = page;
+    await page.setViewport({ width: 1440, height: 900 });
+
+    // Sign in via the landing nav itself, the way a player would.
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle2" });
+    await page.evaluate(() => {
+      const b = [...document.querySelectorAll("nav button")].find((n) => /^sign in$/i.test(n.innerText.trim()));
+      b?.click();
+    });
+    await page.waitForFunction(() => location.pathname === "/auth", { timeout: 25000 });
+    check("F1: a guest can start sign-in from the landing nav", true);
+
+    await signIn(page);
+    await page.waitForFunction(() => location.pathname === "/", { timeout: 40000 });
+    check("F2: sign-in returns to the landing page", path(page) === "/", path(page));
+
+    // The nav must now offer the account surface, not another sign-in.
+    const nav = await page.evaluate(() =>
+      [...document.querySelectorAll("nav a, nav button")].map((n) => n.innerText.trim()),
+    );
+    check("F3: the sign-in control is gone for a signed-in visitor", !nav.some((t) => /^sign in$/i.test(t)), JSON.stringify(nav));
+    check("F4: the host control is replaced by the dashboard", nav.some((t) => /dashboard/i.test(t)), JSON.stringify(nav));
+    check("F5: a profile link is offered", nav.some((t) => /profile/i.test(t)), JSON.stringify(nav));
+
+    // Reload must not regress to the guest nav (session restoration).
+    await page.reload({ waitUntil: "networkidle2" });
+    await new Promise((r) => setTimeout(r, 1500));
+    const navAfterReload = await page.evaluate(() =>
+      [...document.querySelectorAll("nav a, nav button")].map((n) => n.innerText.trim()),
+    );
+    check(
+      "F6: the account nav survives a reload",
+      !navAfterReload.some((t) => /^sign in$/i.test(t)) && navAfterReload.some((t) => /dashboard/i.test(t)),
+      JSON.stringify(navAfterReload),
+    );
+
+    // The join box must still work for a signed-in player.
+    await page.goto(`${BASE}/`, { waitUntil: "networkidle2" });
+    await new Promise((r) => setTimeout(r, 800));
+    check("F7: the Game PIN box is still present when signed in", await page.$("#game-pin") !== null);
+    await ctx.close();
+  }
 } catch (e) {
   await dumpFailure(e);
   const failed = results.filter((r) => !r.pass);
