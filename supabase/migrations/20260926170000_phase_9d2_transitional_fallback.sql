@@ -1,0 +1,23 @@
+-- Phase 9D.2b — TRANSITIONAL FALLBACK (review finding: don't remove a working
+-- transport before its replacement is proven in real browsers).
+--
+-- P0-A moved join/answer/team traffic off `postgres_changes` and dropped
+-- `answers`/`participants`/`teams` from the `supabase_realtime` publication.
+-- The server side is verified (100% delivery 10→100 players with realtime-js
+-- clients), BUT the real-browser decode of DB-published broadcast frames is
+-- still unverified (the page receives the frames as ArrayBuffers and
+-- realtime-js does not dispatch them yet). Shipping that combination would
+-- remove working live updates from real players.
+--
+-- This migration restores the WAL publication. The client now binds to BOTH
+-- transports (see the routes): duplicate delivery is harmless because every
+-- handler feeds coalesced refetches and de-duplicated appends. Once
+-- browser-side broadcast decoding is verified end-to-end, revert this by
+-- re-running the publication-diet block from 20260926150000 and dropping the
+-- WAL bindings in both route components.
+SELECT public.restore_gameplay_publication();
+
+-- Post-migration verification (read-only, manual):
+--   SELECT tablename FROM pg_publication_tables WHERE pubname = 'supabase_realtime'
+--    ORDER BY tablename;
+--   -- expect: answers, participants, sessions, teams

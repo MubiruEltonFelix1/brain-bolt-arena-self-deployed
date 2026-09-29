@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // scripts/load-test.mjs — concurrent-player capacity test against the LIVE
 // Supabase project, using the exact same RPCs and realtime channels the app
-// uses (join_session → postgres_changes participants UPDATE → submit_answer).
+// uses (join_session → broadcast game:answer_row → submit_answer).
 //
 // Usage:
 //   bun scripts/load-test.mjs --code <GAME_CODE> [--players 100] [--burst 25] [--dry-run]
@@ -219,10 +219,13 @@ const channels = await runBurst(players, BURST, async (p) => {
   let revealAt = null;
   const t0 = performance.now();
   const ch = client
-    .channel(`play:${sess.id}`)
+    // Phase 9D.2 P0-A: one `game:answer_row` broadcast per accepted answer
+    // (authoritative, unconditional) on the private session topic — replaces the
+    // participants WAL row this harness used to count.
+    .channel(`session:${sess.id}`, { config: { private: true } })
     .on(
-      "postgres_changes",
-      { event: "UPDATE", schema: "public", table: "participants", filter: `session_id=eq.${sess.id}` },
+      "broadcast",
+      { event: "game:answer_row" },
       () => { count += 1; },
     )
     .on(
@@ -306,7 +309,7 @@ while (Date.now() < revealDeadline && !revealed) {
 await sleep(3000); // let straggler events land
 
 const eventCounts = liveChannels.map((c) => c.count());
-const expected = liveChannels.length; // each answer = one participants UPDATE per channel
+const expected = liveChannels.length; // each answer = one game:answer_row broadcast per channel
 const delivered = eventCounts.reduce((a, b) => a + b, 0);
 const perChannel = summarize(eventCounts);
 const revealLatencies = liveChannels.map((c) => c.revealAt()).filter((t) => t !== null);
@@ -314,7 +317,7 @@ const revealSum = summarize(revealLatencies.map((t) => t - Math.min(...revealLat
 
 console.log(`Reveal: ${revealed ? "YES (host auto-revealed or revealed)" : "NO — timeout (host may be on pause)"}`);
 console.log(`Events per channel — avg ${perChannel.avg.toFixed(1)} · p50 ${perChannel.p50} · p95 ${perChannel.p95} · max ${perChannel.max}`);
-console.log(`  expected ≈ ${expected} (one participants UPDATE per answering player)`);
+console.log(`  expected ≈ ${expected} (one game:answer_row broadcast per answering player)`);
 console.log(`  total events delivered: ${delivered} / ${expected * liveChannels.length}`);
 if (revealLatencies.length) {
   console.log(`Reveal propagation (first answer → channel reveal event): avg ${fmt(revealSum.avg)} · max ${fmt(revealSum.max)}`);

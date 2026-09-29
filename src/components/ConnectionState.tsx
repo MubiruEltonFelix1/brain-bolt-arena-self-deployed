@@ -19,21 +19,27 @@ const DOT: Record<LiveStatus, string> = {
 /**
  * Slim, non-blocking connection indicator. Gameplay keeps running underneath —
  * the server remains authoritative while the client reconnects.
+ *
+ * `stalled` is the join-health threshold from useLiveChannel: a single attempt
+ * has been CONNECTING past JOIN_HEALTH_MS, so we say so in words rather than
+ * leaving the player staring at a spinner.
  */
 export function ConnectionBanner({
   status,
   recovered,
+  stalled = false,
   className = "",
 }: {
   status: LiveStatus;
   recovered?: boolean;
+  stalled?: boolean;
   className?: string;
 }) {
   const degraded = status !== "connected";
   if (!degraded && !recovered) return null;
 
-  const label = recovered && !degraded ? "RECONNECTED" : LABEL[status];
-  const dot = recovered && !degraded ? "bg-volt" : DOT[status];
+  const label = !degraded ? "CONNECTED" : stalled ? "RECONNECTING TO GAME…" : LABEL[status];
+  const dot = !degraded ? "bg-volt" : DOT[status];
 
   return (
     <div

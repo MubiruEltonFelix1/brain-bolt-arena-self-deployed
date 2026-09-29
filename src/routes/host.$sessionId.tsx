@@ -89,16 +89,16 @@ type Participant = {
 type Team = { id: string; name: string; color: string };
 type Answer = { question_id: string; participant_id: string; is_correct: boolean };
 
-type ConnInfo = { status: LiveStatus; recovered: boolean };
+type ConnInfo = { status: LiveStatus; recovered: boolean; stalled: boolean };
 
 /** Thin wrapper so the connection indicator overlays every host screen. */
 function HostControl() {
-  const [conn, setConn] = useState<ConnInfo>({ status: "connecting", recovered: false });
+  const [conn, setConn] = useState<ConnInfo>({ status: "connecting", recovered: false, stalled: false });
   return (
     <>
       <HostScreen onConn={setConn} />
       <div className="fixed top-2 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-        <ConnectionBanner status={conn.status} recovered={conn.recovered} />
+        <ConnectionBanner status={conn.status} recovered={conn.recovered} stalled={conn.stalled} />
       </div>
     </>
   );
@@ -298,9 +298,19 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const onParticipantsChanged = useCoalescedCallback(refetchParticipants);
   const onTeamsChanged = useCoalescedCallback(refetchTeams);
 
-  const { status: connStatus, recovered: connRecovered } = useLiveChannel({
+  // Phase 9D.3, measured: the `sessions` postgres_changes binding does NOT reach
+  // an anonymous player on this private channel (probe: 0 deliveries; a real
+  // /play page stays on round 1 while the server advances to round 2+). Joins,
+  // answers, answer rows and teams all arrive as database-published broadcasts
+  // on the private session topic, but the participants WAL binding is what
+  // actually carries a transition to a player, through the coalesced refetch.
+  // So both transports stay bound here, and the publication keeps participants,
+  // answers, sessions and teams published — see the note at the participant
+  // bindings below before removing either.
+  const { status: connStatus, recovered: connRecovered, stalled: connStalled } = useLiveChannel({
     enabled: true,
-    name: `host:${sessionId}`,
+    name: `session:${sessionId}`,
+    private: true,
     setup: (ch) =>
       ch
         .on(
@@ -312,46 +322,72 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             );
           },
         )
+        .on("broadcast", { event: "game:join" }, () => onParticipantsChanged())
+        .on("broadcast", { event: "game:answer" }, () => onParticipantsChanged())
+        .on("broadcast", { event: "game:answer_row" }, (msg) => {
+          const a = (msg?.payload ?? msg) as Answer;
+          if (!a?.participant_id || !a?.question_id) return;
+          setAnswersForRound((prev) =>
+            prev.some(
+              (x) => x.participant_id === a.participant_id && x.question_id === a.question_id,
+            )
+              ? prev
+              : [
+                  ...prev,
+                  {
+                    question_id: a.question_id,
+                    participant_id: a.participant_id,
+                    is_correct: !!a.is_correct,
+                  },
+                ],
+          );
+        })
+        .on("broadcast", { event: "game:team" }, () => onTeamsChanged())
+        // Phase 9D.3: kept, and load-bearing for players — see the note in
+        // play.$sessionId.tsx. An anonymous player gets no `sessions` WAL
+        // event, so a transition only reaches them through the participants
+        // bindings below (coalesced refetch). Host-side they are redundant
+        // with the broadcast handlers, and duplicate delivery is harmless:
+        // refetches are coalesced and the round-answer append de-dupes by
+        // (participant, question).
         .on(
           "postgres_changes",
-          {
-            event: "*",
-            schema: "public",
-            table: "participants",
-            filter: `session_id=eq.${sessionId}`,
-          },
-          onParticipantsChanged,
+          { event: "*", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
+          () => onParticipantsChanged(),
         )
         .on(
           "postgres_changes",
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "answers",
-            filter: `session_id=eq.${sessionId}`,
-          },
+          { event: "INSERT", schema: "public", table: "answers", filter: `session_id=eq.${sessionId}` },
           (payload) => {
             const a = payload.new as Answer;
+            if (!a?.participant_id || !a?.question_id) return;
             setAnswersForRound((prev) =>
               prev.some(
                 (x) => x.participant_id === a.participant_id && x.question_id === a.question_id,
               )
                 ? prev
-                : [...prev, a],
+                : [
+                    ...prev,
+                    {
+                      question_id: a.question_id,
+                      participant_id: a.participant_id,
+                      is_correct: !!a.is_correct,
+                    },
+                  ],
             );
           },
         )
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "teams", filter: `session_id=eq.${sessionId}` },
-          onTeamsChanged,
+          () => onTeamsChanged(),
         ),
     onResync: load,
   });
 
   useEffect(() => {
-    onConn({ status: connStatus, recovered: connRecovered });
-  }, [connStatus, connRecovered, onConn]);
+    onConn({ status: connStatus, recovered: connRecovered, stalled: connStalled });
+  }, [connStatus, connRecovered, connStalled, onConn]);
 
   const orderedIds = session?.question_order ?? questions.map((q) => q.id);
   const currentIndex = session?.current_question_index ?? -1;
@@ -567,34 +603,21 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     });
   }
 
+  // Phase 9D.2 P0-D: one transactional RPC replaces the per-participant
+  // SELECT+UPDATE loop (2xN sequential round trips at game end). The RPC also
+  // claims the session exactly once, so a double-tap or retry cannot
+  // double-add points to the league standings.
   async function finalizeLeague() {
     if (!session?.league_id) return;
-    const leagueId = session.league_id;
-    for (const p of participants) {
-      const { data: existing } = await supabase
-        .from("league_standings")
-        .select("id,total_points,sessions_played")
-        .eq("league_id", leagueId)
-        .eq("nickname", p.nickname)
-        .maybeSingle();
-      if (existing) {
-        await supabase
-          .from("league_standings")
-          .update({
-            total_points: existing.total_points + p.score,
-            sessions_played: existing.sessions_played + 1,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existing.id);
-      } else {
-        await supabase.from("league_standings").insert({
-          league_id: leagueId,
-          nickname: p.nickname,
-          total_points: p.score,
-          sessions_played: 1,
-        });
-      }
+    // Untyped-call precedent (see play.$sessionId.tsx): generated DB types are
+    // refreshed by the platform; the RPC itself is verified server-side.
+    const { data, error } = await (supabase.rpc as any)("finalize_league", { p_session_id: sessionId });
+    if (error) {
+      toastError(error, { context: "finalizeLeague (finalize_league)" });
+      return;
     }
+    const row = Array.isArray(data) ? data[0] : data;
+    if (row && row.finalized === false) return; // already finalized — idempotent no-op
     toast.success("League standings updated");
   }
 
@@ -711,15 +734,23 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     const color = TEAM_COLORS[teams.length % TEAM_COLORS.length];
     await supabase.from("teams").insert({ session_id: sessionId, name, color });
   }
+  // Phase 9D.2 P0-D: one statement replaces the per-participant UPDATE loop.
   async function autoAssignTeams() {
     if (teams.length === 0) return toast.error("Create teams first");
-    let i = 0;
-    for (const p of participants) {
-      if (p.team_id) continue;
-      const target = teams[i % teams.length].id;
-      await supabase.from("participants").update({ team_id: target }).eq("id", p.id);
-      i++;
+    const { data, error } = await (supabase.rpc as any)("auto_assign_teams", { p_session_id: sessionId });
+    if (error) {
+      toastError(error, { context: "autoAssignTeams (auto_assign_teams)" });
+      return;
     }
+    const row = Array.isArray(data) ? data[0] : data;
+    const assigned = row?.assignments ?? 0;
+    if (assigned === 0) {
+      toast.error("Everyone already has a team");
+      return;
+    }
+    toast.success(`Assigned ${assigned} player${assigned === 1 ? "" : "s"} to teams`);
+    // Team flag changes are not part of the answer-activity broadcast; refresh explicitly.
+    void refetchParticipants();
   }
 
   const origin = typeof window !== "undefined" ? window.location.origin : "";

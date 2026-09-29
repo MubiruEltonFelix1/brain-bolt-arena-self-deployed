@@ -101,16 +101,16 @@ function ordinal(n: number) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
-type ConnInfo = { status: LiveStatus; recovered: boolean };
+type ConnInfo = { status: LiveStatus; recovered: boolean; stalled: boolean };
 
 /** Thin wrapper so the connection indicator overlays every gameplay screen. */
 function PlayPage() {
-  const [conn, setConn] = useState<ConnInfo>({ status: "connecting", recovered: false });
+  const [conn, setConn] = useState<ConnInfo>({ status: "connecting", recovered: false, stalled: false });
   return (
     <>
       <PlayScreen onConn={setConn} />
       <div className="fixed top-2 left-1/2 -translate-x-1/2 z-50 pointer-events-none">
-        <ConnectionBanner status={conn.status} recovered={conn.recovered} />
+        <ConnectionBanner status={conn.status} recovered={conn.recovered} stalled={conn.stalled} />
       </div>
     </>
   );
@@ -252,42 +252,71 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   }, [sessionId, identity?.id]);
   const onParticipantsChanged = useCoalescedCallback(refetchParticipants);
 
-  // Realtime: session updates + participants updates, with automatic recovery.
-  // Every answer updates the participants row, so each participants UPDATE
-  // event is also one "answered" tick — the live counter below replaces the
-  // old 1.5s get_round_progress poll (66 req/s at 100 players).
+  // Phase 9D.2 P0-A: gameplay activity arrives as DATABASE-PUBLISHED broadcasts
+  // on the private session topic.
+  //   game:answer_row — one per accepted answer (authoritative, unconditional):
+  //                     drives the live "X/Y answered" counter.
+  //   game:answer     — emitted only when a participant's score/streak changed:
+  //                     drives the (coalesced) participants refetch.
+  // Transitional (Phase 9D.2b): the pre-9D.2 WAL bindings stay attached until
+  // browser-side broadcast decoding is verified end-to-end. Duplicate delivery
+  // is harmless — the counter de-dupes by participant id and the refetch is
+  // coalesced.
   const seenAnsweredRef = useRef<Set<string>>(new Set());
   const progressSeedRef = useRef(0);
   const progressQidRef = useRef<string | null>(null);
-  const countAnsweredEvent = useCallback((payload: { old?: { score?: number; streak?: number } | null; new?: { id?: string; score?: number; streak?: number } | null }) => {
-    const pid = payload?.new?.id;
+  const countAnsweredEvent = useCallback((msg: unknown) => {
+    const m = msg as {
+      payload?: unknown;
+      new?: { id?: string; score?: number; streak?: number };
+      old?: { score?: number; streak?: number } | null;
+    };
+    // WAL fallback shape: a participants row event. Only genuine answer activity
+    // (score/streak moved) counts — mirrors the server-side trigger filter.
+    if (m && typeof m === "object" && "new" in m) {
+      if (!m.new?.id) return;
+      if (m.new.score === m.old?.score && m.new.streak === m.old?.streak) return;
+      seenAnsweredRef.current.add(m.new.id);
+      setProgress((prev) => ({ answered: Math.max(prev.answered, seenAnsweredRef.current.size), total: prev.total }));
+      return;
+    }
+    const p = m?.payload ?? msg;
+    const pid = (p as { participant_id?: string } | null)?.participant_id;
     if (!pid) return;
-    // Real answers always change score (correct) or streak (wrong resets it);
-    // other participant updates (e.g. profile claims) must not tick the counter.
-    if (payload.new?.score === payload.old?.score && payload.new?.streak === payload.old?.streak) return;
     seenAnsweredRef.current.add(pid);
     setProgress((prev) => ({ answered: Math.max(prev.answered, seenAnsweredRef.current.size), total: prev.total }));
   }, []);
 
-  const { status: connStatus, recovered: connRecovered } = useLiveChannel({
+  const { status: connStatus, recovered: connRecovered, stalled: connStalled } = useLiveChannel({
     enabled: !!identity,
-    name: `play:${sessionId}`,
+    name: `session:${sessionId}`,
+    private: true,
     setup: (ch) =>
       ch
         .on("postgres_changes", { event: "UPDATE", schema: "public", table: "sessions", filter: `id=eq.${sessionId}` },
           (payload) => setSession((prev) => ({ ...(prev as Session), ...(payload.new as Partial<Session>) } as Session))
         )
+        .on("broadcast", { event: "game:join" }, () => onParticipantsChanged())
+        .on("broadcast", { event: "game:answer_row" }, (msg) => countAnsweredEvent(msg))
+        .on("broadcast", { event: "game:answer" }, () => onParticipantsChanged())
+        // Phase 9D.3: load-bearing, not redundant. With the publication diet
+        // applied, an anonymous player receives NO `sessions` postgres_changes
+        // (measured: the private-broadcast probe sees 0, and a real /play page
+        // stays on round 1 while the server advances). These participants
+        // bindings are what actually deliver a transition to a player, via the
+        // coalesced refetch in onParticipantsChanged(). Removing them requires
+        // transitions on the broadcast transport first.
         .on("postgres_changes", { event: "*", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
-          onParticipantsChanged)
+          () => onParticipantsChanged())
         .on("postgres_changes", { event: "UPDATE", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
-          countAnsweredEvent),
+          (payload) => countAnsweredEvent(payload)),
     onResync: loadState,
   });
 
   useEffect(() => {
     // Only surface connection state once this browser actually holds a seat.
-    onConn(identity ? { status: connStatus, recovered: connRecovered } : { status: "connected", recovered: false });
-  }, [connStatus, connRecovered, onConn, identity]);
+    onConn(identity ? { status: connStatus, recovered: connRecovered, stalled: connStalled } : { status: "connected", recovered: false, stalled: false });
+  }, [connStatus, connRecovered, connStalled, onConn, identity]);
 
 
 

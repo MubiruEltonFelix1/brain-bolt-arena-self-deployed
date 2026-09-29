@@ -44,3 +44,11 @@ migration-data/
 *.sw?
 # Bwat per-workspace permission allowlist
 .bwat/
+
+# scripts/scale-audit local-only scratch state (fixture ids, throwaway
+# credentials, browser profile, raw metrics) — must never be committed
+scripts/scale-audit/fixture.json
+scripts/scale-audit/auth-user.json
+scripts/scale-audit/chrome-profile/
+scripts/scale-audit/metrics-*.json
+scripts/scale-audit/browser-*.json

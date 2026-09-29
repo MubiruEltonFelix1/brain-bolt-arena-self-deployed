@@ -28,14 +28,11 @@
 //
 // Shared env/psql plumbing (loadEnv, findPsql) also lives here so
 // scripts/check-migrations.mjs and scripts/migrate.mjs behave identically.
-
 import { existsSync, readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-
 /** Reads KEY=VALUE lines from a .env-style file; missing file → {}.
  *  Surrounding double or single quotes on values are stripped
  *  (e.g. DATABASE_URL="postgresql://..." — psql cannot parse quoted URIs). */
@@ -48,7 +45,6 @@ export function loadEnv(file) {
   }
   return vars;
 }
-
 /**
  * Resolves psql: PSQL_PATH env override first, then the known local
  * PostgreSQL installs, then PATH. Returns null when not found.
@@ -62,7 +58,6 @@ export function findPsql() {
   ];
   return candidates.find((p) => p === "psql" || existsSync(p)) ?? null;
 }
-
 function sleepSync(ms) {
   if (typeof Bun !== "undefined") {
     Bun.sleepSync(ms);
@@ -70,7 +65,6 @@ function sleepSync(ms) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
   }
 }
-
 /** True for psql failures that are transient connection drops (pooler blips). */
 function isTransientConnectionError(r) {
   const err = `${r.stderr || ""} ${r.error?.message || ""}`;
@@ -78,7 +72,6 @@ function isTransientConnectionError(r) {
     err,
   );
 }
-
 /**
  * Shared psql runner: `run(args, opts)` spawns psql (64MB buffer, UTF-8).
  * Read probes (q/yes) retry transient connection failures with backoff (up to
@@ -111,7 +104,6 @@ export function createPsqlRunner(psql, conn) {
   const yes = (sql) => q(sql) === "t";
   return { run, q, yes };
 }
-
 /**
  * Builds the marker list. `q(sql)` runs a query and returns trimmed stdout;
  * `yes(sql)` returns q(sql) === "t". Both are provided by the caller so the
@@ -127,11 +119,20 @@ export function createMarkers({ q, yes }) {
     yes(
       `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${name}')`,
     );
-  const fnBody = (name) =>
-    q(
-      `SELECT pg_get_functiondef(p.oid) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${name}' LIMIT 1`,
+  // Overload-agnostic on purpose. `can` has two overloads and only the 3-arg
+  // one carries the Phase 8E `ai.*` branch, so the previous `LIMIT 1` read an
+  // arbitrary overload and reported a false "not applied" for 8E. Matching any
+  // overload keeps the intent (this text exists in one of them) without the
+  // coin flip. Two LIKE notes, so the next needle is not a trap: `%` is
+  // stripped from the needle because it would otherwise match anything, but
+  // `_` is deliberately left in place — it is also a LIKE wildcard (any one
+  // character), so a needle like `q_reveal_stages` still matches its literal
+  // form and additionally matches hyphen/dot variants. That only ever widens
+  // the match; it cannot make a present migration look absent.
+  const fnBodyLike = (name, needle) =>
+    yes(
+      `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${name}' AND pg_get_functiondef(p.oid) LIKE '%${needle.replace(/%/g, "")}%')`,
     );
-  const fnBodyLike = (name, needle) => fnBody(name).includes(needle);
   const constraintLike = (conname, needle) =>
     yes(
       `SELECT (pg_get_constraintdef(oid) LIKE '%${needle}%') FROM pg_constraint WHERE conname = '${conname}'`,
@@ -161,7 +162,6 @@ export function createMarkers({ q, yes }) {
     const body = q(`SELECT prosrc FROM pg_proc WHERE proname = 'can' AND pronargs = 3`);
     return body.includes("principal_for_user") && !body.includes("owner_id = v_user");
   };
-
   return [
     {
       file: "20260616133205_349cfb2b-f443-4ccf-a540-fda47f2bd793.sql",
@@ -283,10 +283,40 @@ export function createMarkers({ q, yes }) {
       applied: () => tableExists("branding_profiles"),
     },
     {
+      // Chain-implied entry (same convention as the submit_answer rewrites).
+      // This migration created `"<table> host only write"` as a single
+      // RESTRICTIVE FOR ALL policy on quizzes/questions/sessions/leagues.
+      //
+      // 20260926120000_phase_9d2_rls_read_split.sql later DROPPED all four and
+      // replaced each with separate INSERT/UPDATE/DELETE policies, because a
+      // FOR ALL restrictive policy also restricts SELECT and that was breaking
+      // the /join and /play read paths. The original policy therefore no longer
+      // exists, which made the previous probe a permanent FALSE NEGATIVE — the
+      // reason this file kept reporting as pending long after its effect was
+      // live.
+      //
+      // The marker probes the FINAL state instead: the split policies present
+      // and the superseded FOR ALL policies gone. Re-applying this file would
+      // re-add the FOR ALL policies and undo the read-path fix, so it must stay
+      // skipped.
       file: "20260718000327_470639c2-421a-4385-afd1-7c0b3abad4d3.sql",
-      marker: "'quizzes host only write' policy uses has_active_host_authorization",
+      marker:
+        "superseded by Phase 9D.2 — host-write policies split into INSERT/UPDATE/DELETE on quizzes/questions/sessions/leagues",
       applied: () =>
-        policyLike("quizzes", "quizzes host only write", "has_active_host_authorization"),
+        yes(
+          `SELECT NOT EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('quizzes host only write','questions host only write','sessions host only write','leagues host only write'))` +
+            ` AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('quizzes host only insert','questions host only insert','sessions host only insert','leagues host only insert'))` +
+            ` AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('quizzes host only update','questions host only update','sessions host only update','leagues host only update'))` +
+            ` AND EXISTS (SELECT 1 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('quizzes host only delete','questions host only delete','sessions host only delete','leagues host only delete'))`,
+        ),
+      // MUST be chain-implied. Without this, both scripts treat the file as
+      // PENDING on any database that lacks the 9D.2 split, `migrate.mjs` then
+      // applies it (re-creating the four FOR ALL policies), re-probes, finds
+      // its own post-condition false and exits 3 — having just reinstated the
+      // read-path regression this entry exists to prevent. `chain: true` is the
+      // only mechanism migrate.mjs and check-migrations.mjs consult to mean
+      // "never auto-apply this".
+      chain: true,
     },
     {
       file: "20260719074454_1e2dac64-043c-4dc1-b67f-3030bdf8da01.sql",
@@ -535,7 +565,7 @@ export function createMarkers({ q, yes }) {
     {
       file: "20260822120000_phase_8e_ai_question_builder.sql",
       marker: "ai_usage_log table exists + ai.* branch in public.can() (Phase 8E AI Builder)",
-      applied: () => tableExists("ai_usage_log") && fnBodyLike("can", "ai.%"),
+      applied: () => tableExists("ai_usage_log") && fnBodyLike("can", "Phase 8E AI Builder"),
     },
     {
       // Phase 21 replaced three functions rather than creating anything new, so
@@ -560,6 +590,98 @@ export function createMarkers({ q, yes }) {
         tableExists("arena_run_answers") &&
         tableExists("platform_settings") &&
         colExists("quizzes", "arena_category"),
+    },
+    {
+      // Phase 9D.2 P0-C. The marker is the split itself: the four `FOR ALL`
+      // restrictive policies are gone and replaced by 12 per-command policies.
+      // Probing a *read* is not possible from the migration runner (it connects
+      // as postgres, which is not subject to RLS), so the shape IS the marker.
+      file: "20260926120000_phase_9d2_rls_read_split.sql",
+      marker:
+        "sessions/quizzes/questions/leagues restrictive policies split into INSERT/UPDATE/DELETE (Phase 9D.2 P0-C read/write split)",
+      applied: () =>
+        yes(
+          `SELECT count(*) = 12 AND bool_and(permissive = 'RESTRICTIVE' AND cmd IN ('INSERT','UPDATE','DELETE'))
+             FROM pg_policies
+            WHERE schemaname = 'public'
+              AND policyname IN (
+                'sessions host only insert','sessions host only update','sessions host only delete',
+                'quizzes host only insert','quizzes host only update','quizzes host only delete',
+                'questions host only insert','questions host only update','questions host only delete',
+                'leagues host only insert','leagues host only update','leagues host only delete')`,
+        ) &&
+        yes(
+          `SELECT count(*) = 0 FROM pg_policies WHERE schemaname = 'public' AND policyname IN ('sessions host only write','quizzes host only write','questions host only write','leagues host only write')`,
+        ),
+    },
+    {
+      // Phase 9D.2 P0-D. Marker: the two batching RPCs + the idempotency column.
+      file: "20260926130000_phase_9d2_rpc_batching.sql",
+      marker:
+        "finalize_league + auto_assign_teams RPCs and sessions.league_finalized_at exist (Phase 9D.2 P0-D)",
+      applied: () =>
+        colExists("sessions", "league_finalized_at") &&
+        yes(
+          `SELECT to_regprocedure('public.finalize_league(uuid)') IS NOT NULL AND to_regprocedure('public.auto_assign_teams(uuid)') IS NOT NULL`,
+        ),
+    },
+    {
+      // Phase 9D.2 P0-B. Marker: helper exists AND pg_cron is installed.
+      // Intentionally catalog-only: probing `cron.job` directly would be a
+      // PARSE error on a database where the extension is absent (relation
+      // resolution happens at parse time — a to_regclass() guard in the same
+      // statement does not help), and the probe helper throws on SQL errors.
+      file: "20260926140000_phase_9d2_scheduler.sql",
+      marker:
+        "advance_question_if_unadvanced helper + pg_cron installed (cron schema present) (Phase 9D.2 P0-B)",
+      applied: () =>
+        yes(
+          `SELECT to_regprocedure('public.advance_question_if_unadvanced(uuid,timestamp with time zone,text)') IS NOT NULL`,
+        ) &&
+        yes(
+          `SELECT EXISTS (SELECT 1 FROM pg_namespace n JOIN pg_class c ON c.relnamespace = n.oid WHERE n.nspname = 'cron' AND c.relname = 'job')`,
+        ),
+    },
+    {
+      // Phase 9D.2 P0-A. Marker: the three gameplay triggers exist, the three
+      // high-frequency tables are OUT of the WAL publication, and the private
+      // session topic has exactly one receive policy and no client publish path.
+      file: "20260926150000_phase_9d2_broadcast_transport.sql",
+      marker:
+        "gameplay broadcast triggers + publication diet (sessions only) + realtime.messages session read policy (Phase 9D.2 P0-A)",
+      applied: () =>
+        yes(
+          `SELECT count(*) = 3 FROM pg_trigger WHERE NOT tgisinternal AND tgname IN ('participants_broadcast_game_event','answers_broadcast_game_event','teams_broadcast_game_event')`,
+        ) &&
+        yes(
+          `SELECT count(*) = 0 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename IN ('participants','answers','teams')`,
+        ) &&
+        yes(
+          `SELECT count(*) = 1 FROM pg_policies WHERE schemaname = 'realtime' AND tablename = 'messages' AND cmd = 'SELECT'`,
+        ),
+    },
+    {
+      // Phase 9D.2 P0-B follow-up: late tick reveals AND advances in one run.
+      file: "20260926160000_phase_9d2_scheduler_same_tick_advance.sql",
+      marker:
+        "run_autonomous_tick advances in the same tick after a late reveal (Phase 9D.2 P0-B follow-up)",
+      applied: () =>
+        yes(
+          `SELECT count(*) > 0 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+            WHERE n.nspname = 'public' AND p.proname = 'run_autonomous_tick'
+              AND p.prosrc LIKE '%revealed_advanced%'`,
+        ),
+    },
+    {
+      // Phase 9D.2b transitional fallback: the WAL publication is restored
+      // while browser-side broadcast decoding is unverified.
+      file: "20260926170000_phase_9d2_transitional_fallback.sql",
+      marker:
+        "supabase_realtime publication restored to answers+participants+sessions+teams (Phase 9D.2b transitional fallback)",
+      applied: () =>
+        yes(
+          `SELECT count(*) = 4 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename IN ('answers','participants','sessions','teams')`,
+        ),
     },
   ];
 }
