@@ -52,3 +52,6 @@ scripts/scale-audit/auth-user.json
 scripts/scale-audit/chrome-profile/
 scripts/scale-audit/metrics-*.json
 scripts/scale-audit/browser-*.json
+
+# scripts/auth-journey.mjs writes a screenshot of the failing page on error
+scripts/auth-journey-failure.png

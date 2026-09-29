@@ -683,5 +683,23 @@ export function createMarkers({ q, yes }) {
           `SELECT count(*) = 4 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename IN ('answers','participants','sessions','teams')`,
         ),
     },
+    {
+      // Phase 9E. Both claim-minting functions are SECURITY DEFINER with
+      // `search_path` pinned to 'public', which hid the pgcrypto extension
+      // living in `extensions`; every "Save this result" call therefore died
+      // with 42883. The distinctive change is the schema-qualified call, so
+      // that is what the marker probes - `fnExists` would be a false positive
+      // because both functions already existed.
+      file: "20260927090000_phase_9e_claim_token_pgcrypto.sql",
+      marker:
+        "create_session_claim/create_arena_claim schema-qualify pgcrypto as extensions.gen_random_bytes (Phase 9E claim-token fix)",
+      applied: () =>
+        yes(
+          `SELECT count(*) = 2 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+             WHERE n.nspname = 'public'
+               AND p.proname IN ('create_session_claim', 'create_arena_claim')
+               AND p.prosrc LIKE '%extensions.gen_random_bytes%'`,
+        ),
+    },
   ];
 }

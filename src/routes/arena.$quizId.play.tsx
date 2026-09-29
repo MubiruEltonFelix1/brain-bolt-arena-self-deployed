@@ -44,6 +44,8 @@ import {
 import { difficultyTheme } from "@/lib/arena-visuals";
 import { ArenaArtwork, DifficultyChip } from "@/components/arena/ArenaVisuals";
 import { createArenaClaim, savePendingClaim } from "@/lib/claim";
+import { markClaimReturnTrip } from "@/lib/claim-handoff";
+import { authSearch, rememberReturnIntent } from "@/lib/return-intent";
 import { ShareCardVisual, downloadShareCard, shareShareCard } from "@/components/ShareResultCard";
 import { canAnnounceBest, deriveRunInsights, formatResponseMs, personalBestVerdict } from "@/lib/arena-insights";
 import { LOADING, answeredLabel, bestComparisonLabel } from "@/lib/terminology";
@@ -850,6 +852,19 @@ function Completion({
   const theme = difficultyTheme(detail.difficulty);
   const shareCardRef = useRef<HTMLDivElement>(null);
   const [sharing, setSharing] = useState(false);
+  const navigate = useNavigate();
+
+  /**
+   * Guest save. Navigates client-side and records the journey so the claim
+   * redeems on the way back. The previous raw <a href> forced a full document
+   * reload, discarding the completion screen the player was reading.
+   */
+  function startSave() {
+    const destination = `/arena/${detail.id}`;
+    rememberReturnIntent({ path: destination, reason: "save-result" });
+    markClaimReturnTrip();
+    void navigate({ to: "/auth", search: authSearch(destination, "save-result") });
+  }
 
   // The best the player had BEFORE this run. `historyBeforeRun.best` is the max
   // over every stored run, which is the only correct basis for a best
@@ -1097,12 +1112,13 @@ function Completion({
         </div>
 
         {!signedIn && claimToken && (
-          <a
-            href={`/auth?next=${encodeURIComponent(`/arena/${detail.id}`)}`}
-            className="w-full text-center border border-volt text-volt font-mono text-xs uppercase tracking-widest py-3 hover:bg-volt hover:text-background transition-colors"
+          <button
+            type="button"
+            onClick={startSave}
+            className="w-full min-h-11 text-center border border-volt text-volt font-mono text-xs uppercase tracking-widest py-3 hover:bg-volt hover:text-background transition-colors"
           >
             Save this result to my account
-          </a>
+          </button>
         )}
       </div>
     </div>

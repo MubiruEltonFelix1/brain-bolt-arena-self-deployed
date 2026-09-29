@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { isAuthResolved } from "@/lib/auth-state";
 import { useAuthUser } from "./use-auth-user";
 
 export type HostAuthorization = {
@@ -13,11 +14,25 @@ export type HostAuthorization = {
 };
 
 export function useHostStatus() {
-  const { user, loading: userLoading } = useAuthUser();
+  const auth = useAuthUser();
+  const { user, status, error: authError, retry } = auth;
   const [authorization, setAuthorization] = useState<HostAuthorization | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [hasHostRole, setHasHostRole] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  /**
+   * "Resolved" means we actually KNOW there is no user. An unresolved bootstrap
+   * is pending, and a session we could not check is an error - neither is a
+   * signed-out user. Treating an error as resolved would render every host
+   * surface as "not authorized" on a dropped connection.
+   */
+  const resolved = isAuthResolved({
+    status,
+    user,
+    error: authError,
+    initialized: !auth.loading,
+  });
 
   const refresh = useCallback(async () => {
     if (!user) {
@@ -46,8 +61,9 @@ export function useHostStatus() {
     setLoading(false);
   }, [user]);
 
-  useEffect(() => { if (!userLoading) refresh(); }, [userLoading, refresh]);
-
+  useEffect(() => {
+    if (resolved) void refresh();
+  }, [resolved, refresh]);
 
   const isActive = (() => {
     if (!authorization) return false;
@@ -64,7 +80,10 @@ export function useHostStatus() {
     hasHostRole,
     authorization,
     canHost: isAdmin || hasHostRole || isActive,
-    loading: userLoading || loading,
+    loading: !resolved || loading,
+    /** Set when the session could not be checked. Not a sign-out. */
+    authError,
+    retry,
     refresh,
   };
 }

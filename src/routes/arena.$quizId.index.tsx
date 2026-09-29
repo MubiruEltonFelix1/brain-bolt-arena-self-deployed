@@ -1,4 +1,5 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { authSearch, rememberReturnIntent } from "@/lib/return-intent";
 import { useEffect, useState } from "react";
 import {
   fetchArenaDetail,
@@ -236,9 +237,19 @@ function ArenaDetail() {
           {!user && best != null && (
             <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/40">
               Saved on this device —{" "}
-              <Link to="/auth" className="text-volt hover:underline">
+              <button
+                type="button"
+                onClick={() => {
+                  // Come back to this quiz page, which is the whole point of
+                  // signing in from here.
+                  const destination = `/arena/${quizId}`;
+                  rememberReturnIntent({ path: destination, reason: "sign-in" });
+                  void navigate({ to: "/auth", search: authSearch(destination, "sign-in") });
+                }}
+                className="text-volt hover:underline"
+              >
                 sign in
-              </Link>{" "}
+              </button>{" "}
               to keep it everywhere.
             </p>
           )}

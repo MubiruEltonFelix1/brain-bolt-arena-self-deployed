@@ -1,7 +1,7 @@
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuthUser } from "@/hooks/use-auth-user";
+import { useAuthGate } from "@/hooks/use-auth-gate";
 import { HostShell } from "@/components/host-shell";
 import { AvatarPicker } from "@/components/AvatarPicker";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
@@ -65,8 +65,8 @@ function fmtDate(iso: string) {
 }
 
 function ProfilePage() {
-  const { user, loading: authLoading } = useAuthUser();
-  const navigate = useNavigate();
+  const gate = useAuthGate({ reason: "sign-in" });
+  const { user } = gate;
   const [profile, setProfile] = useState<Profile | null>(null);
   const [loading, setLoading] = useState(true);
   const [displayName, setDisplayName] = useState("");
@@ -79,10 +79,6 @@ function ProfilePage() {
   const [stats, setStats] = useState<PlayerStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [myLeagues, setMyLeagues] = useState<MyLeague[]>([]);
-
-  useEffect(() => {
-    if (!authLoading && !user) navigate({ to: "/auth" });
-  }, [authLoading, user, navigate]);
 
   useEffect(() => {
     if (!user) return;
@@ -234,7 +230,28 @@ function ProfilePage() {
     }
   }
 
-  if (authLoading || loading || !profile) {
+  // A session we could not verify is not a signed-out session. Offer a retry
+  // rather than bouncing the user to the sign-in page on a dropped connection.
+  if (gate.error) {
+    return (
+      <HostShell title="Profile">
+        <div className="grid min-h-[60vh] place-items-center px-6">
+          <div className="max-w-md space-y-4 text-center">
+            <p className="font-display text-2xl italic uppercase">Can&apos;t confirm your session</p>
+            <p className="text-sm text-foreground/60">{gate.error}</p>
+            <button
+              onClick={() => void gate.retry()}
+              className="min-h-11 bg-volt text-background font-display text-lg uppercase italic px-6 py-3 skew-cta"
+            >
+              TRY AGAIN
+            </button>
+          </div>
+        </div>
+      </HostShell>
+    );
+  }
+
+  if (gate.pending || loading || !profile) {
     return (
       <HostShell title="Profile">
         <div

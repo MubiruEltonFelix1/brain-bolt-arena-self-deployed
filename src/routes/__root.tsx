@@ -7,13 +7,13 @@ import {
   HeadContent,
   Scripts,
 } from "@tanstack/react-router";
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Toaster } from "sonner";
 
 import appCss from "../styles.css?url";
 import { reportLovableError } from "../lib/lovable-error-reporting";
 import { safeErrorMessage } from "../lib/errors";
-import { supabase } from "@/integrations/supabase/client";
+import { useAuthState } from "@/lib/auth-state";
 import { ClaimRedeemer } from "@/components/ClaimRedeemer";
 
 function NotFoundComponent() {
@@ -107,16 +107,26 @@ function RootShell({ children }: { children: ReactNode }) {
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const router = useRouter();
+  const { user, status } = useAuthState();
 
+  // The app has exactly ONE `onAuthStateChange` subscription, owned by
+  // `src/lib/auth-state.ts`. The root reacts to the resolved identity by
+  // re-running the router and the query cache, so no component needs its own
+  // listener. The first transition out of `loading` always counts: anything
+  // that needed the identity had no chance to see it before.
+  const settled = useRef(false);
+  const lastUserId = useRef<string | null>(null);
   useEffect(() => {
-    const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_IN" || event === "SIGNED_OUT" || event === "USER_UPDATED") {
-        router.invalidate();
-        if (event !== "SIGNED_OUT") queryClient.invalidateQueries();
-      }
-    });
-    return () => sub.subscription.unsubscribe();
-  }, [router, queryClient]);
+    if (status === "loading") return;
+    const id = user?.id ?? null;
+    if (settled.current && lastUserId.current === id) return;
+    settled.current = true;
+    lastUserId.current = id;
+    // Only a real identity invalidates cached data. Signing out still
+    // invalidates the router so anything auth-dependent re-runs as a guest.
+    if (id) void queryClient.invalidateQueries();
+    void router.invalidate();
+  }, [user?.id, status, router, queryClient]);
 
   return (
     <QueryClientProvider client={queryClient}>

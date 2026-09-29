@@ -6,7 +6,8 @@ import { ConnectionBanner, LiveScreenState } from "@/components/ConnectionState"
 import { supabase } from "@/integrations/supabase/client";
 import { seededShuffle } from "@/lib/game";
 import { getParticipant, clearParticipant, type ParticipantIdentity } from "@/lib/participant-storage";
-import { createSessionClaim, savePendingClaim } from "@/lib/claim";
+import { SaveResultPanel } from "@/components/SaveResultPanel";
+import { useAuthState } from "@/lib/auth-state";
 import { MapPicker } from "@/components/MapPicker";
 import { NumberGuess } from "@/components/NumberGuess";
 import { OrderingBoard } from "@/components/OrderingBoard";
@@ -120,7 +121,50 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
   const { sessionId } = Route.useParams();
   const [identity, setIdentity] = useState<ParticipantIdentity | null | undefined>(undefined);
-  const [authedUserId, setAuthedUserId] = useState<string | null>(null);
+  // Read-only. Used solely to label the result panel, never to decide who the
+  // player is or to gate anything during play.
+  const { user: authedUser, status: authStatus } = useAuthState();
+  const authedUserId = authedUser?.id ?? null;
+  // Whether THIS seat is already attached to a profile, which is what actually
+  // makes the result appear in competition history. Read from our own row
+  // only: the scoreboard query deliberately does not expose other players'
+  // profile ids.
+  const [seatProfileId, setSeatProfileId] = useState<string | null>(null);
+  const [seatChecked, setSeatChecked] = useState(false);
+
+  useEffect(() => {
+    if (!identity?.id) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("participants")
+          .select("profile_id")
+          .eq("id", identity.id)
+          .maybeSingle();
+        if (cancelled) return;
+        // Supabase resolves with `{ error }` rather than throwing on a rejected
+        // query, so the error has to be inspected explicitly.
+        if (error) {
+          // A failed ownership read is not proof the result is unsaved. Leave
+          // seatProfileId null: the panel then offers a save, and the server
+          // rejects it with an accurate message if it is already claimed. We
+          // never assert "saved" from a failed read.
+          setSeatProfileId(null);
+          return;
+        }
+        setSeatProfileId((data as { profile_id?: string | null } | null)?.profile_id ?? null);
+      } catch {
+        if (cancelled) return;
+        setSeatProfileId(null);
+      } finally {
+        if (!cancelled) setSeatChecked(true);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [identity?.id]);
 
   const [session, setSession] = useState<Session | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -149,9 +193,10 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
   useEffect(() => {
     setIdentity(getParticipant(sessionId));
-    supabase.auth.getUser().then(({ data }) => setAuthedUserId(data.user?.id ?? null));
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => setAuthedUserId(s?.user?.id ?? null));
-    return () => sub.subscription.unsubscribe();
+    // Auth state is deliberately NOT read here. The guest seat identity, the
+    // current question, the timer and the answer log are all keyed on
+    // `sessionId` alone, so nothing about signing in or refreshing a token can
+    // recreate the participant or reset gameplay.
   }, [sessionId]);
 
 
@@ -749,7 +794,10 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             orderedIds={orderedQuestionIds}
             myAnswers={myAnswers}
             quizTitle={session.quiz?.title ?? "Quiz"}
-            isGuest={!authedUserId}
+            authResolved={authStatus !== "loading"}
+            isAuthenticated={authedUserId != null}
+            seatLinked={seatProfileId != null}
+            seatChecked={seatChecked}
             identity={identity}
             onLeave={() => { clearParticipant(sessionId); window.location.href = "/"; }}
           />
@@ -1364,7 +1412,8 @@ function RankDelta({ nowRank, prevRank, inline }: { nowRank: number; prevRank?: 
 }
 
 function FinalView({
-  participants, myId, myRank, questions, orderedIds, myAnswers, quizTitle, isGuest, identity, onLeave,
+  participants, myId, myRank, questions, orderedIds, myAnswers, quizTitle,
+  authResolved, isAuthenticated, seatLinked, seatChecked, identity, onLeave,
 }: {
   participants: Participant[];
   myId: string;
@@ -1373,13 +1422,19 @@ function FinalView({
   orderedIds: string[];
   myAnswers: MyAnswer[];
   quizTitle: string;
-  isGuest: boolean;
+  /** False while the session restoration is still unresolved. */
+  authResolved: boolean;
+  /** A signed-in user exists. Says nothing about whether THIS seat is saved. */
+  isAuthenticated: boolean;
+  /** This seat is attached to a profile, so the result is in history. */
+  seatLinked: boolean;
+  /** The seat ownership check has completed, so absence of a link is meaningful. */
+  seatChecked: boolean;
   identity: ParticipantIdentity;
   onLeave: () => void;
 }) {
 
   const [reviewOpen, setReviewOpen] = useState(false);
-  const [claiming, setClaiming] = useState(false);
   const [busy, setBusy] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
@@ -1446,47 +1501,15 @@ function FinalView({
           <h2 className="font-display text-5xl italic uppercase mt-2">GG WP</h2>
         </div>
 
-      {isGuest ? (
-        <button
-          type="button"
-          disabled={claiming}
-          onClick={async () => {
-            setClaiming(true);
-            try {
-              const token = await createSessionClaim(identity.id, identity.secretToken);
-              savePendingClaim({
-                token,
-                kind: "session",
-                label: quizTitle,
-                returnTo: typeof window !== "undefined" ? window.location.pathname : "/",
-                createdAt: Date.now(),
-              });
-              window.location.href = `/auth?next=${encodeURIComponent(
-                typeof window !== "undefined" ? window.location.pathname : "/"
-              )}`;
-            } catch (e) {
-              toastError(e, { context: "prepare result", fallback: "Could not prepare this result" });
-              setClaiming(false);
-            }
-          }}
-          className="block w-full border border-volt/40 bg-volt/5 hover:bg-volt/10 transition-colors p-4 text-left disabled:opacity-60"
-        >
-          <p className="font-mono text-[10px] uppercase tracking-widest text-volt">Playing as guest</p>
-          <p className="font-display text-lg italic mt-1 leading-tight">
-            {claiming ? "Preparing…" : "Save this result to my account →"}
-          </p>
-          <p className="font-mono text-[10px] text-foreground/50 mt-1">
-            Sign in or register next — this result attaches to your profile automatically.
-          </p>
-        </button>
-      ) : (
-        <div className="border border-border bg-card px-4 py-2 flex items-center gap-2">
-          <span className="size-1.5 bg-volt rounded-full" />
-          <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/60">
-            Saved to your competition history
-          </p>
-        </div>
-      )}
+      <SaveResultPanel
+        identity={identity}
+        quizTitle={quizTitle}
+        authResolved={authResolved}
+        isAuthenticated={isAuthenticated}
+        seatLinked={seatLinked}
+        seatChecked={seatChecked}
+        returnPath={`/play/${identity.sessionId}`}
+      />
 
 
       {/* Compact podium */}

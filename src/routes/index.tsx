@@ -2,6 +2,7 @@ import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { toast } from "sonner";
 import { describeGameCode, lookupGameCode, type GameCodeLookup } from "@/lib/game-code";
+import { authSearch, rememberReturnIntent } from "@/lib/return-intent";
 
 export const Route = createFileRoute("/")({
   component: Landing,
@@ -54,6 +55,18 @@ function Landing() {
     navigate({ to: "/join/$code", params: { code: clean } });
   }
 
+  /**
+   * Voluntary sign-in from the landing page. When a Game PIN is already typed
+   * in, the join page IS the intended destination, so the PIN is carried
+   * through the sign-in instead of dropping the player on the dashboard.
+   */
+  function startSignIn(reason: "host" | "sign-in") {
+    const clean = code.replace(/\D/g, "");
+    const destination = /^\d{6}$/.test(clean) ? `/join/${clean}` : "/";
+    rememberReturnIntent({ path: destination, reason });
+    void navigate({ to: "/auth", search: authSearch(destination, reason) });
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       <nav className="sticky top-0 z-50 flex items-center justify-between px-6 py-4 bg-background/80 backdrop-blur-md border-b border-border">
@@ -70,18 +83,20 @@ function Landing() {
           >
             Arena
           </Link>
-          <Link
-            to="/auth"
+          <button
+            type="button"
+            onClick={() => startSignIn("sign-in")}
             className="font-mono text-xs uppercase text-foreground/60 hover:text-volt"
           >
             Sign in
-          </Link>
-          <Link
-            to="/auth"
+          </button>
+          <button
+            type="button"
+            onClick={() => startSignIn("host")}
             className="px-4 py-1.5 border border-volt text-volt font-mono text-xs hover:bg-volt hover:text-background transition-colors uppercase"
           >
             Host
-          </Link>
+          </button>
         </div>
       </nav>
 
@@ -182,12 +197,13 @@ function Landing() {
             >
               Play Arena
             </Link>
-            <Link
-              to="/auth"
-              className="mt-3 block text-center font-mono text-[10px] uppercase tracking-widest text-foreground/50 hover:text-volt"
+            <button
+              type="button"
+              onClick={() => startSignIn("sign-in")}
+              className="mt-3 block w-full text-center font-mono text-[10px] uppercase tracking-widest text-foreground/50 hover:text-volt"
             >
               Sign up to save your scores →
-            </Link>
+            </button>
           </div>
         </section>
 

@@ -1,18 +1,58 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useAuthUser } from "@/hooks/use-auth-user";
+import { useAuthGate } from "@/hooks/use-auth-gate";
 import { useHostStatus } from "@/hooks/use-host-status";
 import { toast } from "sonner";
 import { toastError } from "@/lib/errors";
 
-export const Route = createFileRoute("/request-hosting")({
-  component: RequestHosting,
-});
-
 type Purpose = "university" | "company" | "association" | "community" | "other";
 type Size = "1-25" | "26-50" | "51-100";
 type ExistingRequest = { id: string; status: "pending" | "approved" | "rejected"; organization: string; created_at: string };
+type Draft = { organization: string; purpose: Purpose; expected: Size; message: string };
+
+const EMPTY_DRAFT: Draft = { organization: "", purpose: "university", expected: "1-25", message: "" };
+const DRAFT_KEY = "brainbolt:host-request-draft";
+
+/** Non-sensitive form draft, scoped to the tab so it dies with the flow. */
+function readDraft(): Draft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = { ...EMPTY_DRAFT, ...(JSON.parse(raw) as Partial<Draft>) };
+    return {
+      organization: String(parsed.organization ?? ""),
+      purpose: (PURPOSE_OPTIONS.some((o) => o.value === parsed.purpose) ? parsed.purpose : "university") as Purpose,
+      expected: (["1-25", "26-50", "51-100"] as const).includes(parsed.expected as Size) ? (parsed.expected as Size) : "1-25",
+      message: String(parsed.message ?? ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeDraft(draft: Draft) {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+  } catch {
+    /* a full or blocked storage must not break the form */
+  }
+}
+
+function clearDraft() {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(DRAFT_KEY);
+  } catch {
+    /* nothing useful to do */
+  }
+}
+
+export const Route = createFileRoute("/request-hosting")({
+  component: RequestHosting,
+});
 
 const PURPOSE_OPTIONS: { value: Purpose; label: string }[] = [
   { value: "university", label: "University / School" },
@@ -24,19 +64,25 @@ const PURPOSE_OPTIONS: { value: Purpose; label: string }[] = [
 
 function RequestHosting() {
   const navigate = useNavigate();
-  const { user, loading: userLoading } = useAuthUser();
+  const gate = useAuthGate({ reason: "host" });
+  const { user } = gate;
   const { canHost, loading: hostLoading, refresh } = useHostStatus();
-  const [organization, setOrganization] = useState("");
-  const [purpose, setPurpose] = useState<Purpose>("university");
-  const [expected, setExpected] = useState<Size>("1-25");
-  const [message, setMessage] = useState("");
+
+  // The draft survives the round-trip through the sign-in page so returning
+  // users do not have to retype an application they already wrote. It is
+  // non-sensitive, session-scoped, and dropped as soon as it is submitted.
+  const [draft] = useState<Draft>(() => readDraft() ?? EMPTY_DRAFT);
+  const [organization, setOrganization] = useState(draft.organization);
+  const [purpose, setPurpose] = useState<Purpose>(draft.purpose);
+  const [expected, setExpected] = useState<Size>(draft.expected);
+  const [message, setMessage] = useState(draft.message);
   const [busy, setBusy] = useState(false);
   const [existing, setExisting] = useState<ExistingRequest | null>(null);
   const [loadingReq, setLoadingReq] = useState(true);
 
   useEffect(() => {
-    if (!userLoading && !user) navigate({ to: "/auth", search: { next: "/request-hosting" } as never });
-  }, [userLoading, user, navigate]);
+    writeDraft({ organization, purpose, expected, message });
+  }, [organization, purpose, expected, message]);
 
   useEffect(() => {
     if (!user) return;
@@ -65,14 +111,35 @@ function RequestHosting() {
     } as never);
     setBusy(false);
     if (error) return toastError(error, { context: "submit host request" });
+    // Submitted: drop the draft so a later visit cannot replay it.
+    clearDraft();
     toast.success("Request submitted");
     await refresh();
     navigate({ to: "/dashboard" });
   }
 
-  if (userLoading || hostLoading || loadingReq) {
+  if (gate.error) {
+    return (
+      <div className="min-h-screen grid place-items-center px-6">
+        <div className="max-w-md space-y-4 text-center">
+          <p className="font-display text-2xl italic uppercase">Can&apos;t confirm your session</p>
+          <p className="text-sm text-foreground/60">{gate.error}</p>
+          <button
+            onClick={() => void gate.retry()}
+            className="min-h-11 bg-volt text-background font-display text-lg uppercase italic px-6 py-3 skew-cta"
+          >
+            TRY AGAIN
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (gate.pending || hostLoading || loadingReq) {
     return <div className="min-h-screen grid place-items-center font-mono text-foreground/40 text-sm">LOADING...</div>;
   }
+  // The gate redirects on this branch; rendering null avoids flashing the form
+  // for a user who is genuinely on their way to the sign-in page.
   if (!user) return null;
 
   const statusBanner = canHost

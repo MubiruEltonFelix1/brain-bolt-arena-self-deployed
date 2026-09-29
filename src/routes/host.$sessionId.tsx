@@ -6,7 +6,6 @@ import { Confetti } from "@/components/Confetti";
 
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
-import { useAuthUser } from "@/hooks/use-auth-user";
 import { TEAM_COLORS } from "@/lib/game";
 import { toast } from "sonner";
 import { toastError } from "@/lib/errors";
@@ -106,7 +105,6 @@ function HostControl() {
 
 function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const { sessionId } = Route.useParams();
-  const { user: _user } = useAuthUser();
   const navigate = useNavigate();
   const [session, setSession] = useState<Session | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
@@ -700,7 +698,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
   if (!session) {
     return (
-      <HostShell>
+      <HostShell path={`/host/${sessionId}`}>
         {loadFailed ? (
           <LiveScreenState
             spinner={false}
@@ -761,6 +759,9 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const layout = lobbyLayout(viewportWidth);
   const inLobby = session.status === "lobby";
   const stateCopy = gameState(session.status, isPaused);
+  // Once the game is under way, an expired host session must not navigate away
+  // from the control room. The gate degrades to a banner instead.
+  const gameInProgress = session.status === "active" || session.status === "question_results";
 
   function copyJoinLink() {
     if (!joinUrl) return;
@@ -785,7 +786,7 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   }
 
   return (
-    <HostShell title="Host">
+    <HostShell title="Host" gateSuspended={gameInProgress}>
       <div
         className={`mx-auto px-4 sm:px-6 py-8 pb-32 space-y-8 ${inLobby ? "max-w-[1400px]" : "max-w-5xl"}`}
       >

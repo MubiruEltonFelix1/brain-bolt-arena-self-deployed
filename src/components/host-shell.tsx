@@ -1,8 +1,11 @@
 import { Link, useNavigate } from "@tanstack/react-router";
-import { supabase } from "@/integrations/supabase/client";
-import { useHostStatus } from "@/hooks/use-host-status";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { toast } from "sonner";
+import { useHostStatus } from "@/hooks/use-host-status";
+import { useAuthGate } from "@/hooks/use-auth-gate";
+import { signOutUser } from "@/lib/auth-state";
+import { buildAuthHref, currentInternalPath } from "@/lib/return-intent";
+import { LiveScreenState } from "@/components/ConnectionState";
 
 // Authorization is evaluated exclusively through `useHostStatus`, which reads
 // the central role table. No email or client-side constant grants access.
@@ -24,15 +27,36 @@ const NAV_ITEMS = [
 const linkClass =
   "font-mono text-xs uppercase text-foreground/70 hover:text-volt focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt transition-colors";
 
-export function HostShell({ children, title }: { children: ReactNode; title?: string }) {
-  const { user, isAdmin, canHost, loading } = useHostStatus();
+export function HostShell({
+  children,
+  title,
+  path,
+  gateSuspended = false,
+}: {
+  children: ReactNode;
+  title?: string;
+  /**
+   * Explicit return destination. Supply this whenever the route is known to the
+   * caller but the current pathname is not a reliable signal (for example while
+   * the session is still loading and the path may not be one we can validate).
+   */
+  path?: string;
+  /**
+   * Set while a game the host is already running is in progress. The gate stops
+   * redirecting and degrades to a banner instead, so an expired token never
+   * rips a host out of a live game. Authorization is unchanged: every control
+   * action is still enforced server-side, so nothing unauthorized slips through.
+   */
+  gateSuspended?: boolean;
+}) {
+  // Captured once: the gate's destination must not drift as the URL changes.
+  const [fallback] = useState(() => currentInternalPath());
+  const destination = path ?? fallback;
+  const gate = useAuthGate({ reason: "host", path: destination, enabled: !gateSuspended });
+  const { isAdmin, canHost } = useHostStatus();
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!loading && !user) navigate({ to: "/auth" });
-  }, [loading, user, navigate]);
 
   // Close the overflow menu on outside click or Escape.
   useEffect(() => {
@@ -52,12 +76,30 @@ export function HostShell({ children, title }: { children: ReactNode; title?: st
   }, [menuOpen]);
 
   async function signOut() {
-    await supabase.auth.signOut();
-    toast.success("Signed out");
-    navigate({ to: "/" });
+    try {
+      await signOutUser();
+      toast.success("Signed out");
+      await navigate({ to: "/" });
+    } catch {
+      // A failed sign-out must not be reported as a successful one.
+      toast.error("Could not sign out. Please try again.");
+    }
   }
 
-  if (loading || !user) {
+  // A session we could not verify is not a signed-out session. Offering a
+  // retry beats bouncing the user to the sign-in page on a dropped connection.
+  if (gate.error) {
+    return (
+      <LiveScreenState
+        spinner={false}
+        title="Can't confirm your session"
+        message={gate.error}
+        action={{ label: "TRY AGAIN", onClick: () => void gate.retry() }}
+      />
+    );
+  }
+
+  if (gate.pending) {
     return (
       <div
         className="min-h-screen grid place-items-center font-mono text-foreground/50 text-sm uppercase tracking-widest"
@@ -65,6 +107,16 @@ export function HostShell({ children, title }: { children: ReactNode; title?: st
         role="status"
       >
         Loading…
+      </div>
+    );
+  }
+
+  // In-game with a dead session: stay put, say so, and let the game finish.
+  if (gateSuspended && !gate.user) {
+    return (
+      <div className="min-h-screen bg-background">
+        <SessionExpiredBanner destination={destination} />
+        <main>{children}</main>
       </div>
     );
   }
@@ -179,6 +231,30 @@ export function HostShell({ children, title }: { children: ReactNode; title?: st
         </div>
       </nav>
       <main>{children}</main>
+    </div>
+  );
+}
+
+/**
+ * Non-blocking notice for a host whose session died mid-game. Deliberately not
+ * a modal and deliberately not a redirect: the game keeps running, and the
+ * banner offers a way back to the right host flow.
+ */
+function SessionExpiredBanner({ destination }: { destination: string }) {
+  return (
+    <div
+      role="status"
+      className="sticky top-0 z-50 flex flex-wrap items-center gap-3 border-b border-amber-spark/30 bg-amber-spark/15 px-4 sm:px-6 py-3"
+    >
+      <p className="text-sm text-foreground/80 flex-1 min-w-[16rem]">
+        Your session expired. The game keeps running, but you'll need to sign in again to control it.
+      </p>
+      <a
+        href={buildAuthHref(destination, "host")}
+        className="bg-volt text-background font-display text-sm uppercase italic px-4 py-2 skew-cta hover:opacity-90 min-h-11 inline-flex items-center"
+      >
+        Sign In to Host
+      </a>
     </div>
   );
 }
