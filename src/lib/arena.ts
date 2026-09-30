@@ -624,8 +624,13 @@ export function arenaShareDataFromRun(args: {
 }): ShareResultData {
   return {
     nickname: args.identityName || "Arena player",
-    rank: 1,
-    totalPlayers: 1,
+    // A solo Arena run is not a one-player competition. Reporting "1st of 1"
+    // dresses a practice round up as a victory, which is the one thing the
+    // hosted results screen was changed to stop doing. `presentArena` reports
+    // rank and total as unavailable for the same reason, and the share card
+    // omits the Final Position block when both are absent.
+    rank: null,
+    totalPlayers: null,
     score: args.score,
     correct: args.correct,
     totalQuestions: args.totalQuestions,

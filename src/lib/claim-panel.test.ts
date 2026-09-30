@@ -13,6 +13,7 @@ import { claimPanelView, type ClaimPanelInput } from "@/lib/claim-panel";
 
 const BASE: ClaimPanelInput = {
   authResolved: true,
+  authFailed: false,
   isAuthenticated: false,
   seatLinked: false,
   seatChecked: true,
@@ -61,10 +62,6 @@ describe("claimPanelView", () => {
       kind: "problem",
       detail: "This save link expired.",
     });
-    expect(view({ phase: "already-claimed", detail: "Already saved." })).toEqual({
-      kind: "problem",
-      detail: "Already saved.",
-    });
     expect(view({ phase: "failed", detail: "Connection lost." })).toEqual({
       kind: "problem",
       detail: "Connection lost.",
@@ -91,28 +88,57 @@ describe("claimPanelView", () => {
     });
   });
 
-  test("in-flight phases render as busy, never as saved or as an offer", () => {
+  test("an in-flight phase renders as busy, never as saved or as an offer", () => {
     expect(view({ phase: "preparing" }).kind).toBe("busy");
-    expect(view({ phase: "awaiting-auth" }).kind).toBe("busy");
+  });
+
+  test("an already-linked result is neither 'saved' nor a failure", () => {
+    // The server raises one error for "this account claimed it" and for
+    // "another account claimed it" and deliberately will not say which. So we
+    // assert nothing about ownership: claiming `saved` would assert the result
+    // is on THIS profile, which we cannot prove, and calling it a failure
+    // would be wrong because nothing was lost.
+    expect(view({ phase: "already-claimed" }).kind).toBe("already-saved");
+    expect(view({ phase: "already-claimed", isAuthenticated: true, seatLinked: true }).kind).toBe(
+      "saved",
+    );
+  });
+
+  test("a failed sign-in check is recoverable, not an endless 'loading'", () => {
+    const v = view({ authFailed: true, authResolved: false });
+    expect(v.kind).toBe("problem");
+    expect(v.kind === "problem" && v.detail).toMatch(/sign-in/i);
+  });
+
+  test("an unresolved auth state stays loading until we know", () => {
+    // Distinct from authFailed: "not checked yet" must not invite a decision.
+    expect(view({ authResolved: false, authFailed: false }).kind).toBe("loading");
   });
 
   test("no combination of inputs can yield saved without proof", () => {
     const booleans = [true, false];
     for (const authResolved of booleans) {
-      for (const isAuthenticated of booleans) {
-        for (const seatLinked of booleans) {
-          for (const seatChecked of booleans) {
-            for (const phase of ["none", "preparing", "awaiting-auth", "expired", "already-claimed", "failed", "claimed"] as const) {
-              const result = view({ authResolved, isAuthenticated, seatLinked, seatChecked, phase });
-              if (result.kind === "saved") {
-                // The ONLY two ways to reach "saved": a server confirmation, or
-                // a completed ownership read that found this seat linked.
-                const provenByServer = phase === "claimed";
-                const provenBySeat = seatLinked && seatChecked;
-                expect(provenByServer || provenBySeat).toBe(true);
-                // A signed-out player is never shown "saved" on nothing but an
-                // auth flag; the seat read is the only non-server proof.
-                if (!provenByServer) expect(seatChecked).toBe(true);
+      for (const authFailed of booleans) {
+        for (const isAuthenticated of booleans) {
+          for (const seatLinked of booleans) {
+            for (const seatChecked of booleans) {
+              // Every phase, including "available" (a guest ticket waiting that the player
+              // has not acted on). That one was previously omitted from this
+              // loop, which left the most common mid-journey state unchecked.
+              for (const phase of ["none", "available", "preparing", "expired", "already-claimed", "failed", "claimed"] as const) {
+                const result = view({ authResolved, authFailed, isAuthenticated, seatLinked, seatChecked, phase });
+                if (result.kind === "saved") {
+                  // The ONLY two ways to reach "saved": a server confirmation, or
+                  // a completed ownership read that found this seat linked. Note
+                  // that the seat read needs no authentication, so it still proves
+                  // the result even when the sign-in check failed.
+                  const provenByServer = phase === "claimed";
+                  const provenBySeat = seatLinked && seatChecked;
+                  expect(provenByServer || provenBySeat).toBe(true);
+                  // A signed-out player is never shown "saved" on nothing but an
+                  // auth flag; the seat read is the only non-server proof.
+                  if (!provenByServer) expect(seatChecked).toBe(true);
+                }
               }
             }
           }

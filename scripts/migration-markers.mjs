@@ -129,18 +129,24 @@ export function createMarkers({ q, yes }) {
   // character), so a needle like `q_reveal_stages` still matches its literal
   // form and additionally matches hyphen/dot variants. That only ever widens
   // the match; it cannot make a present migration look absent.
+  // A needle is interpolated into a single-quoted SQL literal, so any single
+  // quote inside it must be doubled or the probe is unparseable. The
+  // `run_autonomous_tick` marker passed `c.mode = 'scheduled'` and produced
+  // `LIKE '%c.mode = 'scheduled'%'`, which is a syntax error — that migration
+  // reported "probe failed" forever even though it was applied.
+  const sqlLiteral = (s) => s.replace(/'/g, "''");
   const fnBodyLike = (name, needle) =>
     yes(
-      `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${name}' AND pg_get_functiondef(p.oid) LIKE '%${needle.replace(/%/g, "")}%')`,
+      `SELECT EXISTS (SELECT 1 FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public' AND p.proname = '${sqlLiteral(name)}' AND pg_get_functiondef(p.oid) LIKE '%${sqlLiteral(needle.replace(/%/g, ""))}%')`,
     );
   const constraintLike = (conname, needle) =>
     yes(
-      `SELECT (pg_get_constraintdef(oid) LIKE '%${needle}%') FROM pg_constraint WHERE conname = '${conname}'`,
+      `SELECT (pg_get_constraintdef(oid) LIKE '%${sqlLiteral(needle)}%') FROM pg_constraint WHERE conname = '${sqlLiteral(conname)}'`,
     );
   // pg_policies is a view: qual/with_check are the policy expressions as text.
   const policyLike = (table, policy, needle) =>
     yes(
-      `SELECT (qual LIKE '%${needle}%') FROM pg_policies WHERE schemaname = 'public' AND tablename = '${table}' AND policyname = '${policy}'`,
+      `SELECT (qual LIKE '%${sqlLiteral(needle)}%') FROM pg_policies WHERE schemaname = 'public' AND tablename = '${sqlLiteral(table)}' AND policyname = '${sqlLiteral(policy)}'`,
     );
   const indexExists = (table, index) =>
     yes(

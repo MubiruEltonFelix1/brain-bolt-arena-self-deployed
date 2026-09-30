@@ -1,13 +1,17 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLiveChannel, type LiveStatus } from "@/hooks/use-live-channel";
 import { ConnectionBanner, LiveScreenState } from "@/components/ConnectionState";
 
 import { supabase } from "@/integrations/supabase/client";
 import { seededShuffle } from "@/lib/game";
+import { standingsFor, rankPlayers, type Standing } from "@/lib/ranking";
+import { accentText, accentBorder, PODIUM_ACCENT_BORDER, PODIUM_ACCENT_BORDER_SOFT, PODIUM_ACCENT_SURFACE } from "@/lib/podium-accents";
+import { presentHosted, shareMessage, type Metric } from "@/lib/result-presentation";
+import { trackResultEvent, detectShareMethod } from "@/lib/result-analytics";
 import { getParticipant, clearParticipant, type ParticipantIdentity } from "@/lib/participant-storage";
 import { SaveResultPanel } from "@/components/SaveResultPanel";
-import { useAuthState } from "@/lib/auth-state";
+import { useAuthState, isAuthResolved } from "@/lib/auth-state";
 import { MapPicker } from "@/components/MapPicker";
 import { NumberGuess } from "@/components/NumberGuess";
 import { OrderingBoard } from "@/components/OrderingBoard";
@@ -17,7 +21,7 @@ import { toastError } from "@/lib/errors";
 import { QuestionIntro } from "@/components/QuestionIntro";
 import { getQuestionIntroTiming } from "@/lib/question-intro-timing";
 import { getServerAdjustedNow, syncServerClock } from "@/lib/server-clock";
-import { ShareCardPreview, downloadShareCard, shareShareCard, type ShareResultData } from "@/components/ShareResultCard";
+import { ShareCardPreview, downloadShareCard, type ShareResultData } from "@/components/ShareResultCard";
 import { BrandBanner } from "@/components/BrandBanner";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { useCoalescedCallback } from "@/hooks/use-coalesced-callback";
@@ -85,6 +89,13 @@ type Participant = {
   streak: number;
   team_id: string | null;
   avatar_id: string | null;
+  /**
+   * When the player took their seat. The server's authoritative rank is
+   * `rank() OVER (ORDER BY score DESC, joined_at ASC)`, so the tie-break has
+   * to be read here too - ordering the query by `score` alone leaves Postgres
+   * free to return tied rows in any order. See `lib/ranking.ts`.
+   */
+  joined_at: string;
 };
 
 type MyAnswer = {
@@ -92,6 +103,13 @@ type MyAnswer = {
   selected_index: number;
   is_correct: boolean;
   points: number;
+  /**
+   * Authoritative server-side timing, used for the average response stat.
+   * Optional because the optimistic row written the instant a player taps an
+   * option has no server timing yet. Such a row is simply excluded from the
+   * average rather than contributing a guessed value.
+   */
+  response_ms?: number;
 };
 
 const COLORS = ["pink-shock", "cyan-jolt", "volt", "amber-spark"];
@@ -123,8 +141,15 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [identity, setIdentity] = useState<ParticipantIdentity | null | undefined>(undefined);
   // Read-only. Used solely to label the result panel, never to decide who the
   // player is or to gate anything during play.
-  const { user: authedUser, status: authStatus } = useAuthState();
-  const authedUserId = authedUser?.id ?? null;
+  const auth = useAuthState();
+  const authedUserId = auth.user?.id ?? null;
+  // Must come from the store's own rule, not `status !== "loading"`. The store
+  // deliberately treats a FAILED session check as unresolved
+  // (auth-state.ts: isAuthResolved), because a failed check is not evidence of
+  // being signed out. Deriving it here as `status !== "loading"` reported a
+  // dropped connection as resolved, which let the panel assert a save verdict
+  // for a player whose session we had not actually verified.
+  const authResolved = isAuthResolved(auth);
   // Whether THIS seat is already attached to a profile, which is what actually
   // makes the result appear in competition history. Read from our own row
   // only: the scoreboard query deliberately does not expose other players'
@@ -257,8 +282,8 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (mappedQs.length) setQuestions(mappedQs);
 
     const { data: all } = await supabase
-      .from("participants").select("id,nickname,score,streak,team_id,avatar_id")
-      .eq("session_id", sessionId).order("score", { ascending: false });
+      .from("participants").select("id,nickname,score,streak,team_id,avatar_id,joined_at")
+      .eq("session_id", sessionId).order("score", { ascending: false }).order("joined_at", { ascending: true });
     if (all) {
       setParticipants(all as Participant[]);
       const mine = (all as Participant[]).find((p) => p.id === identity.id);
@@ -266,7 +291,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     }
 
     const { data: ans } = await supabase
-      .from("answers").select("question_id,selected_index,is_correct,points")
+      .from("answers").select("question_id,selected_index,is_correct,points,response_ms")
       .eq("session_id", sessionId).eq("participant_id", identity.id);
     if (ans) setMyAnswers(ans as MyAnswer[]);
 
@@ -288,8 +313,8 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   // burst into a single authoritative refetch.
   const refetchParticipants = useCallback(async () => {
     const { data } = await supabase
-      .from("participants").select("id,nickname,score,streak,team_id,avatar_id")
-      .eq("session_id", sessionId).order("score", { ascending: false });
+      .from("participants").select("id,nickname,score,streak,team_id,avatar_id,joined_at")
+      .eq("session_id", sessionId).order("score", { ascending: false }).order("joined_at", { ascending: true });
     if (!data) return;
     setParticipants(data as Participant[]);
     const mine = (data as Participant[]).find((p) => p.id === identity?.id);
@@ -385,7 +410,10 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   useEffect(() => {
     if (currentIdx <= 0 || currentIdx === prevRankIndexRef.current) return;
     const map = new Map<string, number>();
-    participants.forEach((p, i) => map.set(p.id, i + 1));
+    // Same contract as everywhere else, so a movement arrow compares two
+    // rankings that mean the same thing. An index here would disagree with the
+    // displayed rank on a tie and show a phantom jump.
+    rankPlayers(participants).forEach((p) => map.set(p.id, p.rank));
     setPrevRanks(map);
     prevRankIndexRef.current = currentIdx;
     // intentionally not depending on participants — we want the snapshot AT round start
@@ -459,7 +487,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     if (!revealed || !identity) return;
     (async () => {
       const { data } = await supabase
-        .from("answers").select("question_id,selected_index,is_correct,points")
+        .from("answers").select("question_id,selected_index,is_correct,points,response_ms")
         .eq("session_id", sessionId).eq("participant_id", identity.id);
       if (data) setMyAnswers(data as MyAnswer[]);
     })();
@@ -552,7 +580,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   // releasing the local lock so a retry can never record the same answer twice.
   async function handleSubmitFailure(questionId: string, error?: unknown) {
     const { data } = await supabase
-      .from("answers").select("question_id,selected_index,is_correct,points")
+      .from("answers").select("question_id,selected_index,is_correct,points,response_ms")
       .eq("session_id", sessionId).eq("participant_id", identity!.id);
     const rows = (data as MyAnswer[] | null) ?? [];
     if (rows.length) setMyAnswers(rows);
@@ -667,8 +695,20 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
 
 
-  const myRank = me ? participants.findIndex((p) => p.id === me.id) + 1 : 0;
-  const totalPlayers = participants.length;
+  // Authoritative standing. Replaces the old
+  // `participants.findIndex(p => p.id === me.id) + 1`, which ranked in the
+  // browser from a score-ordered list with no tie-break and could therefore
+  // disagree with the `final_rank` the server persisted in
+  // `competition_results`. The same value now drives the live header, the
+  // podium and the personal placement on the results screen.
+  //
+  // Deliberately NOT a useMemo. This sits below the identity/session early
+  // returns, where a hook would violate the rules of hooks. The sort is O(n log
+  // n) over one session's players and re-runs at most a few times a second, so
+  // memoising it would trade a real bug for a saving nobody can measure.
+  const standings = standingsFor(participants, me?.id ?? "");
+  const myRank = standings.me?.rank ?? 0;
+  const totalPlayers = standings.total;
   const ended = session.status === "ended";
 
   return (
@@ -787,6 +827,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
         {ended && (
           <FinalView
+            standings={standings}
             participants={participants}
             myId={me?.id ?? ""}
             myRank={myRank}
@@ -794,7 +835,8 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             orderedIds={orderedQuestionIds}
             myAnswers={myAnswers}
             quizTitle={session.quiz?.title ?? "Quiz"}
-            authResolved={authStatus !== "loading"}
+            authResolved={authResolved}
+            authFailed={auth.status === "error"}
             isAuthenticated={authedUserId != null}
             seatLinked={seatProfileId != null}
             seatChecked={seatChecked}
@@ -1139,12 +1181,20 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
   myId: string;
 }) {
   const correct = result.answered && result.is_correct;
-  const myCurrentRank = participants.findIndex((p) => p.id === myId) + 1;
-  const totalPlayers = participants.length;
-  const top3 = participants.slice(0, 3);
-  const me = participants.find((p) => p.id === myId);
+  // The SAME ranking contract as the results screen and the server's persisted
+  // `final_rank`. Two rank computations coexisting in one file is exactly the
+  // divergence `lib/ranking.ts` exists to remove - and a mid-game rank that
+  // disagreed with the final result would be a visible bug on its own.
+  const live = standingsFor(participants, myId);
+  const myCurrentRank = live.me?.rank ?? 0;
+  const totalPlayers = live.total;
+  const top3 = live.podium;
+  const me = live.me;
   const onPodium = myCurrentRank >= 1 && myCurrentRank <= 3;
-  const aheadOfMe = myCurrentRank > 1 ? participants[myCurrentRank - 2] : null;
+  // "The player directly above me", taken from the ordered list rather than by
+  // arithmetic on the rank, so a tie cannot index the wrong row.
+  const myIndex = live.ranked.findIndex((p) => p.id === myId);
+  const aheadOfMe = myIndex > 0 ? live.ranked[myIndex - 1] : null;
   const gapToAhead = aheadOfMe && me ? aheadOfMe.score - me.score : 0;
 
   // One-shot payoff feedback per round (this view remounts each round).
@@ -1333,11 +1383,13 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
       <div className="border border-border bg-card p-4 space-y-3">
         <p className="font-mono text-[10px] uppercase text-foreground/60">Leaderboard</p>
         <div className="grid grid-cols-3 gap-2">
-          {top3.map((p, i) => {
-            const accent = i === 0 ? "volt" : i === 1 ? "cyan-jolt" : "amber-spark";
-            const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉";
+          {top3.map((p) => {
+            // Keyed on the server rank, not the array index: rank() skips after
+            // a tie, so index 2 can be a 4th-place player who must not wear a
+            // bronze medal.
+            const medal = p.rank === 1 ? "🥇" : p.rank === 2 ? "🥈" : p.rank === 3 ? "🥉" : `#${p.rank}`;
             return (
-              <div key={p.id} className={`border border-${accent}/40 bg-${accent}/5 p-3 text-center ${p.id === myId ? "ring-1 ring-volt" : ""}`}>
+              <div key={p.id} className={`border ${PODIUM_ACCENT_BORDER_SOFT[p.rank] ?? "border-border"} ${PODIUM_ACCENT_SURFACE[p.rank] ?? ""} p-3 text-center ${p.id === myId ? "ring-1 ring-volt" : ""}`}>
                 <p className="text-xl">{medal}</p>
                 <PlayerAvatar avatarId={p.avatar_id} seed={p.id} size={40} className="mx-auto my-1" />
                 <p className="font-bold text-sm truncate">{p.nickname}</p>
@@ -1345,27 +1397,27 @@ function RoundRevealView({ question, result, roundNumber, totalRounds, participa
                   <p className="font-mono text-[8px] uppercase tracking-widest text-volt">you</p>
                 )}
                 <p className="font-mono text-xs text-foreground/60">{p.score.toLocaleString()}</p>
-                <RankDelta nowRank={i + 1} prevRank={prevRanks.get(p.id)} />
+                <RankDelta nowRank={p.rank} prevRank={prevRanks.get(p.id)} />
               </div>
             );
           })}
         </div>
         <div className="space-y-1">
-          {participants.slice(3, 8).map((p, i) => {
-            const rank = i + 4;
-            return (
+          {/* From `ranked`, not the raw array, so the number shown here is the
+              same number the podium above uses. Slicing the unsorted list and
+              counting up would print a position the server never recorded. */}
+          {live.ranked.slice(3, 8).map((p) => (
               <div key={p.id} className={`flex items-center gap-2 py-1.5 px-2 ${p.id === myId ? "bg-volt/10 border border-volt/40" : "bg-background/40"}`}>
-                <span className="font-mono text-xs text-foreground/40 w-6">{String(rank).padStart(2, "0")}</span>
+                <span className="font-mono text-xs text-foreground/40 w-6">{String(p.rank).padStart(2, "0")}</span>
                 <PlayerAvatar avatarId={p.avatar_id} seed={p.id} size={20} />
                 <span className="font-medium text-sm grow truncate">{p.nickname}</span>
                 {p.id === myId && (
                   <span className="font-mono text-[8px] uppercase tracking-widest text-volt shrink-0">you</span>
                 )}
-                <RankDelta nowRank={rank} prevRank={prevRanks.get(p.id)} inline />
+                <RankDelta nowRank={p.rank} prevRank={prevRanks.get(p.id)} inline />
                 <span className="font-display text-sm italic">{p.score.toLocaleString()}</span>
               </div>
-            );
-          })}
+            ))}
         </div>
       </div>
 
@@ -1412,9 +1464,11 @@ function RankDelta({ nowRank, prevRank, inline }: { nowRank: number; prevRank?: 
 }
 
 function FinalView({
-  participants, myId, myRank, questions, orderedIds, myAnswers, quizTitle,
-  authResolved, isAuthenticated, seatLinked, seatChecked, identity, onLeave,
+  standings, participants, myId, myRank, questions, orderedIds, myAnswers, quizTitle,
+  authResolved, authFailed, isAuthenticated, seatLinked, seatChecked, identity, onLeave,
 }: {
+  /** Server-equivalent standing. Drives rank, the podium and placement. */
+  standings: Standing<Participant>;
   participants: Participant[];
   myId: string;
   myRank: number;
@@ -1424,6 +1478,8 @@ function FinalView({
   quizTitle: string;
   /** False while the session restoration is still unresolved. */
   authResolved: boolean;
+  /** The session check ran and failed. Distinct from "not checked yet". */
+  authFailed: boolean;
   /** A signed-in user exists. Says nothing about whether THIS seat is saved. */
   isAuthenticated: boolean;
   /** This seat is attached to a profile, so the result is in history. */
@@ -1435,7 +1491,9 @@ function FinalView({
 }) {
 
   const [reviewOpen, setReviewOpen] = useState(false);
+  const navigate = useNavigate();
   const [busy, setBusy] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(false);
   const cardRef = useRef<HTMLDivElement | null>(null);
 
   // Celebration moment — one fanfare per final screen mount.
@@ -1446,40 +1504,70 @@ function FinalView({
     playSound("fanfare");
     if (myRank <= 3) haptic([40, 60, 80]);
   }, [myRank]);
-  const podium = participants.slice(0, 3);
+
+  // Celebration is motion too. Someone who has asked their OS to reduce
+  // animation should not get a confetti burst and a floating card, so the
+  // decorative motion is gated on their preference rather than ours.
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    setReducedMotion(mq.matches);
+    const onChange = () => setReducedMotion(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  // Measured once per result view, not per render.
+  const viewedRef = useRef(false);
+  useEffect(() => {
+    if (viewedRef.current) return;
+    viewedRef.current = true;
+    trackResultEvent("result_viewed", { mode: "hosted" });
+  }, []);
+
   const ordered = orderedIds.map((id) => questions.find((q) => q.id === id)).filter(Boolean) as Question[];
   const ansByQ = new Map(myAnswers.map((a) => [a.question_id, a]));
   const scored = ordered.filter((q) => q.question_type !== "feedback");
-  const correctCount = myAnswers.filter((a) => a.is_correct).length;
   const me = participants.find((p) => p.id === myId);
-  const accuracy = scored.length > 0 ? Math.round((correctCount / scored.length) * 100) : 0;
 
-  // Longest streak from ordered scored answers
-  let longestStreak = 0;
-  let run = 0;
-  for (const q of scored) {
-    const a = ansByQ.get(q.id);
-    if (a?.is_correct) { run += 1; if (run > longestStreak) longestStreak = run; }
-    else run = 0;
-  }
+  // Every displayed number comes from here, so "unmeasured" can never be
+  // rendered as 0 and a solo run can never acquire a fabricated podium.
+  const presentation = presentHosted({
+    mode: "hosted",
+    quizTitle,
+    completed: true,
+    participants: standings.ranked,
+    myId,
+    myRank,
+    questions: ordered,
+    answers: myAnswers,
+    orderedIds,
+  });
 
-  // Determine optional achievement based on the field
-  let achievement: string | null = null;
-  if (myRank === 1) achievement = "Champion";
-  else {
-    const others = participants.filter((p) => p.id !== myId);
-    if (scored.length > 0 && correctCount === scored.length) achievement = "Most Accurate";
-    else if (others.length && longestStreak >= 3 && me) achievement = "Longest Streak";
-  }
+  // Badges. Restored rather than dropped: the previous inline computation had
+  // three, and silently losing two to a rewrite is not a change anyone asked
+  // for. Each is only claimed when the underlying number actually supports it.
+  const achievement = ((): string | null => {
+    if (myRank === 1) return "Champion";
+    if (presentation.questionsAnswered.value > 0 && presentation.accuracy.available) {
+      if (presentation.accuracy.value === 100) return "Most Accurate";
+    }
+    // Only meaningful in a real field, not a solo game.
+    if (presentation.totalPlayers.available && presentation.totalPlayers.value > 1 && presentation.longestStreak.value >= 3) {
+      return "Longest Streak";
+    }
+    return null;
+  })();
 
   const shareData: ShareResultData = {
-    nickname: me?.nickname ?? "Player",
-    rank: myRank,
-    totalPlayers: participants.length,
-    score: me?.score ?? 0,
-    correct: correctCount,
+    nickname: presentation.nickname,
+    // null, not 0: an unresolved seat must not print "0th of 0" on a card the
+    // player can download and share.
+    rank: presentation.rank.available ? presentation.rank.value : null,
+    totalPlayers: presentation.totalPlayers.available ? presentation.totalPlayers.value : null,
+    score: presentation.score.available ? presentation.score.value : null,
+    correct: presentation.correct.value,
     totalQuestions: scored.length,
-    longestStreak,
+    longestStreak: presentation.longestStreak.value,
     quizTitle,
     achievement,
   };
@@ -1489,96 +1577,221 @@ function FinalView({
     try { await fn(); } finally { setBusy(false); }
   };
 
-  const initials = (me?.nickname ?? "?").trim().split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("") || "?";
-  const rankAccent = myRank === 1 ? "volt" : myRank === 2 ? "cyan-jolt" : myRank === 3 ? "amber-spark" : "foreground";
+  /**
+   * Share the result as text.
+   *
+   * Deliberately no link. The only URL this screen could offer is
+   * /play/<sessionId>, which is not a public result page: it renders only for a
+   * browser that still holds the guest seat, so sending it would produce a dead
+   * link for the recipient. Inventing a public share route is out of scope, so
+   * the honest share is a sentence. `shareMessage` is built from an allowlist
+   * and cannot carry a token, an id or another player's name.
+   */
+  async function shareResult() {
+    trackResultEvent("result_share_clicked", { mode: "hosted" });
+    const text = shareMessage(presentation);
+    if (detectShareMethod() === "native") {
+      try {
+        await navigator.share({ title: "Brain Bolt", text });
+        trackResultEvent("result_share_completed", { mode: "hosted", shareMethod: "native" });
+        return;
+      } catch {
+        // Dismissed, or the platform refused. Fall back rather than dead-end.
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Result copied — paste it anywhere.");
+      trackResultEvent("result_share_completed", { mode: "hosted", shareMethod: "copy" });
+    } catch {
+      toast.error("Could not copy. Long-press the score to copy it.");
+    }
+  }
+
+  function playAgain() {
+    // Does NOT restart or recreate this finished session. The player leaves for
+    // the join flow, where a new game can be created or joined.
+    trackResultEvent("replay_clicked", { mode: "hosted" });
+    void navigate({ to: "/" });
+  }
 
   return (
-    <div className="space-y-6 animate-float">
+    <div className={reducedMotion ? "space-y-6" : "space-y-6 animate-float"}>
+      {/* A. Completion moment */}
       <div className="relative overflow-hidden">
-        <Confetti loop={false} className="opacity-60" />
+        {!reducedMotion && <Confetti loop={false} className="opacity-60" />}
         <div className="text-center">
           <p className="font-mono text-xs uppercase tracking-widest text-foreground/60">Final standings</p>
-          <h2 className="font-display text-5xl italic uppercase mt-2">GG WP</h2>
+          <h2 className="font-display text-5xl italic uppercase mt-2">Game complete!</h2>
         </div>
+      </div>
 
+      {/* B. Personal result — the one thing this screen exists to show */}
+      <section aria-labelledby="your-score-heading" className="border border-volt/30 bg-volt/5 p-5 text-center">
+        <h3
+          id="your-score-heading"
+          className="font-mono text-[10px] uppercase tracking-widest text-foreground/60"
+        >
+          Your score
+        </h3>
+        <p aria-live="polite" aria-atomic="true" className="font-display text-6xl italic text-volt tabular-nums mt-1">
+          {presentation.score.available ? (
+            <>
+              <span className="sr-only">Final score: </span>
+              {presentation.score.value.toLocaleString()}
+            </>
+          ) : (
+            // The seat could not be resolved. Showing 0 here would claim the
+            // player scored nothing, which is a different and wrong claim.
+            <>
+              <span aria-hidden="true" className="text-foreground/25">
+                —
+              </span>
+              <span className="sr-only">Final score unavailable</span>
+            </>
+          )}
+        </p>
+        <p className="text-sm text-foreground/70 mt-1">
+          {presentation.rank.available && presentation.totalPlayers.available
+            ? `You finished #${presentation.rank.value} of ${presentation.totalPlayers.value} players.`
+            : "You finished the game."}
+        </p>
+      </section>
+
+      {/* C. Podium — only what the server actually ranked */}
+      {presentation.podium.length > 0 && (
+        <section aria-label="Top three" className="space-y-2">
+          <h3 className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Top three</h3>
+          {presentation.podium.map((p) => (
+            <div
+              key={p.id}
+              className={`flex items-center gap-3 sm:gap-4 p-3 border ${
+                p.id === myId
+                  ? `${PODIUM_ACCENT_BORDER[p.rank]} ${PODIUM_ACCENT_SURFACE[p.rank]}`
+                  : "border-border bg-card"
+              }`}
+            >
+              <span className={`font-display text-2xl italic ${accentText(p.rank)} w-9 shrink-0 text-left`}>
+                #{p.rank}
+              </span>
+              <PlayerAvatar avatarId={p.avatarId} seed={p.id} size={32} />
+              <span className="font-bold grow text-left truncate">{p.nickname}</span>
+              {p.id === myId && (
+                <span className="font-mono text-[9px] uppercase tracking-widest text-volt shrink-0">you</span>
+              )}
+              <span className="font-display text-lg italic tabular-nums shrink-0">
+                {p.score.toLocaleString()}
+              </span>
+            </div>
+          ))}
+          {!presentation.onPodium && presentation.rank.available && (
+            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50 text-left">
+              You finished #{presentation.rank.value}. The podium above is someone else's.
+            </p>
+          )}
+        </section>
+      )}
+
+      {/* D. Personal performance */}
+      <section aria-label="Your performance" className="border border-border bg-card p-5">
+        <div className="flex items-center gap-4 mb-4">
+          <PlayerAvatar
+            avatarId={presentation.avatarId}
+            seed={me?.id}
+            size={48}
+            className={`!border-2 ${accentBorder(myRank)}`}
+          />
+          <div className="min-w-0">
+            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Your finish</p>
+            <p className="font-display text-xl italic truncate">{presentation.nickname}</p>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          <ResultStat
+            label="Answered"
+            metric={presentation.questionsAnswered}
+            format={(v) => `${v}/${scored.length}`}
+          />
+          <ResultStat
+            label="Accuracy"
+            metric={presentation.accuracy}
+            format={(v) => `${v}%`}
+          />
+          <ResultStat
+            label="Correct"
+            metric={presentation.correct}
+            format={(v) => `${v}/${scored.length}`}
+          />
+          <ResultStat
+            label="Avg time"
+            metric={presentation.avgResponseMs}
+            format={(v) => `${(v / 1000).toFixed(1)}s`}
+          />
+          <ResultStat label="Best streak" metric={presentation.longestStreak} format={(v) => String(v)} />
+        </div>
+      </section>
+
+      {/* E. Keep-your-result invitation.
+          Placed HERE, after the score, podium and performance are visible. It
+          used to sit above the podium, which asked a guest to commit to an
+          account before they had even seen what they scored. */}
       <SaveResultPanel
         identity={identity}
         quizTitle={quizTitle}
         authResolved={authResolved}
+        authFailed={authFailed}
         isAuthenticated={isAuthenticated}
         seatLinked={seatLinked}
         seatChecked={seatChecked}
         returnPath={`/play/${identity.sessionId}`}
       />
 
-
-      {/* Compact podium */}
-      <div className="space-y-2">
-        {podium.map((p, i) => {
-          const accent = i === 0 ? "volt" : i === 1 ? "cyan-jolt" : "amber-spark";
-          return (
-            <div key={p.id} className={`flex items-center gap-4 p-3 border ${p.id === myId ? "border-volt bg-volt/5" : "border-border bg-card"}`}>
-              <span className={`font-display text-2xl italic text-${accent} w-8 text-left`}>0{i + 1}</span>
-              <PlayerAvatar avatarId={p.avatar_id} seed={p.id} size={32} />
-              <span className="font-bold grow text-left truncate">{p.nickname}</span>
-              {p.id === myId && (
-                <span className="font-mono text-[9px] uppercase tracking-widest text-volt shrink-0">you</span>
-              )}
-              <span className="font-display text-lg italic">{p.score.toLocaleString()}</span>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Player Result Summary */}
-      <div className="border border-border bg-card p-5">
-        <div className="flex items-center gap-4">
-          <PlayerAvatar avatarId={me?.avatar_id} seed={me?.id} size={64} className={`!border-2 border-${rankAccent}`} />
-          <div className="min-w-0 flex-1">
-            <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">Your finish</p>
-            <p className="font-display text-2xl italic truncate">{me?.nickname ?? "Player"}</p>
-          </div>
-          <div className="text-right">
-            <p className="font-mono text-[10px] uppercase text-foreground/50">Rank</p>
-            <p className={`font-display text-3xl italic text-${rankAccent}`}>#{myRank}</p>
-          </div>
-        </div>
-        <div className="grid grid-cols-4 gap-2 mt-5">
-          <SummaryStat label="Score" value={(me?.score ?? 0).toLocaleString()} />
-          <SummaryStat label="Accuracy" value={`${accuracy}%`} />
-          <SummaryStat label="Correct" value={`${correctCount}/${scored.length}`} />
-          <SummaryStat label="Streak" value={String(longestStreak)} />
-        </div>
-      </div>
-      </div>
-
       {/* Share card — inline, mobile-first, ~92vw */}
       <div className="flex justify-center">
         <ShareCardPreview data={shareData} cardRef={cardRef} className="w-[min(92vw,420px)]" />
       </div>
 
-      {/* Primary actions */}
+      {/* G. Actions — one primary, everything else secondary */}
       <div className="space-y-2">
         <button
-          onClick={() => runAction(() => shareShareCard(cardRef.current, shareData))}
-          disabled={busy}
-          className="w-full bg-volt text-background font-display text-xl py-4 skew-cta disabled:opacity-50"
+          onClick={playAgain}
+          className="w-full bg-volt text-background font-display text-xl py-4 skew-cta"
         >
-          {busy ? "PREPARING…" : "SHARE RESULT"}
+          Play again
         </button>
         <div className="grid grid-cols-2 gap-2">
+          <button
+            onClick={() => void shareResult()}
+            className="w-full border border-border bg-card text-foreground font-display text-base py-3 skew-cta"
+          >
+            Share result
+          </button>
+          <Link
+            to="/arena"
+            className="w-full border border-border bg-card text-foreground font-display text-base py-3 skew-cta text-center"
+          >
+            Explore Arena
+          </Link>
+          {isAuthenticated && (
+            <Link
+              to="/profile"
+              className="w-full border border-border bg-card text-foreground font-display text-base py-3 skew-cta text-center"
+            >
+              My results
+            </Link>
+          )}
           <button
             onClick={() => runAction(() => downloadShareCard(cardRef.current, shareData))}
             disabled={busy}
             className="w-full border border-border bg-card text-foreground font-display text-base py-3 skew-cta disabled:opacity-50"
           >
-            DOWNLOAD IMAGE
+            {busy ? "Preparing…" : "Download image"}
           </button>
           <button
             onClick={onLeave}
-            className="w-full border border-border bg-card text-foreground font-display text-base py-3 skew-cta"
+            className="w-full border border-border bg-card text-foreground font-display text-base py-3 skew-cta col-span-2 sm:col-span-1"
           >
-            EXIT ARENA
+            Return home
           </button>
         </div>
       </div>
@@ -1650,15 +1863,39 @@ function FinalView({
   );
 }
 
-function SummaryStat({ label, value }: { label: string; value: string }) {
+/**
+ * A single performance statistic.
+ *
+ * An unavailable metric renders as a dash and is announced as "not measured".
+ * It is never rendered as 0: "0% accuracy" and "we never worked that out" are
+ * different claims, and collapsing them tells a player they got everything
+ * wrong when in fact nothing was ever scored.
+ */
+function ResultStat({
+  label,
+  metric,
+  format,
+}: {
+  label: string;
+  metric: Metric;
+  format: (value: number) => string;
+}) {
   return (
-    <div className="text-center">
-      <p className="font-mono text-[9px] uppercase tracking-widest text-foreground/50">{label}</p>
-      <p className="font-display text-lg italic mt-1 truncate">{value}</p>
+    <div className="min-w-0">
+      <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50 truncate">{label}</p>
+      {metric.available ? (
+        <p className="font-display text-xl italic tabular-nums">{format(metric.value)}</p>
+      ) : (
+        <>
+          <p className="font-display text-xl italic text-foreground/30" aria-hidden="true">
+            —
+          </p>
+          <span className="sr-only">not measured</span>
+        </>
+      )}
     </div>
   );
 }
-
 
 function AudioAutoplayer({ url }: { url: string }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);

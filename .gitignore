@@ -55,3 +55,9 @@ scripts/scale-audit/browser-*.json
 
 # scripts/auth-journey.mjs writes a screenshot of the failing page on error
 scripts/auth-journey-failure.png
+
+# Playwright (bun run test:e2e) — traces, failure screenshots, HTML report
+test-results/
+playwright-report/
+blob-report/
+.playwright/

@@ -9,6 +9,7 @@ import {
   type ReturnReason,
 } from "@/lib/return-intent";
 import { toastError } from "@/lib/errors";
+import { trackResultEvent } from "@/lib/result-analytics";
 import { toast } from "sonner";
 
 const REASONS = ["host", "save-result", "sign-in"] as const;
@@ -82,6 +83,9 @@ function AuthPage() {
   function goNext() {
     if (resolved.current) return;
     resolved.current = true;
+    if (reason === "save-result") {
+      trackResultEvent("authentication_completed_from_result", { mode: "hosted" });
+    }
     void navigate({ to: destination() as never, replace: true });
   }
 
@@ -302,7 +306,13 @@ function AuthPage() {
 
         <button
           onClick={() => {
-            setMode(mode === "signin" ? "signup" : "signin");
+            const next = mode === "signin" ? "signup" : "signin";
+            // Only the result-journey funnel cares; a sign-in from anywhere
+            // else is not part of that measurement.
+            if (next === "signup" && reason === "save-result") {
+              trackResultEvent("sign_up_started_from_result", { mode: "hosted" });
+            }
+            setMode(next);
             setFormError(null);
           }}
           disabled={busy}

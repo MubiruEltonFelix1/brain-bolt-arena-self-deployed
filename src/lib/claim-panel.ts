@@ -26,12 +26,25 @@ export type ClaimPanelView =
   | { kind: "save-direct" }
   /** Confirmed on the server, or the seat is already attached to a profile. */
   | { kind: "saved" }
+  /**
+   * The result is already linked to SOME account, and the server deliberately
+   * does not say whose. Distinct from both `saved` (which asserts this is on
+   * the current player's profile) and `problem` (which asserts a failure). See
+   * the note in `classifyClaimError`.
+   */
+  | { kind: "already-saved" }
   /** A terminal failure. Detail is safe, user-facing copy. */
   | { kind: "problem"; detail: string };
 
 export type ClaimPanelInput = {
   /** False while the session restoration is still unresolved. */
   authResolved: boolean;
+  /**
+   * True when the session check ran and FAILED. Distinct from `!authResolved`,
+   * which also covers "not checked yet": one is a known outage we can offer to
+   * retry, the other is genuinely undecided.
+   */
+  authFailed: boolean;
   /** A signed-in user exists. Says nothing about whether THIS seat is saved. */
   isAuthenticated: boolean;
   /** This seat is attached to a profile, so the result is in history. */
@@ -44,23 +57,42 @@ export type ClaimPanelInput = {
 
 const GENERIC_FAILURE = "We could not save this result. Please try again.";
 
+const AUTH_UNAVAILABLE =
+  "We could not check your sign-in right now. Your result is safe — try again in a moment.";
+
 export function claimPanelView(input: ClaimPanelInput): ClaimPanelView {
-  const { authResolved, isAuthenticated, seatLinked, seatChecked, phase, detail } = input;
+  const { authResolved, authFailed, isAuthenticated, seatLinked, seatChecked, phase, detail } = input;
 
   // A server-confirmed claim wins outright.
   if (phase === "claimed") return { kind: "saved" };
-  if (phase === "preparing" || phase === "awaiting-auth") return { kind: "busy" };
+  if (phase === "preparing") return { kind: "busy" };
 
-  // Never conclude anything while restoration is unresolved.
-  if (!authResolved) return { kind: "loading" };
+  // A failed session check is a known, recoverable condition, but it is NOT
+  // allowed to outrank evidence. Reporting it as "still loading" forever would
+  // strand the player with no way forward.
+  const authUnavailable = authFailed;
+
+  // Never conclude anything while restoration is unresolved AND nothing has
+  // failed outright - that is "we do not know yet".
+  if (!authResolved && !authUnavailable) return { kind: "loading" };
 
   // The seat itself is the strongest evidence: if this participant row is
-  // attached to a profile, the result is in that profile's history.
+  // attached to a profile, the result is in that profile's history. This read
+  // needs no authentication, so it holds even when the sign-in check failed -
+  // and it outranks a stale ticket, which says less about where the result
+  // actually landed.
   if (seatChecked && seatLinked) return { kind: "saved" };
+
+  // Already linked to an account. Deliberately NOT "saved": we cannot prove it
+  // is the CURRENT player's profile, and asserting that would be a lie. Equally
+  // deliberately not an error — nothing went wrong and the result is not lost.
+  if (phase === "already-claimed") return { kind: "already-saved" };
+
+  if (authUnavailable) return { kind: "problem", detail: detail ?? AUTH_UNAVAILABLE };
 
   // A terminal failure outranks everything below it, including a pending
   // ownership check: the player needs to know it did not save.
-  if (phase === "expired" || phase === "already-claimed" || phase === "failed") {
+  if (phase === "expired" || phase === "failed") {
     return { kind: "problem", detail: detail ?? GENERIC_FAILURE };
   }
 

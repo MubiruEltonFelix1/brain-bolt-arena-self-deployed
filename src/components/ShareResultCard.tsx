@@ -34,15 +34,39 @@ function ordinalSuffix(n: number) {
   return s[(v - 20) % 10] || s[v] || s[0];
 }
 
+/**
+ * The placing, or null when this run never had one.
+ *
+ * Single source of truth for "does this card have a position". A solo Arena run
+ * has no placing, and neither does a hosted seat whose participant row cannot
+ * be resolved; neither may be printed as "0th of 0".
+ */
+function placementOf(data: ShareResultData): number | null {
+  if (typeof data.rank !== "number" || data.rank < 1) return null;
+  if (typeof data.totalPlayers !== "number" || data.totalPlayers < 1) return null;
+  return data.rank;
+}
+
 function initials(name: string) {
   return name.trim().split(/\s+/).slice(0, 2).map((s) => s[0]?.toUpperCase() ?? "").join("") || "?";
 }
 
 export type ShareResultData = {
   nickname: string;
-  rank: number;
-  totalPlayers: number;
-  score: number;
+  /**
+   * Placement, or absent when the game had none. A solo Arena run has no
+   * placing, and a hosted seat whose row cannot be resolved has none either.
+   * Passing 0 here rendered "0th of 0" on a card the player then downloads and
+   * shares, which is a fabricated result.
+   */
+  rank?: number | null;
+  totalPlayers?: number | null;
+  /**
+   * Absent when the score could not be resolved. Same rule as `rank`: a score
+   * we could not read is not a score of zero, and a card is a thing people
+   * download and send to other people.
+   */
+  score?: number | null;
   correct: number;
   totalQuestions: number;
   longestStreak: number;
@@ -122,7 +146,9 @@ export function ShareCardVisual({
   data: ShareResultData;
   innerRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
-  const theme = themeFor(data.rank);
+  const place = placementOf(data);
+  const hasPlacement = place !== null;
+  const theme = themeFor(place ?? 0);
   const accuracy = data.totalQuestions > 0 ? Math.round((data.correct / data.totalQuestions) * 100) : 0;
 
   return (
@@ -169,24 +195,28 @@ export function ShareCardVisual({
         </div>
       </div>
 
-      <div style={{ marginTop: 72 }}>
-        <div style={{ fontSize: 16, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.subtext, fontWeight: 600 }}>Final Position</div>
-        <div style={{ marginTop: 12, display: "flex", alignItems: "baseline", gap: 16 }}>
-          <div style={{ fontSize: 220, fontWeight: 800, letterSpacing: "-0.06em", lineHeight: 0.9, color: theme.accent }}>
-            {data.rank}
-            <span style={{ fontSize: 96, fontWeight: 700, marginLeft: 4 }}>{ordinalSuffix(data.rank)}</span>
+      {/* Only when the game actually produced a placing. A solo run must not
+          wear a "0th of 0" final position. */}
+      {hasPlacement && (
+        <div style={{ marginTop: 72 }}>
+          <div style={{ fontSize: 16, letterSpacing: "0.24em", textTransform: "uppercase", color: theme.subtext, fontWeight: 600 }}>Final Position</div>
+          <div style={{ marginTop: 12, display: "flex", alignItems: "baseline", gap: 16 }}>
+            <div style={{ fontSize: 220, fontWeight: 800, letterSpacing: "-0.06em", lineHeight: 0.9, color: theme.accent }}>
+              {place}
+              <span style={{ fontSize: 96, fontWeight: 700, marginLeft: 4 }}>{ordinalSuffix(place)}</span>
+            </div>
+            <div style={{ fontSize: 22, fontWeight: 500, color: theme.subtext, paddingBottom: 20 }}>of {data.totalPlayers}</div>
           </div>
-          <div style={{ fontSize: 22, fontWeight: 500, color: theme.subtext, paddingBottom: 20 }}>of {data.totalPlayers}</div>
+          {data.achievement && (
+            <div style={{ marginTop: 20, display: "inline-block", padding: "10px 20px", borderRadius: 999, background: theme.badgeBg, color: theme.badgeText, fontSize: 16, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase" }}>
+              {data.achievement}
+            </div>
+          )}
         </div>
-        {data.achievement && (
-          <div style={{ marginTop: 20, display: "inline-block", padding: "10px 20px", borderRadius: 999, background: theme.badgeBg, color: theme.badgeText, fontSize: 16, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase" }}>
-            {data.achievement}
-          </div>
-        )}
-      </div>
+      )}
 
       <div style={{ marginTop: 64, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
-        <StatCell label="Score" value={data.score.toLocaleString()} theme={theme} emphasize />
+        <StatCell label="Score" value={data.score != null ? data.score.toLocaleString() : "—"} theme={theme} emphasize />
         <StatCell label="Accuracy" value={`${accuracy}%`} theme={theme} />
         <StatCell label="Correct" value={`${data.correct}/${data.totalQuestions}`} theme={theme} />
         <StatCell label="Longest Streak" value={String(data.longestStreak)} theme={theme} />
@@ -220,17 +250,20 @@ async function renderPng(node: HTMLElement, bg: string) {
 
 export async function downloadShareCard(node: HTMLElement | null, data: ShareResultData) {
   if (!node) return;
-  const theme = themeFor(data.rank);
+  const place = placementOf(data);
+  const theme = themeFor(place ?? 0);
   const dataUrl = await renderPng(node, theme.bg);
   const link = document.createElement("a");
-  link.download = `brainbolt-${data.nickname.replace(/[^a-z0-9]/gi, "_")}-rank${data.rank}.png`;
+  // Never name a file "rank0" for a run that had no placing.
+  link.download = `brainbolt-${data.nickname.replace(/[^a-z0-9]/gi, "_")}-${place ? `rank${place}` : "result"}.png`;
   link.href = dataUrl;
   link.click();
 }
 
 export async function shareShareCard(node: HTMLElement | null, data: ShareResultData) {
   if (!node) return;
-  const theme = themeFor(data.rank);
+  const place = placementOf(data);
+  const theme = themeFor(place ?? 0);
   const dataUrl = await renderPng(node, theme.bg);
   const blob = await (await fetch(dataUrl)).blob();
   const file = new File([blob], "brainbolt-result.png", { type: "image/png" });
@@ -240,7 +273,16 @@ export async function shareShareCard(node: HTMLElement | null, data: ShareResult
       await nav.share({
         files: [file],
         title: "My BrainBolt result",
-        text: `I finished ${data.rank}${ordinalSuffix(data.rank)} with ${data.score.toLocaleString()} points. Think you can beat my score?`,
+        // A share sentence must never assert a number we do not have. Each
+        // branch drops the claim it cannot support rather than printing a zero.
+        text:
+          data.score != null && place
+            ? `I finished ${place}${ordinalSuffix(place)} with ${data.score.toLocaleString()} points. Think you can beat my score?`
+            : data.score != null
+              ? `I scored ${data.score.toLocaleString()} points. Think you can beat my score?`
+              : place
+                ? `I finished ${place}${ordinalSuffix(place)} in Brain Bolt. Think you can beat my score?`
+                : "I just finished a game in Brain Bolt. Think you can beat my score?",
       });
       return;
     } catch {

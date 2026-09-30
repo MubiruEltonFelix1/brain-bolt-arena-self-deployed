@@ -385,8 +385,10 @@ describe("arenaShareDataFromRun", () => {
       longestStreak: 7,
     });
     expect(data.nickname).toBe("Alice");
-    expect(data.rank).toBe(1);
-    expect(data.totalPlayers).toBe(1);
+    // A solo run has no placing. "1st of 1" would be a fabricated multiplayer
+    // result on a card the player can download and share.
+    expect(data.rank).toBeNull();
+    expect(data.totalPlayers).toBeNull();
     expect(data.score).toBe(12345);
     expect(data.correct).toBe(9);
     expect(data.totalQuestions).toBe(10);

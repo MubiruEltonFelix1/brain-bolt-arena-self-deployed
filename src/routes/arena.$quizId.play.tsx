@@ -849,6 +849,10 @@ function Completion({
       : gradedCount > 0
         ? Math.round((correct / gradedCount) * 100)
         : 0;
+  // Nothing graded is not a 0% result. The speed tile on this same screen
+  // already renders "—" for an unavailable metric; accuracy was the one tile
+  // still claiming a measured zero it never measured.
+  const accuracyAvailable = serverAccuracy != null || gradedCount > 0;
   const theme = difficultyTheme(detail.difficulty);
   const shareCardRef = useRef<HTMLDivElement>(null);
   const [sharing, setSharing] = useState(false);
@@ -984,7 +988,7 @@ function Completion({
           a claim about the player's record waits for the authoritative grade —
           a preview number that retracts is worse than no number. */}
       <dl className="grid grid-cols-2 sm:grid-cols-3 gap-3 max-w-lg mx-auto">
-        <Metric label="Accuracy" value={`${accuracy}%`} accent />
+        <Metric label="Accuracy" value={accuracyAvailable ? `${accuracy}%` : "—"} accent />
         <Metric label="Questions right" value={`${correct}/${gradedCount}`} />
         <Metric
           label="Avg. answer speed"

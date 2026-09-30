@@ -22,9 +22,16 @@ export type ClaimPhase =
   | "available"
   /** Minting the ticket. */
   | "preparing"
-  /** Ticket minted, player is off to sign in. */
-  | "awaiting-auth"
-  /** Redeemed. The result is on the profile. */
+  /**
+   * Redeemed. The result is on the profile.
+   *
+   * There is deliberately no "awaiting-auth" phase. One existed and was
+   * branched on, but nothing ever assigned it. Assigning it during the trip to
+   * `/auth` would be worse than dead: the results screen is not mounted while
+   * the player is on the auth page, and if they cancelled and came back the
+   * panel would render "Saving your result…" for a ticket that is sitting
+   * untouched. That is a claim of progress with nothing behind it.
+   */
   | "claimed"
   | "expired"
   | "already-claimed"
@@ -141,9 +148,15 @@ export function classifyClaimError(error: unknown): Omit<ClaimState, "scope"> {
   const message = error instanceof Error ? error.message : String(error ?? "");
 
   if (/already claimed/i.test(message)) {
+    // The server raises this both for a ticket redeemed by this account and
+    // for one redeemed by a different account, and deliberately does not say
+    // which. It must not: the same seat can be present on a shared device, and
+    // confirming "yes, that was your account" to a stranger is a small account
+    // disclosure. So this is reported as a neutral fact - the result is already
+    // linked to an account - rather than as either a success or a failure.
     return {
       phase: "already-claimed",
-      detail: "This result was already saved to an account.",
+      detail: "This result is already linked to an account.",
       label: null,
     };
   }
