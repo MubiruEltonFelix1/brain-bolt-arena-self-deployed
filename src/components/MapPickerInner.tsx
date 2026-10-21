@@ -104,11 +104,11 @@ export default function MapPickerInner({
         scrollWheelZoom
         worldCopyJump
       >
-        {/* Clean political base: country borders + coastlines, no labels */}
+        {/* OpenStreetMap base layer keeps the picker usable without a paid tile API key. */}
         <TileLayer
-          attribution='&copy; OpenStreetMap &copy; CARTO'
-          url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager_nolabels/{z}/{x}/{y}{r}.png"
-          subdomains={["a", "b", "c", "d"]}
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          subdomains={["a", "b", "c"]}
         />
 
 
