@@ -1,5 +1,13 @@
 import { useEffect } from "react";
-import { MapContainer, TileLayer, Marker, useMapEvents, Polyline, Polygon, useMap } from "react-leaflet";
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  useMapEvents,
+  Polyline,
+  Polygon,
+  useMap,
+} from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 import type { GeoRegion } from "@/lib/question-registry";
@@ -25,7 +33,13 @@ const correctIcon = L.divIcon({
   iconAnchor: [11, 11],
 });
 
-function ClickHandler({ onPick, disabled }: { onPick?: (lat: number, lng: number) => void; disabled?: boolean }) {
+function ClickHandler({
+  onPick,
+  disabled,
+}: {
+  onPick?: (lat: number, lng: number) => void;
+  disabled?: boolean;
+}) {
   useMapEvents({
     click(e) {
       if (!disabled && onPick) onPick(e.latlng.lat, e.latlng.lng);
@@ -66,7 +80,10 @@ export type MapPickerInnerProps = {
 };
 
 function RegionLayer({ region }: { region: GeoRegion }) {
-  const polys = region.type === "Polygon" ? [region.coordinates as number[][][]] : (region.coordinates as number[][][][]);
+  const polys =
+    region.type === "Polygon"
+      ? [region.coordinates as number[][][]]
+      : (region.coordinates as number[][][][]);
   return (
     <>
       {polys.map((poly, i) => (
@@ -100,7 +117,12 @@ export default function MapPickerInner({
       <MapContainer
         center={center}
         zoom={zoom}
-        style={{ height: "100%", width: "100%", background: "#0a0a0a", cursor: disabled ? "default" : "crosshair" }}
+        style={{
+          height: "100%",
+          width: "100%",
+          background: "#0a0a0a",
+          cursor: disabled ? "default" : "crosshair",
+        }}
         scrollWheelZoom
         worldCopyJump
       >
@@ -111,7 +133,6 @@ export default function MapPickerInner({
           subdomains={["a", "b", "c"]}
         />
 
-
         <ClickHandler onPick={onPick} disabled={disabled} />
         <MapResizer />
         {region && <RegionLayer region={region} />}
@@ -119,7 +140,10 @@ export default function MapPickerInner({
         {correct && <Marker position={[correct.lat, correct.lng]} icon={correctIcon} />}
         {guess && correct && (
           <Polyline
-            positions={[[guess.lat, guess.lng], [correct.lat, correct.lng]]}
+            positions={[
+              [guess.lat, guess.lng],
+              [correct.lat, correct.lng],
+            ]}
             pathOptions={{ color: "#CCFF00", dashArray: "6 6", weight: 2 }}
           />
         )}
