@@ -95,10 +95,10 @@ export function CampaignListSection({
     const result = await emailCreateCampaign({
       data: {
         name: "New Campaign",
-        subject: "",
+        subject: "New campaign",
         previewText: "",
-        contentHtml: "",
-        contentText: "",
+        contentHtml: "<p>Draft message</p>",
+        contentText: "Draft message",
         audienceSegment: "all_subscribers",
       },
     });

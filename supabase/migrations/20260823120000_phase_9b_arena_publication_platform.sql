@@ -188,6 +188,8 @@ CREATE POLICY "arena_run_answers admin read" ON public.arena_run_answers
 -- ---------------------------------------------------------------------------
 
 -- 8a. get_arena_quizzes — listing with new metadata columns
+DROP FUNCTION IF EXISTS public.get_arena_quizzes();
+
 CREATE OR REPLACE FUNCTION public.get_arena_quizzes()
 RETURNS TABLE(
   id uuid, title text, description text, difficulty text,
