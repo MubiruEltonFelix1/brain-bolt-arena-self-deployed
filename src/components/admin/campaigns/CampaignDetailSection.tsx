@@ -452,10 +452,12 @@ function PageHeader({
   onBack,
   onDelete,
 }: {
-  campaign: any;
+  campaign: any | null;
   onBack: () => void;
   onDelete: () => void;
 }) {
+  const title = campaign?.name || campaign?.subject || "Campaign";
+
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap">
       <div>
@@ -466,7 +468,7 @@ function PageHeader({
           ← Campaigns
         </button>
         <h2 className="font-display text-3xl italic uppercase mt-1">
-          {campaign.name || campaign.subject}
+          {title}
         </h2>
       </div>
       <Button variant="destructive" onClick={onDelete} className="text-xs px-3 py-2">
@@ -475,6 +477,7 @@ function PageHeader({
     </div>
   );
 }
+
 
 function StatCard({
   label,
