@@ -112,20 +112,67 @@ export function CampaignDetailSection({
     }
   }, [campaign]);
 
-  const load = useCallback(async () => {
-    if (!campaignId) return;
-    setLoading(true);
+ const load = useCallback(async () => {
+  if (!campaignId) return;
+
+  setLoading(true);
+  setError(null);
+
+  try {
     const result = await emailGetCampaign({ data: { campaignId } });
+
     if (!result.ok) {
-      setError(result.error === "unauthorized" ? "Not authorized" : "Failed to load campaign");
-      setLoading(false);
+      setError(
+        result.error === "unauthorized"
+          ? "Not authorized"
+          : "Failed to load campaign",
+      );
       return;
     }
+
     setCampaign(result.campaign);
+  } catch (err) {
+    console.error("[CampaignDetailSection] load failed", err);
+    setError("Failed to load campaign");
+  } finally {
     setLoading(false);
-    // Resolve audience count for the campaign's segment
-    void resolveAudienceCount();
-  }, [campaignId, resolveAudienceCount]);
+  }
+}, [campaignId]);
+
+useEffect(() => {
+  void load();
+}, [load]);
+
+useEffect(() => {
+  const segment = campaign?.audience_segment;
+  if (!segment) return;
+
+  let cancelled = false;
+
+  const fetchAudienceCount = async () => {
+    setAudienceLoading(true);
+    try {
+      const result = await emailResolveAudience({
+        data: { audienceSegment: segment },
+      });
+
+      if (!cancelled) {
+        setAudienceCount(result.ok ? result.eligibleCount : null);
+      }
+    } catch (err) {
+      console.error("[CampaignDetailSection] audience count failed", err);
+      if (!cancelled) setAudienceCount(null);
+    } finally {
+      if (!cancelled) setAudienceLoading(false);
+    }
+  };
+
+  void fetchAudienceCount();
+  return () => {
+    cancelled = true;
+  };
+}, [campaign?.id, campaign?.audience_segment]);
+
 
   useEffect(() => {
     load();
