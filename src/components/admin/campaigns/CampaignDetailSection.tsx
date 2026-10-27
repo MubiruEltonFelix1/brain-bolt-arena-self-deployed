@@ -174,9 +174,6 @@ useEffect(() => {
 }, [campaign?.id, campaign?.audience_segment]);
 
 
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const handleUpdate = useCallback(
     async (updates: any) => {
