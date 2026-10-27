@@ -707,5 +707,16 @@ export function createMarkers({ q, yes }) {
                AND p.prosrc LIKE '%extensions.gen_random_bytes%'`,
         ),
     },
+    {
+      file: "20260928000000_phase_10_email_communications.sql",
+      marker:
+        "campaigns, campaign_recipients, email_subscriptions, email_suppressions, audit_logs tables exist (Phase 10 Email & Communications)",
+      applied: () =>
+        tableExists("campaigns") &&
+        tableExists("campaign_recipients") &&
+        tableExists("email_subscriptions") &&
+        tableExists("email_suppressions") &&
+        tableExists("audit_logs"),
+    },
   ];
 }

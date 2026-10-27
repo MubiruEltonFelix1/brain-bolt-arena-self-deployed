@@ -153,6 +153,16 @@ Eventually:
 
 **Definition of done:** MCP lifecycle covers quiz, competition, and league orchestration with idempotency ✅; the native AI service generates a validated draft quiz a human can review and publish ✅; assistant v1 (creator-focused) is live (8G).
 
+#### 10 — AI Quiz Preparation ⬜ PLANNED
+
+Hosts upload PDFs/images, Brain Bolt understands the material, and generates source-grounded, reviewed, playable quizzes. Staged pipeline: secure document upload → PDF extraction / OCR → diagram/table/chart/math interpretation → content mapping with page/section provenance → host blueprint → batch source-grounded generation → schema/answer validation → AI quality checks → persistent draft → host review/edit/selective regen → publish.
+
+Reuses the Phase 8E/8F AI foundation (`BrainBoltAiService`, `AiProvider`, `validateQuiz`, `public.can()`, `ai_usage_log`). Adds document storage, staged job persistence (`prep_jobs`/`prep_job_stages`), provenance tracking (`prep_sources`), task-based Bedrock model routing, per-task token limits, and an administrative AI kill switch.
+
+See `docs/AI_QUIZ_PREP_*.md` for the audit, architecture, schema, model routing, implementation plan, security/cost requirements, tests, and decisions log.
+
+**Definition of done:** smallest reliable path from document upload to a source-grounded, host-approved playable quiz; no embeddings, no marketplace, no collaborative editing, no unrelated AI capabilities.
+
 ---
 
 <a id="era-3"></a>

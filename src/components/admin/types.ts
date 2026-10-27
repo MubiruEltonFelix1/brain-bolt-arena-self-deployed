@@ -74,7 +74,7 @@ export const SECTIONS: Record<SectionKey, SectionDef> = {
     label: "Email & Communications",
     description: "Campaigns and announcements.",
     group: "operations",
-    implemented: false,
+    implemented: true,
     icon: Mail,
   },
   ai: {
