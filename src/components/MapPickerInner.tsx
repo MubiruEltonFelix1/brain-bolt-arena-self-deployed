@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import {
   MapContainer,
   TileLayer,
@@ -9,7 +9,6 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
-import "leaflet/dist/leaflet.css";
 import type { GeoRegion } from "@/lib/question-registry";
 
 // Fix default marker icons (bundlers strip Leaflet's default image resolution)
@@ -67,6 +66,25 @@ function MapResizer() {
   return null;
 }
 
+/**
+ * Listens for Leaflet tile load errors and reports them upward. OSM tiles need
+ * no API key, but they can be blocked on some networks — without this the map
+ * just goes blank, which looks like a missing API key.
+ */
+function TileErrorMonitor({ onError }: { onError: () => void }) {
+  const map = useMap();
+
+  useEffect(() => {
+    const handler = () => onError();
+    map.on("tileerror", handler);
+    return (): void => {
+      map.off("tileerror", handler);
+    };
+  }, [map, onError]);
+
+  return null;
+}
+
 export type MapPickerInnerProps = {
   height?: number;
   guess?: { lat: number; lng: number } | null;
@@ -112,8 +130,11 @@ export default function MapPickerInner({
   center = [20, 0],
   zoom = 2,
 }: MapPickerInnerProps) {
+  const [tileError, setTileError] = useState(false);
+  const [reloadKey, setReloadKey] = useState(0);
+
   return (
-    <div style={{ height }} className="border border-border overflow-hidden">
+    <div style={{ height }} className="relative border border-border overflow-hidden">
       <MapContainer
         center={center}
         zoom={zoom}
@@ -128,6 +149,7 @@ export default function MapPickerInner({
       >
         {/* OpenStreetMap base layer keeps the picker usable without a paid tile API key. */}
         <TileLayer
+          key={reloadKey}
           attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
           url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           subdomains={["a", "b", "c"]}
@@ -135,6 +157,7 @@ export default function MapPickerInner({
 
         <ClickHandler onPick={onPick} disabled={disabled} />
         <MapResizer />
+        <TileErrorMonitor onError={() => setTileError(true)} />
         {region && <RegionLayer region={region} />}
         {guess && <Marker position={[guess.lat, guess.lng]} icon={guessIcon} />}
         {correct && <Marker position={[correct.lat, correct.lng]} icon={correctIcon} />}
@@ -148,6 +171,21 @@ export default function MapPickerInner({
           />
         )}
       </MapContainer>
+
+      {tileError && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center p-6 text-center bg-background/95 backdrop-blur-sm border border-border">
+          <p className="mb-3 text-foreground font-mono text-sm uppercase">Map tiles unavailable</p>
+          <button
+            onClick={() => {
+              setTileError(false);
+              setReloadKey((k) => k + 1);
+            }}
+            className="bg-volt text-background font-display text-xs uppercase py-2 px-4 skew-cta active:scale-95 transition-transform"
+          >
+            RETRY TILES
+          </button>
+        </div>
+      )}
     </div>
   );
 }
