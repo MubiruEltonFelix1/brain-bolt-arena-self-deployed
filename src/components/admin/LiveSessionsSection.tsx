@@ -12,9 +12,8 @@ import {
   ComposedChart,
   Bar,
   Line,
-  ResponsiveContainer,
 } from "recharts";
-import { ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { SectionKey } from "./types";
 
 type PlatformStats = {
@@ -388,7 +387,7 @@ function HoursChart({ data }: { data: HourStat[] }) {
   };
   return (
     <div className="aspect-auto h-44">
-      <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer config={{}}>
         <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
           <XAxis
@@ -440,7 +439,7 @@ function HoursChart({ data }: { data: HourStat[] }) {
             dot={false}
           />
         </ComposedChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </div>
   );
 }

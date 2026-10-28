@@ -13,9 +13,9 @@ export function SectionNav({
     return (
       <div
         key={title}
-        className={cn("space-y-2 border-t border-border/50 pt-3", !isFirst && "mt-4")}
+        className={cn("space-y-1 pt-3", !isFirst && "mt-5")}
       >
-        <p className="px-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40">
+        <p className="px-3 font-mono text-[9px] uppercase tracking-wider text-foreground/40">
           {title}
         </p>
         <div className="space-y-0.5">
@@ -30,13 +30,11 @@ export function SectionNav({
                   onSectionChange(key);
                 }}
                 className={cn(
-                  "flex items-center gap-3 px-4 py-2.5 text-left rounded-md border text-sm transition-colors",
+                  "flex items-center gap-3 px-3.5 py-2 text-left rounded-md border text-sm transition-all",
                   active
-                    ? section.implemented
-                      ? "bg-volt text-background border-volt"
-                      : "bg-volt/10 text-volt border-volt/30"
-                    : "border-transparent text-foreground/50 hover:bg-volt/5 hover:text-volt",
-                  !section.implemented && "opacity-80",
+                    ? "border-transparent bg-background/40 text-foreground border-l-2 border-volt bg-volt/5"
+                    : "border-transparent text-foreground/40 hover:bg-volt/5 hover:text-volt",
+                  !section.implemented && "opacity-60",
                 )}
                 disabled={!section.implemented}
                 aria-expanded={active}

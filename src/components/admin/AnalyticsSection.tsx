@@ -11,11 +11,10 @@ import {
   ComposedChart,
   Line,
   LineChart,
-  ResponsiveContainer,
   XAxis,
   YAxis,
 } from "recharts";
-import { ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
+import { ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 
 type PlatformStats = {
   total_players: number;
@@ -115,7 +114,7 @@ const responseConfig = {
 function SessionsChart({ data }: { data: DailyStat[] }) {
   return (
     <div className="aspect-auto h-52">
-      <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer config={{}}>
         <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <defs>
             <linearGradient id="adminSessions" x1="0" y1="0" x2="0" y2="1">
@@ -159,7 +158,7 @@ function SessionsChart({ data }: { data: DailyStat[] }) {
             fill="url(#adminParticipants)"
           />
         </AreaChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </div>
   );
 }
@@ -167,7 +166,7 @@ function SessionsChart({ data }: { data: DailyStat[] }) {
 function AnswersChart({ data }: { data: DailyStat[] }) {
   return (
     <div className="aspect-auto h-52">
-      <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer config={{}}>
         <ComposedChart data={data} margin={{ top: 8, right: 0, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
           <XAxis
@@ -221,7 +220,7 @@ function AnswersChart({ data }: { data: DailyStat[] }) {
             dot={false}
           />
         </ComposedChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </div>
   );
 }
@@ -229,7 +228,7 @@ function AnswersChart({ data }: { data: DailyStat[] }) {
 function RegistrationsChart({ data }: { data: DailyStat[] }) {
   return (
     <div className="aspect-auto h-52">
-      <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer config={{}}>
         <BarChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
           <XAxis
@@ -254,7 +253,7 @@ function RegistrationsChart({ data }: { data: DailyStat[] }) {
             radius={[2, 2, 0, 0]}
           />
         </BarChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </div>
   );
 }
@@ -262,7 +261,7 @@ function RegistrationsChart({ data }: { data: DailyStat[] }) {
 function ResponseChart({ data }: { data: DailyStat[] }) {
   return (
     <div className="aspect-auto h-52">
-      <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer config={{}}>
         <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
           <XAxis
@@ -294,7 +293,7 @@ function ResponseChart({ data }: { data: DailyStat[] }) {
             connectNulls
           />
         </LineChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </div>
   );
 }
@@ -684,7 +683,7 @@ function HoursChart({ data }: { data: HourStat[] }) {
   };
   return (
     <div className="aspect-auto h-44">
-      <ResponsiveContainer width="100%" height="100%">
+      <ChartContainer config={{}}>
         <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke={gridStroke} strokeDasharray="3 3" />
           <XAxis
@@ -736,7 +735,7 @@ function HoursChart({ data }: { data: HourStat[] }) {
             dot={false}
           />
         </ComposedChart>
-      </ResponsiveContainer>
+      </ChartContainer>
     </div>
   );
 }
