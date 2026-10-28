@@ -27,7 +27,10 @@ RETURNS TABLE (
   frozen_active_sessions bigint,
   avg_response_ms_7d numeric,
   slow_question_sessions bigint,
-  completion_rate_7d numeric
+  completion_rate_7d numeric,
+  total_sessions_all_time bigint,
+  total_players_all_time bigint,
+  total_answers_all_time bigint
 )
 LANGUAGE sql
 STABLE
@@ -56,7 +59,10 @@ AS $$
         AND a.response_ms > 60000),
     (SELECT ROUND(100.0 * count(*) FILTER (WHERE status = 'ended') / NULLIF(count(*), 0), 1)
        FROM public.sessions
-      WHERE created_at >= now() - interval '7 days')
+      WHERE created_at >= now() - interval '7 days'),
+    (SELECT count(*) FROM public.sessions),
+    (SELECT count(*) FROM public.participants),
+    (SELECT count(*) FROM public.answers)
   WHERE public.is_admin();
 $$;
 
@@ -162,15 +168,15 @@ SECURITY DEFINER
 SET search_path = public
 AS $$
   SELECT
-    q.id,
-    q.text,
-    s.code,
-    s.current_question_index,
-    count(*)::bigint,
-    ROUND(avg(a.response_ms)::numeric, 0),
-    max(a.response_ms),
+    q.id AS question_id,
+    q.text AS question_text,
+    s.code AS session_code,
+    s.current_question_index AS current_question_index,
+    count(*)::bigint AS answer_count,
+    ROUND(avg(a.response_ms)::numeric, 0) AS avg_response_ms,
+    max(a.response_ms) AS max_response_ms,
     ROUND(count(*) FILTER (WHERE a.response_ms > p_ms_threshold)::numeric
-          * 100 / NULLIF(count(*), 0), 1)
+          * 100 / NULLIF(count(*), 0), 1) AS pct_slow_answers
   FROM public.answers a
   JOIN public.questions q ON q.id = a.question_id
   JOIN public.sessions s ON s.id = a.session_id
