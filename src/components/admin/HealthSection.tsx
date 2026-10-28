@@ -16,9 +16,6 @@ type HealthOverview = {
   avgResponseMs7d: number | null;
   slowQuestionSessions: number;
   completionRate7d: number | null;
-  totalSessionsAllTime: number;
-  totalPlayersAllTime: number;
-  totalAnswersAllTime: number;
 };
 
 type StuckLobbyRow = {
@@ -192,24 +189,6 @@ export function HealthSection() {
             label="Sessions (last 7d)"
             value={overview?.totalSessions7d ?? "—"}
             accent="volt"
-            loading={false}
-          />
-          <StatCard
-            label="Sessions (all time)"
-            value={overview?.totalSessionsAllTime ?? "—"}
-            accent="volt"
-            loading={false}
-          />
-          <StatCard
-            label="Players (all time)"
-            value={overview?.totalPlayersAllTime ?? "—"}
-            accent="cyan-jolt"
-            loading={false}
-          />
-          <StatCard
-            label="Answers (all time)"
-            value={overview?.totalAnswersAllTime ?? "—"}
-            accent="amber-spark"
             loading={false}
           />
           <StatCard

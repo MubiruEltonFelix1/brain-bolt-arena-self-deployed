@@ -69,6 +69,8 @@ function timeAgo(iso: string) {
 
 export function OverviewSection() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
+  const [totalSessions, setTotalSessions] = useState<number | null>(null);
+  const [totalAnswers, setTotalAnswers] = useState<number | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -76,13 +78,19 @@ export function OverviewSection() {
 
   const fetchStats = useCallback(async () => {
     try {
-      const { data, error: rpcError } = await supabase.rpc("admin_platform_stats");
+      const [{ data: pl, error: rpcError }, tsRes, taRes] = await Promise.all([
+          supabase.rpc("admin_platform_stats"),
+          supabase.from("sessions").select("id", { head: true, count: "exact" }),
+          supabase.from("answers").select("id", { head: true, count: "exact" }),
+        ]);
       if (rpcError) {
         logActionError(rpcError, "admin_platform_stats");
         setError("Failed to load platform stats. Try again.");
         return;
       }
-      setStats(((data as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+      setStats(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+      setTotalSessions(tsRes?.count ?? null);
+      setTotalAnswers(taRes?.count ?? null);
     } catch (err) {
       logActionError(err, "admin_platform_stats");
       setError("Failed to load platform stats. Try again.");
@@ -141,7 +149,7 @@ export function OverviewSection() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
         <StatCard
           label="Registered players"
           value={formatNumber(stats?.total_players)}
@@ -164,6 +172,18 @@ export function OverviewSection() {
           label="Pending requests"
           value={formatNumber(stats?.pending_host_requests)}
           accent={pendingRequests > 0 ? "amber-spark" : "volt"}
+          loading={loading}
+        />
+        <StatCard
+          label="Total sessions"
+          value={formatNumber(totalSessions)}
+          accent="volt"
+          loading={loading}
+        />
+        <StatCard
+          label="Total answers"
+          value={formatNumber(totalAnswers)}
+          accent="amber-spark"
           loading={loading}
         />
       </div>

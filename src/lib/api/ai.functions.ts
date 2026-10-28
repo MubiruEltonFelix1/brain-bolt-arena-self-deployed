@@ -350,9 +350,6 @@ type HealthOverviewRow = {
   avg_response_ms_7d: number | null;
   slow_question_sessions: number;
   completion_rate_7d: number | null;
-  total_sessions_all_time: number;
-  total_players_all_time: number;
-  total_answers_all_time: number;
 };
 
 type StuckLobbyRow = {
@@ -432,9 +429,6 @@ export const adminHealthOverview = createServerFn({ method: "POST" })
             avgResponseMs7d: row.avg_response_ms_7d != null ? Number(row.avg_response_ms_7d) : null,
             slowQuestionSessions: Number(row.slow_question_sessions ?? 0),
             completionRate7d: row.completion_rate_7d != null ? Number(row.completion_rate_7d) : null,
-            totalSessionsAllTime: Number(row.total_sessions_all_time ?? 0),
-            totalPlayersAllTime: Number(row.total_players_all_time ?? 0),
-            totalAnswersAllTime: Number(row.total_answers_all_time ?? 0),
           }
         : null,
     };
