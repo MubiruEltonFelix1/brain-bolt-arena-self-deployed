@@ -71,26 +71,39 @@ export function OverviewSection() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
 
   const fetchStats = useCallback(async () => {
-    const { data, error } = await supabase.rpc("admin_platform_stats");
-    if (error) {
-      logActionError(error, "admin_platform_stats");
-      return;
+    try {
+      const { data, error: rpcError } = await supabase.rpc("admin_platform_stats");
+      if (rpcError) {
+        logActionError(rpcError, "admin_platform_stats");
+        setError("Failed to load platform stats. Try again.");
+        return;
+      }
+      setStats(((data as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+    } catch (err) {
+      logActionError(err, "admin_platform_stats");
+      setError("Failed to load platform stats. Try again.");
     }
-    setStats(((data as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
   }, []);
 
   const fetchLive = useCallback(async () => {
-    const { data } = await supabase.rpc("admin_live_sessions" as never);
-    if (data) {
-      setLiveSessions((data as LiveSession[] | null) ?? []);
+    try {
+      const { data } = await supabase.rpc("admin_live_sessions" as never);
+      if (data) {
+        setLiveSessions((data as LiveSession[] | null) ?? []);
+      }
+    } catch (err) {
+      logActionError(err, "admin_live_sessions");
+      setError("Failed to load live sessions. Try again.");
     }
   }, []);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchStats().finally(() => setLoading(false));
   }, [fetchStats]);
 
@@ -103,6 +116,7 @@ export function OverviewSection() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    setError(null);
     try {
       await fetchStats();
     } finally {
@@ -115,6 +129,18 @@ export function OverviewSection() {
 
   return (
     <div className="space-y-8">
+      {error && (
+        <div className="border border-pink-shock/50 bg-pink-shock/10 p-4 font-mono text-xs uppercase text-pink-shock">
+          {error}
+          <button
+            onClick={handleRefresh}
+            className="ml-3 underline underline-offset-4 hover:text-volt"
+          >
+            Try again
+          </button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           label="Registered players"

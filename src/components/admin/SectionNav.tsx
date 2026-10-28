@@ -9,10 +9,13 @@ export function SectionNav({
   activeSection: SectionKey;
   onSectionChange: (key: SectionKey) => void;
 }) {
-  function renderGroup(title: string, keys: SectionKey[]) {
+  function renderGroup(title: string, keys: SectionKey[], isFirst = false) {
     return (
-      <div key={title} className="space-y-1">
-        <p className="px-3 font-mono text-[10px] uppercase tracking-widest text-foreground/40">
+      <div
+        key={title}
+        className={cn("space-y-2 border-t border-border/50 pt-3", !isFirst && "mt-4")}
+      >
+        <p className="px-3 font-mono text-[9px] uppercase tracking-widest text-foreground/40">
           {title}
         </p>
         <div className="space-y-0.5">
@@ -55,7 +58,7 @@ export function SectionNav({
 
   return (
     <nav aria-label="Mission Control sections" className="flex flex-col gap-1 px-3 py-4">
-      {renderGroup("Platform", PLATFORM_SECTIONS)}
+      {renderGroup("Platform", PLATFORM_SECTIONS, true)}
       {renderGroup("Operations", OPERATIONS_SECTIONS)}
     </nav>
   );

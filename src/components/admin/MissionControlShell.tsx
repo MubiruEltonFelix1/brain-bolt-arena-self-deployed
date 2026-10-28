@@ -27,7 +27,7 @@ export function MissionControlHeader({
   }
 
   return (
-    <div className="mb-8">
+    <div className="space-y-6">
       <div className="flex items-center justify-between gap-4 flex-wrap">
         <div className="flex items-center gap-3">
           <div className="size-8 shrink-0 bg-volt grid place-items-center skew-x-[-4deg]">
@@ -37,13 +37,30 @@ export function MissionControlHeader({
             <p className="font-mono text-[10px] uppercase tracking-widest text-pink-shock">
               Mission Control
             </p>
-            <h1 className="font-display text-4xl italic uppercase tracking-tight">
+            <h1 className="font-display text-5xl italic uppercase tracking-tight mb-1">
               {current.label}
             </h1>
+            <p className="text-sm text-foreground/60 max-w-2xl">{current.description}</p>
           </div>
         </div>
 
-        {/* Mobile: compact section selector */}
+        <div className="hidden md:flex items-center gap-2">
+          <Link to="/" className="font-mono text-xs uppercase text-foreground/50 hover:text-volt">
+            Back to Arena
+          </Link>
+        </div>
+
+        <button
+          onClick={handleSignOut}
+          className="hidden sm:flex items-center gap-2 border border-border px-4 py-2 font-mono text-xs uppercase text-foreground/50 hover:text-pink-shock hover:border-pink-shock transition-colors"
+        >
+          <LogOut className="size-4" />
+          Sign out
+        </button>
+      </div>
+
+      {/* Mobile section selector + breadcrumb row */}
+      <div className="flex items-center justify-between gap-3 flex-wrap">
         <div className="md:hidden flex items-center gap-2">
           <select
             value={activeSection}
@@ -62,28 +79,12 @@ export function MissionControlHeader({
           </select>
         </div>
 
-        <div className="hidden md:flex items-center gap-2">
-          <Link to="/" className="font-mono text-xs uppercase text-foreground/50 hover:text-volt">
-            Back to Arena
-          </Link>
+        <div className="flex items-center gap-2 px-4 py-2 bg-background/30 border border-border/50 rounded-md text-sm font-mono uppercase text-foreground/50">
+          <Layout className="size-3.5 shrink-0" />
+          <span>Admin — {current.label}</span>
+          <ChevronRight className="size-3.5 shrink-0" />
+          <span>Platform administration</span>
         </div>
-
-        <button
-          onClick={handleSignOut}
-          className="hidden sm:flex items-center gap-2 border border-border px-4 py-2 font-mono text-xs uppercase text-foreground/50 hover:text-pink-shock hover:border-pink-shock transition-colors"
-        >
-          <LogOut className="size-4" />
-          Sign out
-        </button>
-      </div>
-
-      <p className="mt-2 text-sm text-foreground/60 max-w-2xl">{current.description}</p>
-
-      <div className="mt-4 flex items-center gap-2 px-4 py-2 bg-background/30 border border-border/50 rounded-md text-sm font-mono uppercase text-foreground/50">
-        <Layout className="size-3.5 shrink-0" />
-        <span>Admin — {current.label}</span>
-        <ChevronRight className="size-3.5 shrink-0" />
-        <span>Platform administration</span>
       </div>
     </div>
   );

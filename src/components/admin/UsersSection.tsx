@@ -37,19 +37,27 @@ export function UsersSection() {
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     setLoading(true);
+    setError(null);
     try {
       const { data: list, error: e1 } = await supabase.rpc("admin_list_users", {
         p_search: search || undefined,
       } as never);
       if (e1) {
         toastError(e1, { context: "admin users load" });
+        setError("Failed to load users. Try again.");
         setUsers([]);
+        setLoading(false);
         return;
       }
       setUsers((list as AdminUser[] | null) ?? []);
+    } catch (err) {
+      logActionError(err, "admin users load");
+      setError("Failed to load users. Try again.");
+      setLoading(false);
     } finally {
       setLoading(false);
     }
@@ -124,6 +132,14 @@ export function UsersSection() {
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="border border-pink-shock/50 bg-pink-shock/10 p-4 font-mono text-xs uppercase text-pink-shock">
+          {error}
+          <button onClick={load} className="ml-3 underline underline-offset-4 hover:text-volt">
+            Try again
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">

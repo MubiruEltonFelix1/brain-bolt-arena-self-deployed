@@ -313,54 +313,71 @@ export function AnalyticsSection() {
   const [topHosts, setTopHosts] = useState<TopHost[]>([]);
   const [platform, setPlatform] = useState<PlatformStats | null>(null);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const loadSeq = useRef(0);
 
   const loadRangeData = useCallback(async () => {
     const seq = ++loadSeq.current;
-    const [{ data: ts, error: e3 }, { data: hr, error: e8 }] = await Promise.all([
-      supabase.rpc("admin_stats_timeseries" as never, { p_days: range } as never),
-      supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
-    ]);
-    if (seq !== loadSeq.current) return;
-    if (ts) setSeries(((ts as unknown as DailyStat[] | null) ?? []).filter((row) => row.day));
-    if (hr)
-      setHours(
-        ((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)),
-      );
-    if (e3) logActionError(e3, "admin_stats_timeseries");
-    if (e8) logActionError(e8, "admin_stats_hours");
+    try {
+      const [{ data: ts, error: e3 }, { data: hr, error: e8 }] = await Promise.all([
+        supabase.rpc("admin_stats_timeseries" as never, { p_days: range } as never),
+        supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
+      ]);
+      if (seq !== loadSeq.current) return;
+      if (ts) setSeries(((ts as unknown as DailyStat[] | null) ?? []).filter((row) => row.day));
+      if (hr)
+        setHours(
+          ((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)),
+        );
+      if (e3) logActionError(e3, "admin_stats_timeseries");
+      if (e8) logActionError(e8, "admin_stats_hours");
+    } catch (err) {
+      logActionError(err, "analytics range data");
+      setError("Failed to load analytics. Try again.");
+    }
   }, [range]);
 
   const loadPlatform = useCallback(async () => {
-    const { data: pl } = await supabase.rpc("admin_platform_stats");
-    if (pl) setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+    try {
+      const { data: pl } = await supabase.rpc("admin_platform_stats");
+      if (pl) setPlatform(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+    } catch (err) {
+      logActionError(err, "admin_platform_stats");
+      setError("Failed to load platform stats. Try again.");
+    }
   }, []);
 
   const loadInsights = useCallback(async () => {
-    const [
-      { data: fn, error: e6 },
-      { data: qt, error: e7 },
-      { data: tq, error: e4 },
-      { data: th, error: e5 },
-    ] = await Promise.all([
-      supabase.rpc("admin_session_funnel" as never),
-      supabase.rpc("admin_question_type_stats" as never),
-      supabase.rpc("admin_top_quizzes" as never, { p_limit: 5 } as never),
-      supabase.rpc("admin_top_hosts" as never, { p_limit: 5 } as never),
-    ]);
-    if (e6) logActionError(e6, "admin_session_funnel");
-    if (e7) logActionError(e7, "admin_question_type_stats");
-    setFunnel(((fn as unknown as FunnelStats[] | null) ?? [])[0] ?? null);
-    setQuestionTypes(
-      ((qt as unknown as QuestionTypeStat[] | null) ?? []).filter((row) => row.question_type),
-    );
-    setTopQuizzes(((tq as unknown as TopQuiz[] | null) ?? []).filter((row) => row.id));
-    setTopHosts(((th as unknown as TopHost[] | null) ?? []).filter((row) => row.display_name));
-    if (e4) logActionError(e4, "admin_top_quizzes");
-    if (e5) logActionError(e5, "admin_top_hosts");
+    try {
+      const [
+        { data: fn, error: e6 },
+        { data: qt, error: e7 },
+        { data: tq, error: e4 },
+        { data: th, error: e5 },
+      ] = await Promise.all([
+        supabase.rpc("admin_session_funnel" as never),
+        supabase.rpc("admin_question_type_stats" as never),
+        supabase.rpc("admin_top_quizzes" as never, { p_limit: 5 } as never),
+        supabase.rpc("admin_top_hosts" as never, { p_limit: 5 } as never),
+      ]);
+      if (e6) logActionError(e6, "admin_session_funnel");
+      if (e7) logActionError(e7, "admin_question_type_stats");
+      setFunnel(((fn as unknown as FunnelStats[] | null) ?? [])[0] ?? null);
+      setQuestionTypes(
+        ((qt as unknown as QuestionTypeStat[] | null) ?? []).filter((row) => row.question_type),
+      );
+      setTopQuizzes(((tq as unknown as TopQuiz[] | null) ?? []).filter((row) => row.id));
+      setTopHosts(((th as unknown as TopHost[] | null) ?? []).filter((row) => row.display_name));
+      if (e4) logActionError(e4, "admin_top_quizzes");
+      if (e5) logActionError(e5, "admin_top_hosts");
+    } catch (err) {
+      logActionError(err, "analytics insights");
+      setError("Failed to load analytics insights. Try again.");
+    }
   }, []);
 
   useEffect(() => {
+    setError(null);
     loadRangeData();
     loadPlatform();
     loadInsights();
@@ -386,6 +403,7 @@ export function AnalyticsSection() {
 
   const handleRefresh = async () => {
     setRefreshing(true);
+    setError(null);
     try {
       await Promise.all([loadRangeData(), loadInsights()]);
     } finally {
@@ -395,6 +413,17 @@ export function AnalyticsSection() {
 
   return (
     <div className="space-y-6">
+      {error && (
+        <div className="border border-pink-shock/50 bg-pink-shock/10 p-4 font-mono text-xs uppercase text-pink-shock">
+          {error}
+          <button
+            onClick={handleRefresh}
+            className="ml-3 underline underline-offset-4 hover:text-volt"
+          >
+            Try again
+          </button>
+        </div>
+      )}
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <div>
           <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">

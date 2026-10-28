@@ -118,36 +118,48 @@ export function LiveSessionsSection() {
   const [stats, setStats] = useState<PlatformStats | null>(null);
   const [liveSessions, setLiveSessions] = useState<LiveSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [liveUpdatedAt, setLiveUpdatedAt] = useState<number>(() => Date.now());
   const loadSeq = useRef(0);
   const [range, setRange] = useState<7 | 14 | 30 | 90>(30);
   const [series, setSeries] = useState<HourStat[]>([]);
 
   const fetchStats = useCallback(async () => {
-    const [{ data: pl }, { data: hr }] = await Promise.all([
-      supabase.rpc("admin_platform_stats"),
-      supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
-    ]);
-    if (pl) {
-      setStats(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
-    }
-    if (hr) {
-      setSeries(
-        ((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)),
-      );
+    try {
+      const [{ data: pl }, { data: hr }] = await Promise.all([
+        supabase.rpc("admin_platform_stats"),
+        supabase.rpc("admin_stats_hours" as never, { p_days: range } as never),
+      ]);
+      if (pl) {
+        setStats(((pl as unknown as PlatformStats[] | null) ?? [])[0] ?? null);
+      }
+      if (hr) {
+        setSeries(
+          ((hr as unknown as HourStat[] | null) ?? []).filter((row) => Number.isFinite(row.hour)),
+        );
+      }
+    } catch (err) {
+      logActionError(err, "live sessions stats");
+      setError("Failed to load platform stats. Try again.");
     }
   }, [range]);
 
   const fetchLive = useCallback(async () => {
-    const { data } = await supabase.rpc("admin_live_sessions" as never);
-    if (data) {
-      setLiveSessions((data as LiveSession[] | null) ?? []);
-      setLiveUpdatedAt(Date.now());
+    try {
+      const { data } = await supabase.rpc("admin_live_sessions" as never);
+      if (data) {
+        setLiveSessions((data as LiveSession[] | null) ?? []);
+        setLiveUpdatedAt(Date.now());
+      }
+    } catch (err) {
+      logActionError(err, "live sessions list");
+      setError("Failed to load live sessions. Try again.");
     }
   }, []);
 
   useEffect(() => {
     setLoading(true);
+    setError(null);
     fetchStats().finally(() => setLoading(false));
   }, [fetchStats]);
 
@@ -156,6 +168,16 @@ export function LiveSessionsSection() {
     const t = setInterval(fetchLive, 10000);
     return () => clearInterval(t);
   }, [fetchLive]);
+
+  const handleRefresh = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      await fetchStats();
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="space-y-6">
@@ -173,6 +195,18 @@ export function LiveSessionsSection() {
           <p className="mt-0.5">polls every 10s</p>
         </div>
       </div>
+
+      {error && (
+        <div className="border border-pink-shock/50 bg-pink-shock/10 p-4 font-mono text-xs uppercase text-pink-shock">
+          {error}
+          <button
+            onClick={handleRefresh}
+            className="ml-3 underline underline-offset-4 hover:text-volt"
+          >
+            Try again
+          </button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
