@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useCallback, useState } from "react";
 import { useHostStatus } from "@/hooks/use-host-status";
+import { HostShell } from "@/components/host-shell";
 import { MissionControlHeader } from "@/components/admin/MissionControlShell";
 import { MissionControlShell } from "@/components/admin/MissionControlShell";
 import { SectionKey, SECTIONS } from "@/components/admin/types";
@@ -49,16 +50,18 @@ function AdminPage() {
   const sectionDef = SECTIONS[activeSection];
 
   return (
-    <MissionControlShell
-      activeSection={activeSection}
-      onSectionChange={onSectionChange}
-    >
-      <MissionControlHeader
+    <HostShell title="Admin">
+      <MissionControlShell
         activeSection={activeSection}
         onSectionChange={onSectionChange}
-      />
-      {renderSection(activeSection, selectedCampaignId, onCampaignSelect, onBackToList)}
-    </MissionControlShell>
+      >
+        <MissionControlHeader
+          activeSection={activeSection}
+          onSectionChange={onSectionChange}
+        />
+        {renderSection(activeSection, selectedCampaignId, onCampaignSelect, onBackToList)}
+      </MissionControlShell>
+    </HostShell>
   );
 }
 
