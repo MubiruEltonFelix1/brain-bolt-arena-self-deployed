@@ -333,3 +333,225 @@ export const adminAiKillSwitch = createServerFn({ method: "POST" })
 
     return { error: null, enabled: data.enabled };
   });
+
+/* ------------------------------------------------------------------ */
+/* Admin-only server functions (Mission Control — System Health)      */
+/* ------------------------------------------------------------------ */
+
+type HealthContext = {
+  supabase: import("@supabase/supabase-js").SupabaseClient;
+  userId: string;
+};
+
+type HealthOverviewRow = {
+  total_sessions_7d: number;
+  stuck_lobby_sessions: number;
+  frozen_active_sessions: number;
+  avg_response_ms_7d: number | null;
+  slow_question_sessions: number;
+  completion_rate_7d: number | null;
+};
+
+type StuckLobbyRow = {
+  session_id: string;
+  code: string;
+  quiz_title: string;
+  host_id: string;
+  participant_count: number;
+  minutes_stuck: number;
+  created_at: string;
+};
+
+type FrozenActiveRow = {
+  session_id: string;
+  code: string;
+  quiz_title: string;
+  current_question_index: number;
+  current_question_started_at: string | null;
+  participant_count: number;
+  minutes_on_question: number;
+};
+
+type SlowQuestionRow = {
+  question_id: string;
+  question_text: string;
+  session_code: string;
+  current_question_index: number;
+  answer_count: number;
+  avg_response_ms: number;
+  max_response_ms: number;
+  pct_slow_answers: number;
+};
+
+type AnswerGapRow = {
+  session_id: string;
+  code: string;
+  quiz_title: string;
+  question_id: string;
+  gap_seconds: number;
+  participant_count: number;
+  latest_answer_at: string;
+};
+
+async function requireHealthAdmin(context: HealthContext): Promise<boolean> {
+  const { data: allowed } = await context.supabase.rpc("can", {
+    p_action: "admin.health.stats",
+    p_resource: null,
+  });
+  return allowed === true;
+}
+
+export const adminHealthOverview = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .handler(async ({ context }) => {
+    const ctx = context as HealthContext;
+    if (!(await requireHealthAdmin(ctx))) {
+      return { error: "not_authorized" as const, overview: null };
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const { data, error } = await (supabaseAdmin.rpc as any)("admin_health_overview");
+
+    if (error) {
+      console.error("[admin/health/overview] failed", error);
+      return { error: "unknown" as const, overview: null };
+    }
+
+    const row = (data as HealthOverviewRow | null) ?? null;
+
+    return {
+      error: null,
+      overview: row
+        ? {
+            totalSessions7d: Number(row.total_sessions_7d ?? 0),
+            stuckLobbySessions: Number(row.stuck_lobby_sessions ?? 0),
+            frozenActiveSessions: Number(row.frozen_active_sessions ?? 0),
+            avgResponseMs7d: row.avg_response_ms_7d != null ? Number(row.avg_response_ms_7d) : null,
+            slowQuestionSessions: Number(row.slow_question_sessions ?? 0),
+            completionRate7d: row.completion_rate_7d != null ? Number(row.completion_rate_7d) : null,
+          }
+        : null,
+    };
+  });
+
+export const adminHealthStuckLobby = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    z.object({
+      minutesStuck: z.number().int().min(1).max(10080).default(15),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const ctx = context as HealthContext;
+    if (!(await requireHealthAdmin(ctx))) {
+      return { error: "not_authorized" as const, rows: null };
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const { data: rows, error } = await (supabaseAdmin.rpc as any)(
+      "admin_health_stuck_lobby_sessions",
+      { p_minutes_stuck: data.minutesStuck },
+    );
+
+    if (error) {
+      console.error("[admin/health/stuck-lobby] failed", error);
+      return { error: "unknown" as const, rows: null };
+    }
+
+    return {
+      error: null,
+      rows: (rows as StuckLobbyRow[] | null) ?? [],
+    };
+  });
+
+export const adminHealthFrozenActive = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    z.object({
+      minutesStuck: z.number().int().min(1).max(10080).default(10),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const ctx = context as HealthContext;
+    if (!(await requireHealthAdmin(ctx))) {
+      return { error: "not_authorized" as const, rows: null };
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const { data: rows, error } = await (supabaseAdmin.rpc as any)(
+      "admin_health_frozen_active_sessions",
+      { p_minutes_stuck: data.minutesStuck },
+    );
+
+    if (error) {
+      console.error("[admin/health/frozen-active] failed", error);
+      return { error: "unknown" as const, rows: null };
+    }
+
+    return {
+      error: null,
+      rows: (rows as FrozenActiveRow[] | null) ?? [],
+    };
+  });
+
+export const adminHealthSlowQuestions = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    z.object({
+      days: z.number().int().min(1).max(90).default(7),
+      msThreshold: z.number().int().min(1000).max(3600000).default(60000),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const ctx = context as HealthContext;
+    if (!(await requireHealthAdmin(ctx))) {
+      return { error: "not_authorized" as const, rows: null };
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const { data: rows, error } = await (supabaseAdmin.rpc as any)(
+      "admin_health_slow_questions",
+      { p_days: data.days, p_ms_threshold: data.msThreshold },
+    );
+
+    if (error) {
+      console.error("[admin/health/slow-questions] failed", error);
+      return { error: "unknown" as const, rows: null };
+    }
+
+    return {
+      error: null,
+      rows: (rows as SlowQuestionRow[] | null) ?? [],
+    };
+  });
+
+export const adminHealthAnswerGaps = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(
+    z.object({
+      days: z.number().int().min(1).max(90).default(7),
+      gapSeconds: z.number().int().min(60).max(86400).default(300),
+    }),
+  )
+  .handler(async ({ data, context }) => {
+    const ctx = context as HealthContext;
+    if (!(await requireHealthAdmin(ctx))) {
+      return { error: "not_authorized" as const, rows: null };
+    }
+    const { supabaseAdmin } = await import("@/integrations/supabase/client.server");
+
+    const { data: rows, error } = await (supabaseAdmin.rpc as any)(
+      "admin_health_answer_gaps",
+      { p_days: data.days, p_gap_seconds: data.gapSeconds },
+    );
+
+    if (error) {
+      console.error("[admin/health/answer-gaps] failed", error);
+      return { error: "unknown" as const, rows: null };
+    }
+
+    return {
+      error: null,
+      rows: (rows as AnswerGapRow[] | null) ?? [],
+    };
+  });

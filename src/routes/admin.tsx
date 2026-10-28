@@ -10,6 +10,7 @@ import { UsersSection } from "@/components/admin/UsersSection";
 import { LiveSessionsSection } from "@/components/admin/LiveSessionsSection";
 import { AnalyticsSection } from "@/components/admin/AnalyticsSection";
 import { AiSection } from "@/components/admin/AiSection";
+import { HealthSection } from "@/components/admin/HealthSection";
 import { CampaignListSection } from "@/components/admin/campaigns/CampaignListSection";
 import { CampaignDetailSection } from "@/components/admin/campaigns/CampaignDetailSection";
 import { PlaceholderSection } from "@/components/admin/PlaceholderSection";
@@ -98,6 +99,7 @@ function renderSection(
     case "ai":
       return <AiSection />;
     case "health":
+      return <HealthSection />;
     case "audit":
       return <PlaceholderSection key={key} />;
   }

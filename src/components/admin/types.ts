@@ -90,7 +90,7 @@ export const SECTIONS: Record<SectionKey, SectionDef> = {
     label: "System Health",
     description: "Scheduler, background jobs, diagnostics.",
     group: "operations",
-    implemented: false,
+    implemented: true,
     icon: Cpu,
   },
   audit: {
