@@ -9,6 +9,7 @@ import { OverviewSection } from "@/components/admin/OverviewSection";
 import { UsersSection } from "@/components/admin/UsersSection";
 import { LiveSessionsSection } from "@/components/admin/LiveSessionsSection";
 import { AnalyticsSection } from "@/components/admin/AnalyticsSection";
+import { AiSection } from "@/components/admin/AiSection";
 import { CampaignListSection } from "@/components/admin/campaigns/CampaignListSection";
 import { CampaignDetailSection } from "@/components/admin/campaigns/CampaignDetailSection";
 import { PlaceholderSection } from "@/components/admin/PlaceholderSection";
@@ -95,6 +96,7 @@ function renderSection(
         <CampaignListSection onCampaignSelect={onCampaignSelect} />
       );
     case "ai":
+      return <AiSection />;
     case "health":
     case "audit":
       return <PlaceholderSection key={key} />;

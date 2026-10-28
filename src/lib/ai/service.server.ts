@@ -67,9 +67,24 @@ export class BrainBoltAiService {
       case "bedrock-deepseek":
         this.provider = new BedrockDeepSeekProvider(modelId);
         break;
-      default:
+    default:
         throw new Error(`BrainBoltAiService: unknown BRAINBOLT_AI_PROVIDER "${providerName}"`);
     }
+  }
+
+  /**
+   * Reconstructs kill switch state from the latest ai.kill_switch_toggled
+   * audit row in ai_usage_log. estimated_cost_usd = 1 means enabled.
+   */
+  private async isKillSwitchEnabled(supabaseAdmin: SupabaseClient): Promise<boolean> {
+    const { data } = await supabaseAdmin
+        .from("ai_usage_log")
+        .select("estimated_cost_usd")
+        .eq("capability", "ai.kill_switch_toggled")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+    return data?.estimated_cost_usd === 1;
   }
 
   /**
@@ -84,6 +99,23 @@ export class BrainBoltAiService {
     principalId: string,
     req: GenerateQuestionsRequest,
   ): Promise<GenerationResult> {
+    // Kill switch — when enabled by an admin via Mission Control, all AI
+    // generation is blocked before any provider call is made.
+    if (await this.isKillSwitchEnabled(supabaseAdmin)) {
+      return await this.recordAndReturn(supabaseAdmin, {
+        draft: null,
+        warnings: [],
+        error: "over_limit",
+        principalId,
+        capability: "ai.generate_questions",
+        promptVersion: "generate_questions_v1",
+        inputTokens: 0,
+        outputTokens: 0,
+        latencyMs: 0,
+        success: false,
+      });
+    }
+
     // Server-side guards. The client validates too (defense in depth) but
     // these run unconditionally on every server call.
     if (req.count < MIN_GENERATION_COUNT || req.count > MAX_GENERATION_COUNT) {
@@ -302,6 +334,16 @@ export class BrainBoltAiService {
     principalId: string,
     req: RegenerateQuestionRequest,
   ): Promise<RegenerationResult> {
+    // Kill switch — when enabled by an admin via Mission Control, all AI
+    // generation is blocked before any provider call is made.
+    if (await this.isKillSwitchEnabled(supabaseAdmin)) {
+      return {
+        question: null,
+        warnings: [],
+        error: "over_limit",
+      };
+    }
+
     const version = PROMPT_VERSIONS.regenerate_question_v1;
     const system = version.system;
     const user = version.buildUser(req);

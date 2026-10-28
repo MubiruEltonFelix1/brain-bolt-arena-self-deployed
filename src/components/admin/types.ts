@@ -82,7 +82,7 @@ export const SECTIONS: Record<SectionKey, SectionDef> = {
     label: "AI Usage & Controls",
     description: "Model usage, cost limits, kill switch.",
     group: "operations",
-    implemented: false,
+    implemented: true,
     icon: Brain,
   },
   health: {
