@@ -127,6 +127,9 @@ function PrepJob() {
   // re-sync (and wipe in-progress edits) on every tick.
   const draftSyncRef = useRef<string>("");
   const pagesSyncRef = useRef<string>("");
+  // Stages the page can drive without host input. Guarded so one visit fires
+  // each at most once (the poll re-renders every 3s).
+  const autoRanRef = useRef<Set<string>>(new Set());
 
   const load = useCallback(
     async (opts?: { silent?: boolean }) => {
@@ -221,20 +224,63 @@ function PrepJob() {
     setExcluded(new Set());
   }, [job?.draft]);
 
+  useEffect(() => {
+    if (!job || job.status === "failed" || job.status === "cancelled") return;
+
+    const statusOf = (name: string) => job.stages.find((s) => s.stage === name)?.status ?? null;
+
+    // Extraction and OCR need no host input, so the page continues the
+    // pipeline itself instead of parking the job until a button is pressed.
+    if (job.currentStage === "document_extract") {
+      const st = statusOf("document_extract");
+      const canRun =
+        st !== "succeeded" &&
+        st !== "failed" &&
+        !extracting &&
+        !autoRanRef.current.has("document_extract");
+      if (canRun) {
+        autoRanRef.current.add("document_extract");
+        void doExtract();
+      }
+      return;
+    }
+
+    if (job.currentStage === "document_ocr") {
+      // Only fire when the stage was never attempted: a refresh mid-run must
+      // not start (and bill) a second batch of vision calls.
+      const st = statusOf("document_ocr");
+      const canRun =
+        st === "pending" && !ocrRunning && !autoRanRef.current.has("document_ocr");
+      if (canRun) {
+        autoRanRef.current.add("document_ocr");
+        void doOcr();
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [job, extracting, ocrRunning]);
+
   async function runStage(
     stage: string,
     fn: () => Promise<{ error: string | null; [key: string]: any }>,
   ) {
     setError(null);
-    const res = await fn();
-    if (res.error) {
-      setError(
-        res.error === "not_authorized" ? "You're not allowed to do that." : String(res.error),
-      );
-    } else {
-      await load({ silent: true });
+    try {
+      const res = await fn();
+      if (res.error) {
+        setError(
+          res.error === "not_authorized" ? "You're not allowed to do that." : String(res.error),
+        );
+      } else {
+        await load({ silent: true });
+      }
+      return res;
+    } catch (e) {
+      // A thrown server fn used to abort silently, leaving the job parked on
+      // the previous stage with no explanation on screen.
+      console.error(`[prep] ${stage} failed`, e);
+      setError(`${STAGE_LABELS[stage] ?? stage} failed unexpectedly. Try again.`);
+      return { error: "unknown" as const };
     }
-    return res;
   }
 
   async function doExtract() {

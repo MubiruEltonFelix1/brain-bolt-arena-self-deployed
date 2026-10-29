@@ -540,6 +540,13 @@ export const prepOcrDocument = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, extracted: null };
     }
 
+    // Claim the stage before doing any paid work, so a page refresh mid-run
+    // cannot start (and bill) a second OCR pass.
+    await (supabaseAdmin.from("prep_job_stages" as never) as any)
+      .update({ status: "running", started_at: new Date().toISOString() })
+      .eq("job_id", job.id)
+      .eq("stage", "document_ocr");
+
     let fileBuffer: Buffer;
     try {
       const { data: downloaded, error: dErr } = await supabaseAdmin.storage
