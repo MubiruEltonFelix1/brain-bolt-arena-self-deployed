@@ -245,7 +245,7 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
     const { supabase, userId } = context as { supabase: Supabase; userId: string };
     const supabaseAdmin = await getAdmin();
 
-    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_document", data.jobId))) {
+    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_job", data.jobId))) {
       return { error: "not_authorized" as const, document: null };
     }
     if (!prepAiEnabled()) {
@@ -376,7 +376,7 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
     const { supabase, userId } = context as { supabase: Supabase; userId: string };
     const supabaseAdmin = await getAdmin();
 
-    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_document", data.jobId))) {
+    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_job", data.jobId))) {
       return { error: "not_authorized" as const, extracted: null };
     }
     if (!prepAiEnabled()) {
@@ -498,7 +498,7 @@ export const prepMapContent = createServerFn({ method: "POST" })
     const { supabase, userId } = context as { supabase: Supabase; userId: string };
     const supabaseAdmin = await getAdmin();
 
-    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_document", data.jobId))) {
+    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_job", data.jobId))) {
       return { error: "not_authorized" as const, sources: null };
     }
     if (!prepAiEnabled()) {
