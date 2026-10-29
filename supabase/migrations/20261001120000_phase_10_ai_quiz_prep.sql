@@ -41,6 +41,7 @@ create index if not exists prep_documents_owner_idx
 
 alter table public.prep_documents enable row level security;
 
+drop policy if exists prep_documents_owner_read on public.prep_documents;
 create policy prep_documents_owner_read on public.prep_documents
   for select
   using (owner_principal_id = public.current_principal_id());
@@ -76,6 +77,7 @@ create index if not exists prep_jobs_document_idx on public.prep_jobs (document_
 
 alter table public.prep_jobs enable row level security;
 
+drop policy if exists prep_jobs_owner_read on public.prep_jobs;
 create policy prep_jobs_owner_read on public.prep_jobs
   for select
   using (owner_principal_id = public.current_principal_id());
@@ -108,6 +110,7 @@ create index if not exists prep_job_stages_job_idx on public.prep_job_stages (jo
 
 alter table public.prep_job_stages enable row level security;
 
+drop policy if exists prep_job_stages_owner_read on public.prep_job_stages;
 create policy prep_job_stages_owner_read on public.prep_job_stages
   for select
   using (exists (
@@ -141,6 +144,7 @@ create index if not exists prep_sources_job_idx on public.prep_sources (job_id, 
 
 alter table public.prep_sources enable row level security;
 
+drop policy if exists prep_sources_owner_read on public.prep_sources;
 create policy prep_sources_owner_read on public.prep_sources
   for select
   using (exists (
@@ -173,6 +177,7 @@ create index if not exists prep_drafts_quiz_idx on prep_drafts (quiz_id);
 
 alter table public.prep_drafts enable row level security;
 
+drop policy if exists prep_drafts_owner_read on public.prep_drafts;
 create policy prep_drafts_owner_read on public.prep_drafts
   for select
   using (exists (
@@ -207,11 +212,13 @@ begin
 end;
 $$;
 
+drop trigger if exists prep_documents_set_updated_at on public.prep_documents;
 create trigger prep_documents_set_updated_at
   before update on public.prep_documents
   for each row
   execute function public.set_updated_at();
 
+drop trigger if exists prep_jobs_set_updated_at on public.prep_jobs;
 create trigger prep_jobs_set_updated_at
   before update on public.prep_jobs
   for each row
