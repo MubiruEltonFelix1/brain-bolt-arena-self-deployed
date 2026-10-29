@@ -277,7 +277,7 @@ begin
          or public.has_role(v_user, 'host')
          or public.has_active_host_authorization(v_user);
 
-  if p_action in ('quiz.create','competition.create','league.create','branding.create','session.host') then
+  if p_action in ('quiz.create','competition.create','league.create','branding.create','session.host','ai.prep_upload') then
     return v_host;
   end if;
 
@@ -323,10 +323,7 @@ begin
     end if;
   elsif p_action like 'ai.prep.%' then
     -- Phase 10 AI Quiz Preparation: prep capabilities are owner-scoped.
-    if p_action = 'ai.prep_upload' then
-      -- Upload is a create action: resource is null, gated on host capability.
-      return v_host;
-    elsif p_action = 'ai.prep_document' then
+    if p_action = 'ai.prep_document' then
       select exists (
         select 1 from public.prep_documents d
         where d.id = p_resource
