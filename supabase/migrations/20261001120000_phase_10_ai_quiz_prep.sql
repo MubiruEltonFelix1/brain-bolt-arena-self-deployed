@@ -27,7 +27,8 @@ create table if not exists public.prep_documents (
   mime_type         text not null,
   size_bytes        bigint not null,
   page_count        integer,
-  status            text not null default 'uploaded', -- uploaded|extracting|extracted|ocr|failed
+  status            text not null default 'uploaded' -- uploaded|extracting|extracted|ocr|failed
+    constraint prep_documents_status_check check (status in ('uploaded','extracting','extracted','ocr','failed')),
   version           integer not null default 1,       -- increments on re-upload of same logical doc
   needs_ocr         boolean not null default false,
   error             text,
@@ -44,6 +45,11 @@ create policy prep_documents_owner_read on public.prep_documents
   for select
   using (owner_principal_id = public.current_principal_id());
 
+comment on table public.prep_documents is 'One uploaded source document (PDF/image), owner-scoped.';
+comment on column public.prep_documents.object_key is 'Object key in the quiz-prep-documents private storage bucket.';
+comment on column public.prep_documents.version is 'Increments when the same logical document is re-uploaded.';
+comment on column public.prep_documents.needs_ocr is 'True when the document has no extractable native text and requires multimodal OCR.';
+
 -- ############################################################################
 -- 2. prep_jobs
 -- ############################################################################
@@ -53,9 +59,11 @@ create table if not exists public.prep_jobs (
   document_id        uuid not null references public.prep_documents(id) on delete cascade,
   quiz_id            uuid references public.quizzes(id) on delete set null, -- target quiz, nullable until host adds questions
   owner_principal_id uuid not null references public.principals(id),
-  status             text not null default 'pending', -- pending|running|paused|completed|failed|cancelled
+  status             text not null default 'pending' -- pending|running|paused|completed|failed|cancelled
+    constraint prep_jobs_status_check check (status in ('pending','running','paused','completed','failed','cancelled')),
   current_stage      text, -- document_extract|document_ocr|media_interpretation|content_map|host_blueprint|question_generate|validate|quality_review|draft_assembled|complete
-  progress_pct       integer not null default 0,
+  progress_pct       integer not null default 0
+    constraint prep_jobs_progress_pct_check check (progress_pct >= 0 and progress_pct <= 100),
   error              text,
   cancelled_at       timestamptz,
   created_at         timestamptz not null default now(),
@@ -72,6 +80,10 @@ create policy prep_jobs_owner_read on public.prep_jobs
   for select
   using (owner_principal_id = public.current_principal_id());
 
+comment on table public.prep_jobs is 'One resumable preparation run from a source document to a quiz draft.';
+comment on column public.prep_jobs.current_stage is 'The most recent pipeline stage (extract, ocr, map, blueprint, generate, validate, quality, draft, complete).';
+comment on column public.prep_jobs.progress_pct is 'Client-visible progress percentage, 0-100.';
+
 -- ############################################################################
 -- 3. prep_job_stages
 -- ############################################################################
@@ -81,7 +93,8 @@ create table if not exists public.prep_job_stages (
   job_id         uuid not null references public.prep_jobs(id) on delete cascade,
   stage          text not null,
   attempt        integer not null default 1,
-  status         text not null default 'pending', -- pending|running|succeeded|failed|skipped
+  status         text not null default 'pending' -- pending|running|succeeded|failed|skipped
+    constraint prep_job_stages_status_check check (status in ('pending','running','succeeded','failed','skipped')),
   retry_count    integer not null default 0,
   input_summary  jsonb,
   output_summary jsonb,
@@ -102,6 +115,10 @@ create policy prep_job_stages_owner_read on public.prep_job_stages
     where j.id = prep_job_stages.job_id
       and j.owner_principal_id = public.current_principal_id()
   ));
+
+comment on table public.prep_job_stages is 'One stage attempt within a preparation job.';
+comment on column public.prep_job_stages.attempt is 'Incremented each time a stage is retried.';
+comment on column public.prep_job_stages.output_summary is 'Stage-specific result payload (e.g. per-page text, generated question list).';
 
 -- ############################################################################
 -- 4. prep_sources
@@ -132,6 +149,9 @@ create policy prep_sources_owner_read on public.prep_sources
       and j.owner_principal_id = public.current_principal_id()
   ));
 
+comment on table public.prep_sources is 'Provenance: page/section/excerpt anchor linking each drafted question to its source.';
+comment on column public.prep_sources.confidence is 'Extraction/interpretation confidence 0..1, null when unavailable.';
+
 -- ############################################################################
 -- 5. prep_drafts
 -- ############################################################################
@@ -142,7 +162,8 @@ create table if not exists public.prep_drafts (
   quiz_id        uuid references public.quizzes(id) on delete set null,
   title          text not null,
   questions      jsonb not null, -- canonical BrainBoltQuestion[] shape (validated)
-  status         text not null default 'pending_review', -- pending_review|approved|rejected|superseded
+  status         text not null default 'pending_review' -- pending_review|approved|rejected|superseded
+    constraint prep_drafts_status_check check (status in ('pending_review','approved','rejected','superseded')),
   created_at     timestamptz not null default now(),
   approved_at    timestamptz
 );
@@ -160,6 +181,9 @@ create policy prep_drafts_owner_read on public.prep_drafts
       and j.owner_principal_id = public.current_principal_id()
   ));
 
+comment on table public.prep_drafts is 'Assembled host-reviewable draft. Becomes approved when published to the questions table.';
+comment on column public.prep_drafts.questions is 'Canonical BrainBoltQuestion[] JSON, validated by validateQuiz before insert.';
+
 -- ############################################################################
 -- 6. ai_usage_log: job_id / stage attribution
 -- ############################################################################
@@ -170,7 +194,31 @@ create index if not exists ai_usage_log_job_stage_idx
   on public.ai_usage_log (job_id, stage, created_at desc);
 
 -- ############################################################################
--- 7. public.can(...) — ai.prep.* arm
+-- 7. updated_at triggers
+-- ############################################################################
+
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger prep_documents_set_updated_at
+  before update on public.prep_documents
+  for each row
+  execute function public.set_updated_at();
+
+create trigger prep_jobs_set_updated_at
+  before update on public.prep_jobs
+  for each row
+  execute function public.set_updated_at();
+
+-- ############################################################################
+-- 8. public.can(...) — ai.prep.* arm
 -- ############################################################################
 -- Re-defines public.can(...) so this migration is the canonical Phase 10
 -- definition (mirrors the Phase 8E pattern). Byte-identical to the Phase 8E
@@ -187,122 +235,122 @@ create index if not exists ai_usage_log_job_stage_idx
 -- Resource resolution: prep_jobs -> prep_documents.owner_principal_id;
 -- prep_drafts -> prep_jobs.owner_principal_id.
 
-CREATE OR REPLACE FUNCTION public.can(p_principal uuid, p_action text, p_resource uuid DEFAULT NULL::uuid)
-RETURNS boolean
-LANGUAGE plpgsql
-STABLE SECURITY DEFINER
-SET search_path TO 'public'
-AS $$
-DECLARE
+create or replace function public.can(p_principal uuid, p_action text, p_resource uuid default null::uuid)
+returns boolean
+language plpgsql
+stable security definer
+set search_path to 'public'
+as $$
+declare
   v_user  uuid;
   v_admin boolean;
   v_host  boolean;
   v_owner boolean := false;
-BEGIN
-  IF p_principal IS NULL THEN
-    RETURN false;
-  END IF;
+begin
+  if p_principal is null then
+    return false;
+  end if;
 
-  SELECT p.user_id INTO v_user
-  FROM public.principals p
-  WHERE p.type = 'user' AND (p.id = p_principal OR p.user_id = p_principal)
-  LIMIT 1;
+  select p.user_id into v_user
+  from public.principals p
+  where p.type = 'user' and (p.id = p_principal or p.user_id = p_principal)
+  limit 1;
 
-  IF v_user IS NULL THEN
+  if v_user is null then
     v_user := p_principal;
-  END IF;
+  end if;
 
   v_admin := public.has_role(v_user, 'admin');
 
-  IF p_action LIKE 'admin.%' THEN
-    RETURN v_admin;
-  END IF;
+  if p_action like 'admin.%' then
+    return v_admin;
+  end if;
 
   v_host := v_admin
-         OR public.has_role(v_user, 'host')
-         OR public.has_active_host_authorization(v_user);
+         or public.has_role(v_user, 'host')
+         or public.has_active_host_authorization(v_user);
 
-  IF p_action IN ('quiz.create','competition.create','league.create','branding.create','session.host') THEN
-    RETURN v_host;
-  END IF;
+  if p_action in ('quiz.create','competition.create','league.create','branding.create','session.host') then
+    return v_host;
+  end if;
 
-  IF p_resource IS NULL THEN
-    RETURN false;
-  END IF;
+  if p_resource is null then
+    return false;
+  end if;
 
-  IF p_action IN ('quiz.edit','quiz.delete') THEN
-    SELECT EXISTS (
-      SELECT 1 FROM public.quizzes q
-      WHERE q.id = p_resource
-        AND q.owner_principal_id = public.principal_for_user(v_user)
-    ) INTO v_owner;
-  ELSIF p_action = 'competition.manage' THEN
-    SELECT EXISTS (
-      SELECT 1 FROM public.competitions c
-      WHERE c.id = p_resource
-        AND c.owner_principal_id = public.principal_for_user(v_user)
-    ) INTO v_owner;
-  ELSIF p_action = 'league.manage' THEN
-    SELECT EXISTS (
-      SELECT 1 FROM public.leagues l
-      WHERE l.id = p_resource
-        AND l.owner_principal_id = public.principal_for_user(v_user)
-    ) INTO v_owner;
-  ELSIF p_action = 'branding.manage' THEN
-    SELECT EXISTS (
-      SELECT 1 FROM public.branding_profiles b
-      WHERE b.id = p_resource
-        AND b.owner_principal_id = public.principal_for_user(v_user)
-    ) INTO v_owner;
-  ELSIF p_action = 'session.manage' THEN
-    SELECT EXISTS (SELECT 1 FROM public.sessions s WHERE s.id = p_resource AND s.host_id = v_user) INTO v_owner;
-  ELSIF p_action LIKE 'ai.%' THEN
-    IF p_action = 'ai.generate_questions' THEN
-      SELECT EXISTS (
-        SELECT 1 FROM public.quizzes q
-        WHERE q.id = p_resource
-          AND q.owner_principal_id = public.principal_for_user(v_user)
-      ) INTO v_owner;
-    ELSE
-      RETURN false;
-    END IF;
-  ELSIF p_action LIKE 'ai.prep.%' THEN
+  if p_action in ('quiz.edit','quiz.delete') then
+    select exists (
+      select 1 from public.quizzes q
+      where q.id = p_resource
+        and q.owner_principal_id = public.principal_for_user(v_user)
+    ) into v_owner;
+  elsif p_action = 'competition.manage' then
+    select exists (
+      select 1 from public.competitions c
+      where c.id = p_resource
+        and c.owner_principal_id = public.principal_for_user(v_user)
+    ) into v_owner;
+  elsif p_action = 'league.manage' then
+    select exists (
+      select 1 from public.leagues l
+      where l.id = p_resource
+        and l.owner_principal_id = public.principal_for_user(v_user)
+    ) into v_owner;
+  elsif p_action = 'branding.manage' then
+    select exists (
+      select 1 from public.branding_profiles b
+      where b.id = p_resource
+        and b.owner_principal_id = public.principal_for_user(v_user)
+    ) into v_owner;
+  elsif p_action = 'session.manage' then
+    select exists (select 1 from public.sessions s where s.id = p_resource and s.host_id = v_user) into v_owner;
+  elsif p_action like 'ai.%' then
+    if p_action = 'ai.generate_questions' then
+      select exists (
+        select 1 from public.quizzes q
+        where q.id = p_resource
+          and q.owner_principal_id = public.principal_for_user(v_user)
+      ) into v_owner;
+    else
+      return false;
+    end if;
+  elsif p_action like 'ai.prep.%' then
     -- Phase 10 AI Quiz Preparation: prep capabilities are owner-scoped.
-    IF p_action = 'ai.prep_upload' THEN
+    if p_action = 'ai.prep_upload' then
       -- Upload is a create action: resource is null, gated on host capability.
-      RETURN v_host;
-    ELSIF p_action = 'ai.prep_document' THEN
-      SELECT EXISTS (
-        SELECT 1 FROM public.prep_documents d
-        WHERE d.id = p_resource
-          AND d.owner_principal_id = public.principal_for_user(v_user)
-      ) INTO v_owner;
-    ELSIF p_action = 'ai.prep_job' OR p_action = 'ai.prep_generate' THEN
-      SELECT EXISTS (
-        SELECT 1 FROM public.prep_jobs j
-        JOIN public.prep_documents d ON d.id = j.document_id
-        WHERE j.id = p_resource
-          AND d.owner_principal_id = public.principal_for_user(v_user)
-      ) INTO v_owner;
-    ELSIF p_action = 'ai.prep_publish' THEN
-      SELECT EXISTS (
-        SELECT 1 FROM public.prep_drafts df
-        JOIN public.prep_jobs j ON j.id = df.job_id
-        JOIN public.prep_documents d ON d.id = j.document_id
-        WHERE df.id = p_resource
-          AND d.owner_principal_id = public.principal_for_user(v_user)
-      ) INTO v_owner;
-    ELSE
+      return v_host;
+    elsif p_action = 'ai.prep_document' then
+      select exists (
+        select 1 from public.prep_documents d
+        where d.id = p_resource
+          and d.owner_principal_id = public.principal_for_user(v_user)
+      ) into v_owner;
+    elsif p_action = 'ai.prep_job' or p_action = 'ai.prep_generate' then
+      select exists (
+        select 1 from public.prep_jobs j
+        join public.prep_documents d on d.id = j.document_id
+        where j.id = p_resource
+          and d.owner_principal_id = public.principal_for_user(v_user)
+      ) into v_owner;
+    elsif p_action = 'ai.prep_publish' then
+      select exists (
+        select 1 from public.prep_drafts df
+        join public.prep_jobs j on j.id = df.job_id
+        join public.prep_documents d on d.id = j.document_id
+        where df.id = p_resource
+          and d.owner_principal_id = public.principal_for_user(v_user)
+      ) into v_owner;
+    else
       -- Unknown ai.prep.* action: deny. Add new actions explicitly here.
-      RETURN false;
-    END IF;
-  ELSE
-    RETURN false;
-  END IF;
+      return false;
+    end if;
+  else
+    return false;
+  end if;
 
-  RETURN v_owner AND v_host;
-END;
+  return v_owner and v_host;
+end;
 $$;
 
-REVOKE ALL ON FUNCTION public.can(uuid, text, uuid) FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION public.can(uuid, text, uuid) TO service_role;
+revoke all on function public.can(uuid, text, uuid) from PUBLIC, anon, authenticated;
+grant execute on function public.can(uuid, text, uuid) to service_role;
