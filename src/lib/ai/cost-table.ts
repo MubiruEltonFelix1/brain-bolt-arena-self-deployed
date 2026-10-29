@@ -37,13 +37,117 @@ const DEEPSEEK_V32_BEDROCK: ModelPricing = {
   source: "aws.amazon.com/bedrock/pricing/ — DeepSeek V3.2 example",
 };
 
+/**
+ * Claude 3.5 Haiku on Bedrock — multimodal OCR / scanned-page reading.
+ * Fast, cheap, strong image+text input. Verified against
+ * aws.amazon.com/bedrock/pricing/ (Claude 3.5 Haiku example).
+ */
+const CLAUDE_35_HAIKU_BEDROCK: ModelPricing = {
+  inputPerMTok: 1.0,
+  outputPerMTok: 5.0,
+  source: "aws.amazon.com/bedrock/pricing/ — Claude 3.5 Haiku example",
+};
+
+/**
+ * Claude 3.5 Sonnet on Bedrock — diagrams/tables/charts/math interpretation
+ * and quality review. Stronger reasoning, higher cost. Verified against
+ * aws.amazon.com/bedrock/pricing/ (Claude 3.5 Sonnet example).
+ */
+const CLAUDE_35_SONNET_BEDROCK: ModelPricing = {
+  inputPerMTok: 3.0,
+  outputPerMTok: 15.0,
+  source: "aws.amazon.com/bedrock/pricing/ — Claude 3.5 Sonnet example",
+};
+
 const PRICING_TABLE: Record<string, ModelPricing> = {
   "us.deepseek.r1-v1:0": DEEPSEEK_R1_BEDROCK,
   "us.deepseek.v3.2:0": DEEPSEEK_V32_BEDROCK,
+  "anthropic.claude-3-5-haiku-20241022-v1:0": CLAUDE_35_HAIKU_BEDROCK,
+  "anthropic.claude-3-5-sonnet-20241022-v2:0": CLAUDE_35_SONNET_BEDROCK,
 };
 
-/** Default model when BRAINBOLT_AI_MODEL is unset. */
+/** Default model when BRAINBOLT_AI_MODEL is unset (legacy text-generation path). */
 export const DEFAULT_MODEL_ID = "us.deepseek.r1-v1:0";
+
+/** Default model for source-grounded question generation (Phase 10 prep pipeline). */
+export const PREP_DEFAULT_GENERATE_MODEL = "us.deepseek.v3.2:0";
+
+/* ------------------------------------------------------------------ */
+/* Prep-pipeline task model configuration                             */
+/*                                                                    */
+/* Read inside server functions (never at module scope) because
+ * Cloudflare Workers / Vercel serverless bind env per request.
+ * Each default mirrors AI_QUIZ_PREP_MODEL_ROUTING.md. Override via env.
+/* ------------------------------------------------------------------ */
+
+export const PREP_TASK_DEFAULTS: Record<
+  string,
+  { modelId: string; maxOutputTokens: number; temperature: number }
+> = {
+  ocr: {
+    modelId: "anthropic.claude-3-5-haiku-20241022-v1:0",
+    maxOutputTokens: 4000,
+    temperature: 0.2,
+  },
+  visual_interpretation: {
+    modelId: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    maxOutputTokens: 4000,
+    temperature: 0.2,
+  },
+  question_generate: {
+    modelId: "us.deepseek.v3.2:0",
+    maxOutputTokens: 8000,
+    temperature: 0.4,
+  },
+  question_regenerate: {
+    modelId: "us.deepseek.v3.2:0",
+    maxOutputTokens: 2000,
+    temperature: 0.5,
+  },
+  quality_review: {
+    modelId: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+    maxOutputTokens: 3000,
+    temperature: 0.2,
+  },
+  simple: {
+    modelId: "us.deepseek.v3.2:0",
+    maxOutputTokens: 4000,
+    temperature: 0.3,
+  },
+} as const;
+
+/** Env var names that override the per-task model. */
+export const PREP_MODEL_ENV: Record<string, string> = {
+  ocr: "PREP_MODEL_OCR",
+  visual_interpretation: "PREP_MODEL_VISUAL",
+  question_generate: "PREP_MODEL_GENERATE",
+  question_regenerate: "PREP_MODEL_REGENERATE",
+  quality_review: "PREP_MODEL_QUALITY",
+  simple: "PREP_MODEL_SIMPLE",
+} as const;
+
+/** Administrative kill switch for all prep-pipeline AI calls. Read per-request. */
+export const PREP_AI_ENABLED_ENV = "PREP_AI_ENABLED";
+
+export function prepTaskConfig(task: string): {
+  modelId: string;
+  maxOutputTokens: number;
+  temperature: number;
+} {
+  const envKey = PREP_MODEL_ENV[task as keyof typeof PREP_MODEL_ENV];
+  const modelId = envKey ? (process.env[envKey] ?? PREP_TASK_DEFAULTS[task]?.modelId) : undefined;
+  const base = PREP_TASK_DEFAULTS[task] ?? PREP_TASK_DEFAULTS.simple;
+  return {
+    modelId: modelId ?? base.modelId,
+    maxOutputTokens: base.maxOutputTokens,
+    temperature: base.temperature,
+  };
+}
+
+/** Whether the prep-pipeline AI is administratively enabled. Defaults to true. */
+export function isPrepAiEnabled(): boolean {
+  return process.env[PREP_AI_ENABLED_ENV] !== "false";
+}
 
 export function getPricingForModel(modelId: string): ModelPricing {
   return (

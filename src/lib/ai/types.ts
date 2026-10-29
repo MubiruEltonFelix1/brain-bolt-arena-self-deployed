@@ -114,7 +114,11 @@ export type RegenerateQuestionRequest = {
  */
 export type UsageRecord = {
   principalId: string;
-  capability: "ai.generate_questions" | "ai.regenerate_question";
+  capability:
+    | "ai.generate_questions"
+    | "ai.regenerate_question"
+    | "ai.prep_generate"
+    | "ai.prep_quality_review";
   model: string;
   promptVersion: string;
   inputTokens: number;
@@ -123,6 +127,9 @@ export type UsageRecord = {
   estimatedCostUsd: number;
   success: boolean;
   errorKind: AiErrorCode | null;
+  /** Optional prep-job attribution (nullable columns on ai_usage_log). */
+  jobId?: string;
+  stage?: string;
 };
 
 /**

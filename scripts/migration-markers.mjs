@@ -718,5 +718,18 @@ export function createMarkers({ q, yes }) {
         tableExists("email_suppressions") &&
         tableExists("audit_logs"),
     },
+    {
+      file: "20261001120000_phase_10_ai_quiz_prep.sql",
+      marker: "prep_documents/prep_jobs/prep_job_stages/prep_sources/prep_drafts tables + ai_usage_log job_id/stage + ai.prep.* can() arm (Phase 10 AI Quiz Prep)",
+      applied: () =>
+        tableExists("prep_documents") &&
+        tableExists("prep_jobs") &&
+        tableExists("prep_job_stages") &&
+        tableExists("prep_sources") &&
+        tableExists("prep_drafts") &&
+        colExists("ai_usage_log", "job_id") &&
+        colExists("ai_usage_log", "stage") &&
+        fnBodyLike("can", "Phase 10 AI Quiz Preparation"),
+    },
   ];
 }

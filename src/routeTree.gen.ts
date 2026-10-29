@@ -29,6 +29,8 @@ import { Route as JoinCodeRouteImport } from './routes/join.$code'
 import { Route as LeaguesIndexRouteImport } from './routes/leagues.index'
 import { Route as LeaguesIdRouteImport } from './routes/leagues.$id'
 import { Route as PlaySessionIdRouteImport } from './routes/play.$sessionId'
+import { Route as PrepJobIdRouteImport } from './routes/prep.$jobId'
+import { Route as PrepNewRouteImport } from './routes/prep.new'
 import { Route as QuizzesIdRouteImport } from './routes/quizzes.$id'
 import { Route as ArenaQuizIdIndexRouteImport } from './routes/arena.$quizId.index'
 import { Route as ArenaQuizIdPlayRouteImport } from './routes/arena.$quizId.play'
@@ -133,6 +135,16 @@ const PlaySessionIdRoute = PlaySessionIdRouteImport.update({
   path: '/play/$sessionId',
   getParentRoute: () => rootRouteImport,
 } as any)
+const PrepJobIdRoute = PrepJobIdRouteImport.update({
+  id: '/prep/$jobId',
+  path: '/prep/$jobId',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const PrepNewRoute = PrepNewRouteImport.update({
+  id: '/prep/new',
+  path: '/prep/new',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const QuizzesIdRoute = QuizzesIdRouteImport.update({
   id: '/quizzes/$id',
   path: '/quizzes/$id',
@@ -168,6 +180,8 @@ export interface FileRoutesByFullPath {
   '/join/$code': typeof JoinCodeRoute
   '/leagues/$id': typeof LeaguesIdRoute
   '/play/$sessionId': typeof PlaySessionIdRoute
+  '/prep/$jobId': typeof PrepJobIdRoute
+  '/prep/new': typeof PrepNewRoute
   '/quizzes/$id': typeof QuizzesIdRoute
   '/arena/': typeof ArenaIndexRoute
   '/leagues/': typeof LeaguesIndexRoute
@@ -190,6 +204,8 @@ export interface FileRoutesByTo {
   '/join/$code': typeof JoinCodeRoute
   '/leagues/$id': typeof LeaguesIdRoute
   '/play/$sessionId': typeof PlaySessionIdRoute
+  '/prep/$jobId': typeof PrepJobIdRoute
+  '/prep/new': typeof PrepNewRoute
   '/quizzes/$id': typeof QuizzesIdRoute
   '/arena': typeof ArenaIndexRoute
   '/leagues': typeof LeaguesIndexRoute
@@ -216,6 +232,8 @@ export interface FileRoutesById {
   '/join/$code': typeof JoinCodeRoute
   '/leagues/$id': typeof LeaguesIdRoute
   '/play/$sessionId': typeof PlaySessionIdRoute
+  '/prep/$jobId': typeof PrepJobIdRoute
+  '/prep/new': typeof PrepNewRoute
   '/quizzes/$id': typeof QuizzesIdRoute
   '/arena/': typeof ArenaIndexRoute
   '/leagues/': typeof LeaguesIndexRoute
@@ -243,6 +261,8 @@ export interface FileRouteTypes {
     | '/join/$code'
     | '/leagues/$id'
     | '/play/$sessionId'
+    | '/prep/$jobId'
+    | '/prep/new'
     | '/quizzes/$id'
     | '/arena/'
     | '/leagues/'
@@ -265,6 +285,8 @@ export interface FileRouteTypes {
     | '/join/$code'
     | '/leagues/$id'
     | '/play/$sessionId'
+    | '/prep/$jobId'
+    | '/prep/new'
     | '/quizzes/$id'
     | '/arena'
     | '/leagues'
@@ -290,6 +312,8 @@ export interface FileRouteTypes {
     | '/join/$code'
     | '/leagues/$id'
     | '/play/$sessionId'
+    | '/prep/$jobId'
+    | '/prep/new'
     | '/quizzes/$id'
     | '/arena/'
     | '/leagues/'
@@ -314,6 +338,8 @@ export interface RootRouteChildren {
   HostSessionIdRoute: typeof HostSessionIdRoute
   JoinCodeRoute: typeof JoinCodeRoute
   PlaySessionIdRoute: typeof PlaySessionIdRoute
+  PrepJobIdRoute: typeof PrepJobIdRoute
+  PrepNewRoute: typeof PrepNewRoute
   QuizzesIdRoute: typeof QuizzesIdRoute
 }
 
@@ -459,6 +485,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PlaySessionIdRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/prep/$jobId': {
+      id: '/prep/$jobId'
+      path: '/prep/$jobId'
+      fullPath: '/prep/$jobId'
+      preLoaderRoute: typeof PrepJobIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/prep/new': {
+      id: '/prep/new'
+      path: '/prep/new'
+      fullPath: '/prep/new'
+      preLoaderRoute: typeof PrepNewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/quizzes/$id': {
       id: '/quizzes/$id'
       path: '/quizzes/$id'
@@ -539,6 +579,8 @@ const rootRouteChildren: RootRouteChildren = {
   HostSessionIdRoute: HostSessionIdRoute,
   JoinCodeRoute: JoinCodeRoute,
   PlaySessionIdRoute: PlaySessionIdRoute,
+  PrepJobIdRoute: PrepJobIdRoute,
+  PrepNewRoute: PrepNewRoute,
   QuizzesIdRoute: QuizzesIdRoute,
 }
 export const routeTree = rootRouteImport

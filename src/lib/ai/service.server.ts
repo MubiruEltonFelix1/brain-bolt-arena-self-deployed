@@ -33,10 +33,21 @@ import { DEFAULT_MODEL_ID, estimateCost } from "@/lib/ai/cost-table";
 import { BedrockDeepSeekV3Provider } from "@/lib/ai/providers/bedrock-deepseek-v3.server";
 import { BedrockDeepSeekProvider } from "@/lib/ai/providers/bedrock-deepseek.server";
 import { recordUsage } from "@/lib/ai/usage-log.server";
+import { ModelRouter, PrepTask, modelRouter, prepAiEnabled } from "@/lib/ai/model-router";
+import { prepTaskConfig } from "@/lib/ai/cost-table";
+import { PROMPT_PREP_VERSIONS } from "@/lib/ai/prep-prompts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 // Re-export for callers that imported MAX_GENERATION_COUNT from this module.
 export { MAX_GENERATION_COUNT };
+
+/** Optional task-scoped generation controls. When `task` is set, the call is
+ * routed through the ModelRouter (task-based model selection) instead of the
+ * singleton provider, and usage is attributed to an `ai.prep_*` capability. */
+export type AiServiceCallOptions = {
+  /** Prep-pipeline task (routes to a task-appropriate model). Optional. */
+  task?: PrepTask;
+};
 
 /**
  * Singleton-style service. Construct one per request (cheap) so the
@@ -45,10 +56,12 @@ export { MAX_GENERATION_COUNT };
  */
 export class BrainBoltAiService {
   private provider: import("@/lib/ai/types").AiProvider;
+  private router: ModelRouter | null = null;
 
-  constructor(opts: BrainBoltAiServiceOptions = {}) {
+  constructor(opts: BrainBoltAiServiceOptions & { router?: ModelRouter } = {}) {
     if (opts.provider) {
       this.provider = opts.provider;
+      if (opts.router) this.router = opts.router;
       return;
     }
     // Pick a provider by BRAINBOLT_AI_PROVIDER env (default: bedrock-deepseek).
@@ -67,9 +80,10 @@ export class BrainBoltAiService {
       case "bedrock-deepseek":
         this.provider = new BedrockDeepSeekProvider(modelId);
         break;
-    default:
+      default:
         throw new Error(`BrainBoltAiService: unknown BRAINBOLT_AI_PROVIDER "${providerName}"`);
     }
+    if (opts.router) this.router = opts.router;
   }
 
   /**
@@ -78,18 +92,23 @@ export class BrainBoltAiService {
    */
   private async isKillSwitchEnabled(supabaseAdmin: SupabaseClient): Promise<boolean> {
     const { data } = await supabaseAdmin
-        .from("ai_usage_log")
-        .select("estimated_cost_usd")
-        .eq("capability", "ai.kill_switch_toggled")
-        .order("created_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
+      .from("ai_usage_log")
+      .select("estimated_cost_usd")
+      .eq("capability", "ai.kill_switch_toggled")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
     return data?.estimated_cost_usd === 1;
   }
 
   /**
    * Generate `req.count` questions on `req.topic`. Returns a typed envelope.
    * NEVER throws — failure modes are mapped to AiErrorCode.
+   *
+   * When `options.task` is set, the call is routed through the ModelRouter
+   * (task-based model selection, e.g. `question_generate`) and usage is
+   * attributed to the `ai.prep_generate` capability. The legacy text
+   * generation path (`task` unset) is unchanged.
    *
    * Over-limit requests are rejected before any AI call (no usage log row
    * for the rejected call — the user didn't pay for nothing).
@@ -98,17 +117,44 @@ export class BrainBoltAiService {
     supabaseAdmin: SupabaseClient,
     principalId: string,
     req: GenerateQuestionsRequest,
+    options: AiServiceCallOptions = {},
   ): Promise<GenerationResult> {
-    // Kill switch — when enabled by an admin via Mission Control, all AI
-    // generation is blocked before any provider call is made.
-    if (await this.isKillSwitchEnabled(supabaseAdmin)) {
+    const task = options.task;
+    const isPrep = task !== undefined;
+
+    // Prep administrative kill switch — checked before any Bedrock call.
+    // When PREP_AI_ENABLED=false, no new prep Bedrock requests are initiated.
+    const capability: "ai.generate_questions" | "ai.prep_generate" = isPrep
+      ? "ai.prep_generate"
+      : "ai.generate_questions";
+    const promptVersion = isPrep ? `prep_generate_${task!}_v1` : "generate_questions_v1";
+    const router = this.router ?? modelRouter;
+
+    if (isPrep && !prepAiEnabled()) {
       return await this.recordAndReturn(supabaseAdmin, {
         draft: null,
         warnings: [],
         error: "over_limit",
         principalId,
-        capability: "ai.generate_questions",
-        promptVersion: "generate_questions_v1",
+        capability,
+        promptVersion,
+        inputTokens: 0,
+        outputTokens: 0,
+        latencyMs: 0,
+        success: false,
+      });
+    }
+
+    // Legacy kill switch (Mission Control) — applies to the text-generation
+    // path. Prep has its own PREP_AI_ENABLED guard above.
+    if (!isPrep && (await this.isKillSwitchEnabled(supabaseAdmin))) {
+      return await this.recordAndReturn(supabaseAdmin, {
+        draft: null,
+        warnings: [],
+        error: "over_limit",
+        principalId,
+        capability,
+        promptVersion,
         inputTokens: 0,
         outputTokens: 0,
         latencyMs: 0,
@@ -124,8 +170,8 @@ export class BrainBoltAiService {
         warnings: [],
         error: "over_limit",
         principalId,
-        capability: "ai.generate_questions",
-        promptVersion: "generate_questions_v1",
+        capability,
+        promptVersion,
         inputTokens: 0,
         outputTokens: 0,
         latencyMs: 0,
@@ -138,8 +184,8 @@ export class BrainBoltAiService {
         warnings: [],
         error: "validation_failed",
         principalId,
-        capability: "ai.generate_questions",
-        promptVersion: "generate_questions_v1",
+        capability,
+        promptVersion,
         inputTokens: 0,
         outputTokens: 0,
         latencyMs: 0,
@@ -155,8 +201,8 @@ export class BrainBoltAiService {
           warnings: [],
           error: "validation_failed",
           principalId,
-          capability: "ai.generate_questions",
-          promptVersion: "generate_questions_v1",
+          capability,
+          promptVersion,
           inputTokens: 0,
           outputTokens: 0,
           latencyMs: 0,
@@ -169,18 +215,32 @@ export class BrainBoltAiService {
     const system = version.system;
     const user = version.buildUser(req);
 
+    // Task-aware token budget and temperature (legacy path keeps 8000/0.4).
+    const maxOutputTokens = isPrep ? prepTaskConfig(task!).maxOutputTokens : 8000;
+    const temperature = isPrep ? prepTaskConfig(task!).temperature : 0.4;
+
     let inputTokens = 0;
     let outputTokens = 0;
     let latencyMs = 0;
     let rawText: string | null = null;
 
     try {
-      const response = await this.provider.generate({
-        system,
-        user,
-        maxOutputTokens: 8000,
-        temperature: 0.4,
-      });
+      let response;
+      if (isPrep) {
+        response = await router.generate(task!, {
+          system,
+          user,
+          maxOutputTokens,
+          temperature,
+        });
+      } else {
+        response = await this.provider.generate({
+          system,
+          user,
+          maxOutputTokens,
+          temperature,
+        });
+      }
       inputTokens = response.inputTokens;
       outputTokens = response.outputTokens;
       latencyMs = response.latencyMs;
@@ -194,8 +254,8 @@ export class BrainBoltAiService {
           warnings: [],
           error: "invalid_output",
           principalId,
-          capability: "ai.generate_questions",
-          promptVersion: "generate_questions_v1",
+          capability,
+          promptVersion,
           inputTokens,
           outputTokens,
           latencyMs,
@@ -211,8 +271,8 @@ export class BrainBoltAiService {
           warnings: [],
           error: "invalid_output",
           principalId,
-          capability: "ai.generate_questions",
-          promptVersion: "generate_questions_v1",
+          capability,
+          promptVersion,
           inputTokens,
           outputTokens,
           latencyMs,
@@ -241,8 +301,8 @@ export class BrainBoltAiService {
           warnings: report.warnings.map((w) => w.message),
           error: "validation_failed",
           principalId,
-          capability: "ai.generate_questions",
-          promptVersion: "generate_questions_v1",
+          capability,
+          promptVersion,
           inputTokens,
           outputTokens,
           latencyMs,
@@ -263,8 +323,8 @@ export class BrainBoltAiService {
           warnings,
           error: "validation_failed",
           principalId,
-          capability: "ai.generate_questions",
-          promptVersion: "generate_questions_v1",
+          capability,
+          promptVersion,
           inputTokens,
           outputTokens,
           latencyMs,
@@ -290,8 +350,8 @@ export class BrainBoltAiService {
         warnings,
         error: null,
         principalId,
-        capability: "ai.generate_questions",
-        promptVersion: "generate_questions_v1",
+        capability,
+        promptVersion,
         inputTokens,
         outputTokens,
         latencyMs,
@@ -315,13 +375,219 @@ export class BrainBoltAiService {
         warnings: [],
         error: errorCode,
         principalId,
-        capability: "ai.generate_questions",
-        promptVersion: "generate_questions_v1",
+        capability,
+        promptVersion,
         inputTokens,
         outputTokens,
         latencyMs,
         success: false,
       });
+    }
+  }
+
+  /**
+   * Generate source-grounded questions for the prep pipeline.
+   *
+   * Mirrors generateQuestions but accepts source excerpts (page/section
+   * anchors) and returns the canonical questions PLUS the per-question
+   * source refs the server records in prep_sources. The model may emit extra
+   * citation fields (page/section/excerpt) which are captured here and
+   * stripped before validateQuiz so they never reach the question schema.
+   *
+   * NEVER throws. Returns { questions, sources } on success or null + error
+   * on failure.
+   */
+  async generateGroundedQuestions(
+    supabaseAdmin: SupabaseClient,
+    principalId: string,
+    req: {
+      topic: string;
+      count: number;
+      difficulty: string;
+      types: string[];
+      instructions?: string;
+      excerpts: Array<{ page: number; section?: string; excerpt: string }>;
+      existingQuestionTexts?: string[];
+    },
+    task: PrepTask = "question_generate",
+  ): Promise<{
+    questions: BrainBoltQuestion[];
+    sources: Array<{
+      questionIndex: number;
+      page: number;
+      section: string | null;
+      excerpt: string;
+    }>;
+    warnings: string[];
+    error: AiErrorCode | null;
+  }> {
+    const router = this.router ?? modelRouter;
+    const capability = "ai.prep_generate";
+    const promptVersion = `prep_generate_${task}_v1`;
+
+    // Prep administrative kill switch.
+    if (!prepAiEnabled()) {
+      return { questions: [], sources: [], warnings: [], error: "over_limit" };
+    }
+
+    // Guard counts before any AI call.
+    if (req.count < MIN_GENERATION_COUNT || req.count > MAX_GENERATION_COUNT) {
+      return { questions: [], sources: [], warnings: [], error: "over_limit" };
+    }
+    if (req.excerpts.length === 0) {
+      return { questions: [], sources: [], warnings: [], error: "validation_failed" };
+    }
+
+    const version = PROMPT_PREP_VERSIONS.prep_generate_question_generate_v1;
+    const system = version.system;
+    const user = version.buildUser(req as Parameters<typeof version.buildUser>[0]);
+
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let latencyMs = 0;
+    let rawText: string | null = null;
+
+    try {
+      const cfg = prepTaskConfig(task);
+      const response = await router.generate(task, {
+        system,
+        user,
+        maxOutputTokens: cfg.maxOutputTokens,
+        temperature: cfg.temperature,
+      });
+      inputTokens = response.inputTokens;
+      outputTokens = response.outputTokens;
+      latencyMs = response.latencyMs;
+      rawText = response.text;
+
+      const parsed = extractJsonObject(response.text);
+      if (!parsed) {
+        await recordUsage(
+          supabaseAdmin,
+          this.buildUsageRecord({
+            principalId,
+            capability,
+            promptVersion,
+            inputTokens,
+            outputTokens,
+            latencyMs,
+            success: false,
+            errorKind: "invalid_output",
+          }),
+        );
+        return { questions: [], sources: [], warnings: [], error: "invalid_output" };
+      }
+      const parsedByVersion = version.parse(parsed);
+      if (!parsedByVersion) {
+        await recordUsage(
+          supabaseAdmin,
+          this.buildUsageRecord({
+            principalId,
+            capability,
+            promptVersion,
+            inputTokens,
+            outputTokens,
+            latencyMs,
+            success: false,
+            errorKind: "invalid_output",
+          }),
+        );
+        return { questions: [], sources: [], warnings: [], error: "invalid_output" };
+      }
+
+      const rawQuestions = (parsedByVersion as { questions: unknown[] }).questions;
+      const questions: BrainBoltQuestion[] = [];
+      const sources: Array<{
+        questionIndex: number;
+        page: number;
+        section: string | null;
+        excerpt: string;
+      }> = [];
+
+      rawQuestions.forEach((r, i) => {
+        const q = modelQuestionToCanonical(r);
+        if (!q) return;
+        const questionIndex = questions.length;
+        questions.push(q);
+        const src = r as Record<string, unknown>;
+        sources.push({
+          questionIndex,
+          page: typeof src.page === "number" ? src.page : 0,
+          section: typeof src.section === "string" ? src.section : null,
+          excerpt: typeof src.excerpt === "string" ? src.excerpt : "",
+        });
+      });
+
+      const candidate: BrainBoltQuiz = { ...emptyQuizShell(), questions };
+      const report = validateQuiz(candidate);
+      if (!report.valid || questions.length === 0) {
+        await recordUsage(
+          supabaseAdmin,
+          this.buildUsageRecord({
+            principalId,
+            capability,
+            promptVersion,
+            inputTokens,
+            outputTokens,
+            latencyMs,
+            success: false,
+            errorKind: "validation_failed",
+          }),
+        );
+        return {
+          questions: [],
+          sources: [],
+          warnings: report.warnings.map((w) => w.message),
+          error: "validation_failed",
+        };
+      }
+
+      const warnings: string[] = [...report.warnings.map((w) => w.message)];
+      if (questions.length !== req.count) {
+        warnings.push(
+          `Brain Bolt AI returned ${questions.length} question${questions.length === 1 ? "" : "s"}; you asked for ${req.count}.`,
+        );
+      }
+
+      await recordUsage(
+        supabaseAdmin,
+        this.buildUsageRecord({
+          principalId,
+          capability,
+          promptVersion,
+          inputTokens,
+          outputTokens,
+          latencyMs,
+          success: true,
+          errorKind: null,
+        }),
+      );
+      return { questions, sources, warnings, error: null };
+    } catch (e: unknown) {
+      const eAsRecord = e as { aiCode?: unknown };
+      const errorCode: AiErrorCode =
+        typeof eAsRecord.aiCode === "string"
+          ? (eAsRecord.aiCode as AiErrorCode)
+          : "provider_unavailable";
+      console.error("[ai/service] generateGroundedQuestions failed", {
+        principalId,
+        rawTextPreview: rawText?.slice(0, 200),
+        cause: e instanceof Error ? { name: e.name, message: e.message } : e,
+      });
+      await recordUsage(
+        supabaseAdmin,
+        this.buildUsageRecord({
+          principalId,
+          capability,
+          promptVersion,
+          inputTokens,
+          outputTokens,
+          latencyMs,
+          success: false,
+          errorKind: errorCode,
+        }),
+      );
+      return { questions: [], sources: [], warnings: [], error: errorCode };
     }
   }
 
@@ -479,7 +745,7 @@ export class BrainBoltAiService {
       warnings: string[];
       error: AiErrorCode | null;
       principalId: string;
-      capability: "ai.generate_questions" | "ai.regenerate_question";
+      capability: "ai.generate_questions" | "ai.prep_generate" | "ai.regenerate_question";
       promptVersion: string;
       inputTokens: number;
       outputTokens: number;
@@ -504,7 +770,11 @@ export class BrainBoltAiService {
 
   private buildUsageRecord(args: {
     principalId: string;
-    capability: "ai.generate_questions" | "ai.regenerate_question";
+    capability:
+      | "ai.generate_questions"
+      | "ai.regenerate_question"
+      | "ai.prep_generate"
+      | "ai.prep_quality_review";
     promptVersion: string;
     inputTokens: number;
     outputTokens: number;

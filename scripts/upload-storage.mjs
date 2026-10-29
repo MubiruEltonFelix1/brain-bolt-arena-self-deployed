@@ -40,6 +40,7 @@ async function uploadFile(bucket, filePath, remoteName) {
 
 await createBucket("quiz-images");
 await createBucket("branding-logos");
+await createBucket("quiz-prep-documents");
 
 const dir = join(dirname(fileURLToPath(import.meta.url)), "..", "migration-data", "quiz-images");
 const files = readdirSync(dir).filter((f) => statSync(join(dir, f)).isFile());

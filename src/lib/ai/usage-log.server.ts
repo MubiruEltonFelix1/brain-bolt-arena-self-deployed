@@ -28,6 +28,8 @@ export async function recordUsage(
     estimated_cost_usd: record.estimatedCostUsd,
     success: record.success,
     error_kind: record.errorKind,
+    ...(record.jobId ? { job_id: record.jobId } : {}),
+    ...(record.stage ? { stage: record.stage } : {}),
   });
 
   if (error) {
@@ -37,6 +39,8 @@ export async function recordUsage(
       capability: record.capability,
       success: record.success,
       error_kind: record.errorKind,
+      job_id: record.jobId,
+      stage: record.stage,
       error: error.message,
     });
   }

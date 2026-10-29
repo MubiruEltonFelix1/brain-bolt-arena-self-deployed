@@ -41,9 +41,17 @@ class StubProvider implements AiProvider {
 
 // A no-op Supabase stub — only used to satisfy the signature.
 function fakeSupabase() {
+  // Chainable select stub for the kill-switch check (isKillSwitchEnabled).
+  const selectObj = {
+    eq: () => selectObj,
+    order: () => selectObj,
+    limit: () => selectObj,
+    maybeSingle: async () => ({ data: null }),
+  };
   return {
     from: () => ({
       insert: async () => ({ error: null }),
+      select: () => selectObj,
     }),
   } as unknown as import("@supabase/supabase-js").SupabaseClient;
 }
@@ -340,5 +348,115 @@ describe("ai / types: FRIENDLY_MESSAGES", () => {
       expect(msg).not.toContain("v3.2");
       expect(msg).not.toContain("v3-2");
     }
+  });
+});
+
+describe("ai / service: generateGroundedQuestions (prep pipeline)", () => {
+  let provider: StubProvider;
+  let svc: BrainBoltAiService;
+  const principalId = "principal-1";
+
+  // Enqueueable stub router — no real Bedrock provider is constructed.
+  const routerResponses: Array<any> = [];
+  const stubRouter = {
+    generate: async () => {
+      const next = routerResponses.shift();
+      if (!next) throw new Error("stub router: no response queued");
+      if (next instanceof Error) throw next;
+      return { text: next.text, inputTokens: 50, outputTokens: 30, latencyMs: 50 };
+    },
+    modelIdFor: () => "stub/model",
+    estimateCost: () => 0.001,
+    pricingFor: () => ({ inputPerMTok: 1, outputPerMTok: 2 }),
+  };
+
+  beforeEach(() => {
+    provider = new StubProvider();
+    routerResponses.length = 0;
+    svc = new BrainBoltAiService({ provider, router: stubRouter as any });
+  });
+
+  test("grounded generation returns questions + source refs and usage", async () => {
+    routerResponses.push({
+      text: JSON.stringify({
+        questions: [
+          {
+            type: "mcq",
+            text: "What is DNA?",
+            options: ["Deoxyribonucleic acid", "RNA", "Protein", "Lipid"],
+            correct_answer: "Deoxyribonucleic acid",
+            page: 2,
+            section: "Molecules",
+            excerpt: "DNA stands for deoxyribonucleic acid.",
+          },
+        ],
+      }),
+    });
+
+    const result = await svc.generateGroundedQuestions(fakeSupabase(), principalId, {
+      topic: "Biology",
+      count: 1,
+      difficulty: "medium",
+      types: ["mcq"],
+      excerpts: [
+        { page: 2, section: "Molecules", excerpt: "DNA stands for deoxyribonucleic acid." },
+      ],
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.questions.length).toBe(1);
+    expect(result.questions[0].type).toBe("mcq");
+    expect(result.sources.length).toBe(1);
+    expect(result.sources[0].page).toBe(2);
+    expect(result.sources[0].excerpt).toContain("DNA");
+    expect(result.warnings.length).toBe(0);
+  });
+
+  test("invalid output from the model maps to invalid_output", async () => {
+    routerResponses.push({ text: "not json at all" });
+
+    const result = await svc.generateGroundedQuestions(fakeSupabase(), principalId, {
+      topic: "Biology",
+      count: 1,
+      difficulty: "medium",
+      types: ["mcq"],
+      excerpts: [{ page: 1, section: "Intro", excerpt: "x" }],
+    });
+
+    expect(result.error).toBe("invalid_output");
+    expect(result.questions.length).toBe(0);
+  });
+
+  test("zero excerpts is rejected before any AI call", async () => {
+    const result = await svc.generateGroundedQuestions(fakeSupabase(), principalId, {
+      topic: "Biology",
+      count: 1,
+      difficulty: "medium",
+      types: ["mcq"],
+      excerpts: [],
+    });
+
+    expect(result.error).toBe("validation_failed");
+    expect(provider.calls.length).toBe(0);
+  });
+
+  test("count mismatch surfaces as a warning, not an error", async () => {
+    routerResponses.push({
+      text: JSON.stringify({
+        questions: [{ type: "mcq", text: "Q1", options: ["a", "b"], correct_answer: "a" }],
+      }),
+    });
+
+    const result = await svc.generateGroundedQuestions(fakeSupabase(), principalId, {
+      topic: "Biology",
+      count: 3,
+      difficulty: "medium",
+      types: ["mcq"],
+      excerpts: [{ page: 1, section: "Intro", excerpt: "x" }],
+    });
+
+    expect(result.error).toBeNull();
+    expect(result.questions.length).toBe(1);
+    expect(result.warnings.some((w) => w.includes("returned 1 question"))).toBe(true);
   });
 });
