@@ -10,6 +10,10 @@
 // All limits (size, pages, dimensions) are enforced by the calling server fn
 // before storage; this module only extracts and reports what it can read.
 
+// pdfjs-dist (bundled by pdf-parse) references browser globals (DOMMatrix,
+// window, document, ...) at module load time, which aren't available in
+// Node.js serverless runtimes. Shim them first so pdf-parse can load.
+import "@/lib/ai/dom-shim.server";
 import { PDFParse } from "pdf-parse";
 
 export type ExtractedPage = {
