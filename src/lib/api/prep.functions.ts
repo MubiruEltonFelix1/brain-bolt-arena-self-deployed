@@ -257,7 +257,7 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
-      .select("*, documents:document_id(*)")
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) {
@@ -388,7 +388,7 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
-      .select("*, documents:document_id(*)")
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, extracted: null };
@@ -510,7 +510,7 @@ export const prepMapContent = createServerFn({ method: "POST" })
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
-      .select("*, documents:document_id(*)")
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, sources: null };
@@ -599,7 +599,7 @@ export const prepSetBlueprint = createServerFn({ method: "POST" })
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
-      .select("*, documents:document_id(*)")
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, blueprint: null };
@@ -685,7 +685,7 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
-      .select("*, documents:document_id(*)")
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, generated: null };
@@ -952,7 +952,7 @@ export const prepQualityReview = createServerFn({ method: "POST" })
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
-      .select("*, documents:document_id(*)")
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, reviewed: null };
@@ -1216,7 +1216,7 @@ export const prepJobStatus = createServerFn({ method: "POST" })
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select(
-        "id, status, current_stage, progress_pct, error, created_at, updated_at, completed_at, documents:document_id(*)",
+        "id, status, current_stage, progress_pct, error, created_at, updated_at, completed_at, documents:prep_documents!prep_jobs_document_id_fkey(*)",
       )
       .eq("id", data.jobId)
       .maybeSingle();
