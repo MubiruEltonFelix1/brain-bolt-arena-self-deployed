@@ -1092,7 +1092,13 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
     const sources = (allSources ?? []).filter((s: any) => includedPages.includes(s.page));
 
     if (sources.length === 0) {
-      return { error: "validation_failed" as const, generated: null };
+      return {
+        error: "validation_failed" as const,
+        detail: `No stored text matches the page(s) selected in the blueprint (${
+          includedPages.length > 0 ? includedPages.join(", ") : "none selected"
+        }). Re-save the blueprint.`,
+        generated: null,
+      };
     }
 
     const questionCount = Number(blueprint.questionCount ?? PREP_MAX_GENERATION_BATCH);
@@ -1136,12 +1142,13 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
       );
 
       if (result.error) {
+        const failureWarnings = [...warnings, ...result.warnings];
         await (supabaseAdmin.from("prep_job_stages" as never) as any)
           .update({
             status: "failed",
             finished_at: new Date().toISOString(),
             error: result.error,
-            output_summary: { generated: generatedSoFar, warnings },
+            output_summary: { generated: generatedSoFar, warnings: failureWarnings },
           })
           .eq("job_id", job.id)
           .eq("stage", "question_generate");
@@ -1150,10 +1157,14 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
           .eq("id", job.id);
         return {
           error: result.error,
+          // Tell the host why, not just the error code.
+          detail:
+            failureWarnings.slice(0, 3).join(" · ") ||
+            `No usable questions came back for batch ${b + 1} (${batchExcerpts.length} source excerpt(s) sent).`,
           generated: {
             questions: allQuestions,
             sources: allSourcesRefs,
-            warnings,
+            warnings: failureWarnings,
             completed: generatedSoFar,
           },
         };

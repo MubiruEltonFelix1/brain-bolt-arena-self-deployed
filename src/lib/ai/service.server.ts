@@ -537,7 +537,17 @@ export class BrainBoltAiService {
         return {
           questions: [],
           sources: [],
-          warnings: report.warnings.map((w) => w.message),
+          // Surface the reasons: a bare validation_failed gave the host no way
+          // to tell a bad model response from an unreadable document.
+          warnings: [
+            ...(questions.length === 0
+              ? [
+                  `None of the ${rawQuestions.length} returned question(s) could be mapped to a known type or shape.`,
+                ]
+              : []),
+            ...report.errors.map((e) => `${e.field || "question"}: ${e.message}`),
+            ...report.warnings.map((w) => w.message),
+          ],
           error: "validation_failed",
         };
       }
@@ -832,14 +842,32 @@ export function modelQuestionToCanonical(raw: unknown): BrainBoltQuestion | null
       const correctAnswer =
         typeof r.correct_answer === "string"
           ? r.correct_answer
-          : typeof r.correctIndex === "number"
-            ? (options[r.correctIndex] ?? null)
-            : null;
+          : typeof r.correct_answer === "number"
+            ? (options[r.correct_answer] ?? null)
+            : typeof r.correctIndex === "number"
+              ? (options[r.correctIndex] ?? null)
+              : null;
       if (correctAnswer === null) return null;
-      // Resolve text → index.
-      const correctIndex = options.findIndex(
-        (o) => o.toLowerCase().trim() === correctAnswer.toLowerCase().trim(),
-      );
+
+      // Resolve the answer to an option index. Models frequently answer with a
+      // letter ("A", "b)", "Option C") instead of repeating the option text, and
+      // an exact-string-only match silently dropped every such question — which
+      // surfaced as a bare validation_failed with zero generated questions.
+      const norm = (s: string) =>
+        s
+          .trim()
+          .toLowerCase()
+          .replace(/^option\s+/, "")
+          .replace(/[.):\]\s]+$/, "")
+          .replace(/^[([\s]+/, "")
+          .trim();
+
+      const target = norm(correctAnswer);
+      let correctIndex = options.findIndex((o) => norm(o) === target);
+      if (correctIndex === -1 && target.length === 1) {
+        const asLetter = target.charCodeAt(0) - 97; // 'a' -> 0
+        if (asLetter >= 0 && asLetter < options.length) correctIndex = asLetter;
+      }
       if (correctIndex === -1) return null;
       return {
         type: "mcq",

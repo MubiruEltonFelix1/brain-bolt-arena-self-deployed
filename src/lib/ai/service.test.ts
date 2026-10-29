@@ -15,7 +15,7 @@ import {
   type AiRawResponse,
   SUPPORTED_AI_TYPES,
 } from "@/lib/ai/types";
-import { BrainBoltAiService } from "@/lib/ai/service.server";
+import { BrainBoltAiService, modelQuestionToCanonical } from "@/lib/ai/service.server";
 
 // A controllable stub provider — never hits the network.
 class StubProvider implements AiProvider {
@@ -458,5 +458,46 @@ describe("ai / service: generateGroundedQuestions (prep pipeline)", () => {
     expect(result.error).toBeNull();
     expect(result.questions.length).toBe(1);
     expect(result.warnings.some((w) => w.includes("returned 1 question"))).toBe(true);
+  });
+});
+
+describe("ai / modelQuestionToCanonical: mcq answer resolution", () => {
+  // Models often answer with a letter or "Option B" instead of repeating the
+  // option text. An exact-match-only resolution dropped every such question,
+  // which surfaced downstream as validation_failed with zero questions.
+  const base = {
+    type: "mcq",
+    question: "Which planet is closest to the sun?",
+    options: ["Mercury", "Venus", "Earth", "Mars"],
+  };
+
+  test("exact option text still resolves", () => {
+    const q = modelQuestionToCanonical({ ...base, correct_answer: "Venus" });
+    expect(q).not.toBeNull();
+    expect(q && "correctIndex" in q ? q.correctIndex : -1).toBe(1);
+  });
+
+  test("bare letter resolves", () => {
+    const q = modelQuestionToCanonical({ ...base, correct_answer: "A" });
+    expect(q && "correctIndex" in q ? q.correctIndex : -1).toBe(0);
+  });
+
+  test("letter with punctuation resolves", () => {
+    const q = modelQuestionToCanonical({ ...base, correct_answer: "c)" });
+    expect(q && "correctIndex" in q ? q.correctIndex : -1).toBe(2);
+  });
+
+  test("prefixed option label resolves", () => {
+    const q = modelQuestionToCanonical({ ...base, correct_answer: "Option D" });
+    expect(q && "correctIndex" in q ? q.correctIndex : -1).toBe(3);
+  });
+
+  test("numeric correct_answer is treated as an index", () => {
+    const q = modelQuestionToCanonical({ ...base, correct_answer: 2 });
+    expect(q && "correctIndex" in q ? q.correctIndex : -1).toBe(2);
+  });
+
+  test("letter beyond the option count still rejects", () => {
+    expect(modelQuestionToCanonical({ ...base, correct_answer: "H" })).toBeNull();
   });
 });
