@@ -11,10 +11,10 @@
 // before storage; this module only extracts and reports what it can read.
 
 // pdfjs-dist (bundled by pdf-parse) references browser globals (DOMMatrix,
-// window, document, ...) at module load time, which aren't available in
-// Node.js serverless runtimes. Shim them first so pdf-parse can load.
+// window, document, ...) at module load time. Shim them FIRST, before
+// pdf-parse is loaded, so the module can evaluate in a Node.js serverless
+// runtime (Vercel has no DOM).
 import "@/lib/ai/dom-shim.server";
-import { PDFParse } from "pdf-parse";
 
 export type ExtractedPage = {
   page: number; // 1-based
@@ -76,6 +76,11 @@ export const ACCEPTED_MIME_TYPES = new Set([
  * text API. Returns per-page text plus page count. Flags pages with almost
  * no extractable text as needing OCR. Never throws — failures are reported
  * via the result's `error` field.
+ *
+ * pdf-parse is loaded dynamically here (not at module top level) so that the
+ * DOM shim above has already run and defined DOMMatrix before pdfjs-dist
+ * evaluates. This avoids a ReferenceError in serverless runtimes that lack
+ * DOM APIs.
  */
 export async function extractPdf(buffer: Buffer): Promise<ExtractionResult> {
   const result: ExtractionResult = {
@@ -85,6 +90,8 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractionResult> {
     unreadablePages: [],
     error: null,
   };
+
+  const { PDFParse } = await import("pdf-parse");
 
   try {
     const pdf = new PDFParse({ data: buffer });
