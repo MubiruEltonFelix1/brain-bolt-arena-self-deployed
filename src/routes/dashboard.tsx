@@ -124,9 +124,7 @@ function Dashboard() {
       .order("position");
     if (!qs || qs.length === 0) {
       setCreatingId(null);
-      toast.error(
-        "Nothing to play yet. Include at least one question before starting a game.",
-      );
+      toast.error("Nothing to play yet. Include at least one question before starting a game.");
       return;
     }
     const code = generateGameCode();
@@ -176,6 +174,12 @@ function Dashboard() {
           >
             + NEW QUIZ
           </button>
+          <button
+            onClick={() => navigate({ to: "/prep/new" })}
+            className="border border-border px-6 py-3 font-display text-xs uppercase hover:border-volt hover:text-volt transition-colors active:scale-95"
+          >
+            NEW FROM MATERIAL
+          </button>
         </div>
 
         <HostAuthorizationCard
@@ -197,6 +201,12 @@ function Dashboard() {
               className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95"
             >
               + NEW QUIZ
+            </button>
+            <button
+              onClick={() => navigate({ to: "/prep/new" })}
+              className="border border-border px-6 py-3 font-display text-xs uppercase hover:border-volt hover:text-volt transition-colors active:scale-95"
+            >
+              NEW FROM MATERIAL
             </button>
             <Link
               to="/arena"
