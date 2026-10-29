@@ -95,6 +95,72 @@ async function resolvePrincipalId(supabaseAdmin: Supabase, userId: string): Prom
   return (principal as { id: string }).id;
 }
 
+type JobPage = { page: number; text: string; section?: string | null };
+
+/**
+ * The best available per-page text for a job. OCR output wins over native
+ * extraction when the document had no text layer (scanned / image PDFs).
+ */
+async function loadJobPages(supabaseAdmin: Supabase, jobId: string): Promise<JobPage[]> {
+  const { data: stages } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
+    .select("stage, output_summary")
+    .eq("job_id", jobId)
+    .in("stage", ["document_extract", "document_ocr"]);
+
+  const byStage: Record<string, any> = Object.fromEntries(
+    ((stages as any[]) ?? []).map((s) => [s.stage, s.output_summary ?? {}]),
+  );
+  const extractPages: JobPage[] = byStage.document_extract?.pages ?? [];
+  const ocrPages: JobPage[] = byStage.document_ocr?.pages ?? [];
+  const usable = (p: JobPage) => (p.text ?? "").trim().length > 0;
+
+  return ocrPages.some(usable) || !extractPages.some(usable) ? ocrPages : extractPages;
+}
+
+type JobSourceRow = {
+  job_id: string;
+  question_index: number;
+  document_id: string;
+  version: number;
+  page: number;
+  section: string;
+  excerpt: string;
+  confidence: number | null;
+};
+
+/**
+ * Idempotently write the page-level source anchors for a job. prep_sources has
+ * NOT NULL job_id and question_index; page anchors carry the -1 sentinel
+ * because they are not tied to a draft question (per-question provenance
+ * written at generation uses real indices).
+ */
+async function writeJobSources(
+  supabaseAdmin: Supabase,
+  jobId: string,
+  document: { id: string; version?: number | null },
+): Promise<{ error: string | null; rows: JobSourceRow[] }> {
+  const pages = await loadJobPages(supabaseAdmin, jobId);
+  const rows: JobSourceRow[] = pages.map((p) => ({
+    job_id: jobId,
+    question_index: -1,
+    document_id: document.id,
+    version: document.version ?? 1,
+    page: p.page,
+    section: p.section ?? `Page ${p.page}`,
+    excerpt: p.text,
+    confidence: (p.text ?? "").length > 0 ? 1 : null,
+  }));
+
+  await (supabaseAdmin.from("prep_sources" as never) as any).delete().eq("job_id", jobId);
+  if (rows.length === 0) return { error: null, rows };
+
+  const { error } = await (supabaseAdmin.from("prep_sources" as never) as any).insert(rows);
+  return {
+    error: error ? ((error as { message?: string }).message ?? "insert failed") : null,
+    rows,
+  };
+}
+
 async function recordPrepUsage(
   supabaseAdmin: Supabase,
   principalId: string,
@@ -812,43 +878,20 @@ export const prepMapContent = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, sources: null };
     }
 
-    const { data: stages } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .select("stage, output_summary, status")
-      .eq("job_id", job.id)
-      .in("stage", ["document_extract", "document_ocr"]);
-
-    // Prefer OCR pages when the document was image-based: the extract stage
-    // holds empty text for scanned pages, so mapping from it would produce
-    // blank sources and fail downstream generation.
-    const byStage: Record<string, any> = Object.fromEntries(
-      ((stages as any[]) ?? []).map((s) => [s.stage, s.output_summary ?? {}]),
-    );
-    const extractPages: Array<{ page: number; text: string; section?: string }> =
-      byStage.document_extract?.pages ?? [];
-    const ocrPages: Array<{ page: number; text: string; section?: string }> =
-      byStage.document_ocr?.pages ?? [];
-
-    const usable = (p: { text: string }) => (p.text ?? "").trim().length > 0;
-    const pages =
-      ocrPages.some(usable) || !extractPages.some(usable) ? ocrPages : extractPages;
-
-    if (pages.length === 0) {
-      return { error: "validation_failed" as const, sources: null };
+    const written = await writeJobSources(supabaseAdmin, job.id, document);
+    if (written.error) {
+      // Never swallow this: an empty prep_sources table surfaces later as a
+      // confusing validation_failed on the blueprint step.
+      console.error("[prep/map] insert sources failed", written.error);
+      return { error: "unknown" as const, detail: written.error, sources: null };
     }
-
-    const sources = pages.map((p) => ({
-      document_id: document.id,
-      version: document.version,
-      page: p.page,
-      section: p.section ?? `Page ${p.page}`,
-      excerpt: p.text,
-      confidence: p.text.length > 0 ? 1 : null,
-    }));
-
-    // Idempotent re-map: replace existing sources for this job.
-    await (supabaseAdmin.from("prep_sources" as never) as any).delete().eq("job_id", job.id);
-    if (sources.length > 0) {
-      await (supabaseAdmin.from("prep_sources" as never) as any).insert(sources);
+    const sources = written.rows;
+    if (sources.length === 0) {
+      return {
+        error: "validation_failed" as const,
+        detail: "No page text was found for this document. Check the extraction/OCR output.",
+        sources: null,
+      };
     }
 
     await (supabaseAdmin.from("prep_job_stages" as never) as any)
@@ -913,14 +956,47 @@ export const prepSetBlueprint = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, blueprint: null };
     }
 
-    const { data: sources } = await (supabaseAdmin.from("prep_sources" as never) as any)
-      .select("page, section, excerpt")
-      .eq("job_id", job.id)
-      .order("page", { ascending: true });
-    const availablePages = new Set((sources ?? []).map((s: any) => s.page));
+    const selectSources = async () =>
+      (((await (supabaseAdmin.from("prep_sources" as never) as any)
+        .select("page, section, excerpt")
+        .eq("job_id", job.id)
+        .order("page", { ascending: true })) as { data?: unknown }).data ?? []) as Array<{
+        page: number;
+        section: string | null;
+        excerpt: string;
+      }>;
+
+    let jobSources = await selectSources();
+
+    // Self-heal: earlier builds never wrote these rows (the insert violated
+    // NOT NULL job_id/question_index and the error was swallowed), which left
+    // jobs stuck here with no route back to the content map stage. Rebuild the
+    // anchors from the stored extract/OCR page text rather than failing.
+    if (jobSources.length === 0) {
+      const written = await writeJobSources(supabaseAdmin, job.id, document);
+      if (written.error) {
+        return { error: "unknown" as const, detail: written.error, blueprint: null };
+      }
+      jobSources = await selectSources();
+    }
+
+    if (jobSources.length === 0) {
+      return {
+        error: "validation_failed" as const,
+        detail:
+          "No page text is available for this job. Re-run extraction before saving a blueprint.",
+        blueprint: null,
+      };
+    }
+
+    const availablePages = new Set(jobSources.map((s) => s.page));
     const invalidPages = data.includedPageNumbers.filter((p) => !availablePages.has(p));
     if (invalidPages.length > 0) {
-      return { error: "validation_failed" as const, blueprint: null };
+      return {
+        error: "validation_failed" as const,
+        detail: `No saved text for page(s) ${invalidPages.join(", ")}. Re-run the content map step.`,
+        blueprint: null,
+      };
     }
 
     const blueprint = {
@@ -930,7 +1006,7 @@ export const prepSetBlueprint = createServerFn({ method: "POST" })
       types: data.types,
       includedPageNumbers: data.includedPageNumbers,
       instructions: data.instructions,
-      sourceCount: sources?.length ?? 0,
+      sourceCount: jobSources.length,
       quizId: data.quizId ?? null,
     };
 
@@ -1110,14 +1186,26 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
       job_id: job.id,
       question_index: s.questionIndex,
       document_id: document.id,
-      version: document.version,
+      version: document.version ?? 1,
       page: s.page,
       section: s.section,
       excerpt: s.excerpt,
       confidence: s.excerpt ? 1 : null,
     }));
     if (sourceRows.length > 0) {
-      await (supabaseAdmin.from("prep_sources" as never) as any).insert(sourceRows);
+      const { error: srcErr } = await (supabaseAdmin.from("prep_sources" as never) as any).insert(
+        sourceRows,
+      );
+      if (srcErr) {
+        console.error("[prep/generate] insert sources failed", srcErr);
+        return { error: "unknown" as const, detail: srcErr.message, generated: null };
+      }
+      // Page-level anchors from the content map are superseded by the
+      // per-question provenance above; drop the -1 sentinel rows.
+      await (supabaseAdmin.from("prep_sources" as never) as any)
+        .delete()
+        .eq("job_id", job.id)
+        .eq("question_index", -1);
     }
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
