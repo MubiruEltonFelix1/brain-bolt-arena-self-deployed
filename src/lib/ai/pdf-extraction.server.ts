@@ -11,10 +11,10 @@
 // before storage; this module only extracts and reports what it can read.
 
 // pdfjs-dist (bundled by pdf-parse) references browser globals (DOMMatrix,
-// window, document, ...) at module load time. Shim them FIRST, before
-// pdf-parse is loaded, so the module can evaluate in a Node.js serverless
-// runtime (Vercel has no DOM).
-import "@/lib/ai/dom-shim.server";
+// window, document, ...) at module load time, and a bare side-effect import is
+// tree-shaken out because package.json declares sideEffects:false. Import the
+// installer as a binding and call it inside extractPdf, before pdf-parse loads.
+import { installDomShims } from "@/lib/ai/dom-shim.server";
 
 export type ExtractedPage = {
   page: number; // 1-based
@@ -91,6 +91,8 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractionResult> {
     error: null,
   };
 
+  // Must run before pdf-parse evaluates pdfjs-dist at import time.
+  installDomShims();
   const { PDFParse } = await import("pdf-parse");
 
   try {
