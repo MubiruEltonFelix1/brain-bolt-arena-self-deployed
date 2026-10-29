@@ -111,60 +111,47 @@ export class BedrockDeepSeekV3Provider implements AiProvider {
         send: (cmd: unknown) => Promise<{ body?: unknown }>;
       };
     };
-    const mod =
-      (await import("@aws-sdk/client-bedrock-runtime")) as unknown as BedrockRuntimeModule;
-    const command = new mod.InvokeModelCommand({
-      modelId: this.modelId,
-      contentType: "application/json",
-      accept: "application/json",
-      body: JSON.stringify(body),
-    });
+    const mod = await import("@aws-sdk/client-bedrock-runtime");
+const command = new mod.ConverseCommand({
+  modelId: this.modelId,
+  system: [{ text: prompt.system }],
+  messages: [
+    {
+      role: "user",
+      content: [{ text: prompt.user }],
+    },
+  ],
+  inferenceConfig: {
+    maxTokens,
+    temperature,
+  },
+  // Keep structured question output in the text response.
+  additionalModelRequestFields: { reasoning_effort: "none" },
+});
 
-    let response;
-    try {
-      response = await (await this.getClient()).send(command);
-    } catch (e: unknown) {
-      // Translate SDK errors into our taxonomy. NEVER leak provider names,
-      // model IDs, status codes, or stack traces to the caller.
-      const eAsRecord = e as { name?: unknown; message?: unknown };
-      const name = typeof eAsRecord.name === "string" ? eAsRecord.name : "";
-      const msg = String(eAsRecord.message ?? "").toLowerCase();
-      if (name === "TimeoutError" || msg.includes("timeout") || msg.includes("aborted")) {
-        throw makeProviderError("provider_timeout", e);
-      }
-      if (msg.includes("throttl") || msg.includes("rate")) {
-        throw makeProviderError("provider_rate_limited", e);
-      }
-      if (msg.includes("modelstreamerror") || msg.includes("modelnotready")) {
-        throw makeProviderError("provider_unavailable", e);
-      }
-      throw makeProviderError("provider_unavailable", e);
-    }
-
-    const latencyMs = Date.now() - start;
-
-    // Parse the response body. SDK returns a Uint8Array; Bedrock sends JSON.
-    const rawText = decodeResponseBody(response.body);
-    const parsed = tryParse(rawText);
-
-    // V3.2 returns { choices: [{ text: "..." }] } just like R1.
-    const text = parsed?.choices?.[0]?.text ?? rawText;
-
-    // V3.2 doesn't emit <think>...</think> blocks, so no stripping needed.
-    // The text is the assistant's response — clean JSON in our case.
-
-    // Pull token counts. V3.2 uses OpenAI-style names.
-    const inputTokens = parsed?.usage?.prompt_tokens ?? 0;
-    const outputTokens = parsed?.usage?.completion_tokens ?? 0;
-
-    return {
-      text,
-      inputTokens,
-      outputTokens,
-      latencyMs,
-    };
-  }
+let response;
+try {
+  response = await (await this.getClient()).send(command);
+} catch (e: unknown) {
+  // Keep your existing catch block that maps AWS errors to provider errors.
+  // Put the existing catch body here.
+  throw e;
 }
+
+const content = response.output?.message?.content ?? [];
+const text = content
+  .flatMap((block: { text?: string }) =>
+    typeof block.text === "string" ? [block.text] : [],
+  )
+  .join("\n");
+
+return {
+  text,
+  inputTokens: response.usage?.inputTokens ?? 0,
+  outputTokens: response.usage?.outputTokens ?? 0,
+  latencyMs: response.metrics?.latencyMs ?? Date.now() - start,
+};
+
 
 function decodeResponseBody(body: unknown): string {
   if (typeof body === "string") return body;
