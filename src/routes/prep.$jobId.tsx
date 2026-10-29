@@ -267,8 +267,14 @@ function PrepJob() {
     try {
       const res = await fn();
       if (res.error) {
+        const label = STAGE_LABELS[stage] ?? stage;
+        const detail = typeof res.detail === "string" ? res.detail : null;
         setError(
-          res.error === "not_authorized" ? "You're not allowed to do that." : String(res.error),
+          res.error === "not_authorized"
+            ? "You're not allowed to do that."
+            : detail
+              ? `${label} failed: ${detail}`
+              : String(res.error),
         );
       } else {
         await load({ silent: true });

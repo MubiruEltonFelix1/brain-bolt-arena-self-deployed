@@ -74,6 +74,18 @@ if (typeof globalThis.navigator === "undefined") {
   (globalThis as Record<string, unknown>).navigator = { userAgent: "node" };
 }
 
+// pdfjs-dist's page render loop schedules itself with window.requestAnimationFrame
+// (see _scheduleNext in pdf.mjs). Text extraction never reaches it, but
+// rasterizing a page for OCR does — without this the render rejects with
+// "window.requestAnimationFrame is not a function".
+if (typeof (globalThis as Record<string, unknown>).requestAnimationFrame === "undefined") {
+  const shimRaf = (cb: (time: number) => void): unknown =>
+    setTimeout(() => cb(Date.now()), 16);
+  (globalThis as Record<string, unknown>).requestAnimationFrame = shimRaf;
+  (globalThis as Record<string, unknown>).cancelAnimationFrame = (id: unknown) =>
+    clearTimeout(id as ReturnType<typeof setTimeout>);
+}
+
 if (typeof globalThis.Image === "undefined") {
   class ShimImage {}
   (globalThis as Record<string, unknown>).Image = ShimImage;

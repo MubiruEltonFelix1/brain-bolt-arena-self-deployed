@@ -417,10 +417,33 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
 
     // Images have no native text layer — extractImage flags them for the OCR
     // stage. Running pdf-parse on image bytes would just throw.
-    const extraction =
-      document.mime_type === "application/pdf"
-        ? await extractPdf(fileBuffer)
-        : extractImage(fileBuffer, document.mime_type);
+    let extraction: Awaited<ReturnType<typeof extractPdf>>;
+    try {
+      extraction =
+        document.mime_type === "application/pdf"
+          ? await extractPdf(fileBuffer)
+          : extractImage(fileBuffer, document.mime_type);
+    } catch (e) {
+      // Report the real reason instead of letting the server fn 500, which
+      // the client could only render as "failed unexpectedly".
+      const detail = e instanceof Error ? `${e.name}: ${e.message}` : String(e);
+      console.error("[prep/extract] extraction threw", e);
+      await (supabaseAdmin.from("prep_documents" as never) as any)
+        .update({ status: "failed", error: detail })
+        .eq("id", document.id);
+      await (supabaseAdmin.from("prep_job_stages" as never) as any)
+        .update({
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          error: detail,
+        })
+        .eq("job_id", job.id)
+        .eq("stage", "document_extract");
+      await (supabaseAdmin.from("prep_jobs" as never) as any)
+        .update({ status: "failed", error: detail, current_stage: "document_extract" })
+        .eq("id", job.id);
+      return { error: "extraction_failed" as const, detail, extracted: null };
+    }
 
     const pagesPayload = extraction.pages.map((p) => ({
       page: p.page,
@@ -461,7 +484,11 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
       await (supabaseAdmin.from("prep_jobs" as never) as any)
         .update({ status: "failed", error: extraction.error, current_stage: "document_extract" })
         .eq("id", job.id);
-      return { error: "invalid_output" as const, extracted: null };
+      return {
+        error: "invalid_output" as const,
+        detail: extraction.error,
+        extracted: null,
+      };
     }
 
     await (supabaseAdmin.from("prep_documents" as never) as any)

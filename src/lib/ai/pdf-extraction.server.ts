@@ -95,7 +95,11 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractionResult> {
 
   try {
     const pdf = new PDFParse({ data: buffer });
-    const [info, text] = await Promise.all([pdf.getInfo(), pdf.getText()]);
+    // Sequential, not Promise.all: pdf-parse v2 keeps per-document worker
+    // state, and running getInfo() and getText() concurrently on one instance
+    // rejects with "The object can not be cloned."
+    const info = await pdf.getInfo();
+    const text = await pdf.getText();
     result.pageCount = info.total;
 
     for (const pt of text.pages) {
