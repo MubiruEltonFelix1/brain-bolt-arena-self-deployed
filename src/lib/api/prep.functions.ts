@@ -71,6 +71,25 @@ async function authorizePrep(
   return allowed === true;
 }
 
+/**
+ * Resolve the auth user ID (claims.sub) to a principals.id for owner-scoped
+ * rows. The JWT sub maps to principals.user_id; owner_principal_id columns
+ * reference principals.id.
+ */
+async function resolvePrincipalId(supabaseAdmin: Supabase, userId: string): Promise<string | null> {
+  const { data: principal, error: pErr } = await supabaseAdmin
+    .from("principals")
+    .select("id")
+    .eq("type", "user")
+    .eq("user_id", userId)
+    .maybeSingle();
+  if (pErr || !principal) {
+    console.error("[prep] resolve principal failed", pErr);
+    return null;
+  }
+  return (principal as { id: string }).id;
+}
+
 async function recordPrepUsage(
   supabaseAdmin: Supabase,
   principalId: string,
@@ -126,12 +145,24 @@ export const prepUploadDocument = createServerFn({ method: "POST" })
       return { error: "over_limit" as const, jobId: null, documentId: null, uploadUrl: null };
     }
 
-    // 1. Create the document row (placeholder object key) to get documentId.
+    // Resolve the auth user ID (claims.sub) to a principals.id for owner-scoped
+    // rows. The JWT sub may map to principals.user_id rather than principals.id.
+    const { data: principal, error: pErr } = await supabaseAdmin
+      .from("principals")
+      .select("id")
+      .eq("type", "user")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (pErr || !principal) {
+      console.error("[prep/upload] resolve principal failed", pErr);
+      return { error: "unknown" as const, jobId: null, documentId: null, uploadUrl: null };
+    }
+    const principalId = (principal as { id: string }).id;
     const { data: doc, error: docErr } = await (
       supabaseAdmin.from("prep_documents" as never) as any
     )
       .insert({
-        owner_principal_id: userId,
+        owner_principal_id: principalId,
         bucket: PREP_DOCUMENTS_BUCKET,
         object_key: "pending",
         mime_type: data.mimeType,
@@ -150,7 +181,7 @@ export const prepUploadDocument = createServerFn({ method: "POST" })
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .insert({
         document_id: documentId,
-        owner_principal_id: userId,
+        owner_principal_id: principalId,
         quiz_id: data.quizId ?? null,
         status: "pending",
         current_stage: null,
@@ -166,7 +197,7 @@ export const prepUploadDocument = createServerFn({ method: "POST" })
 
     // 3. Object path is owner-scoped: owner_principal_id/{jobId}/source{ext}.
     const ext = data.fileName.slice(data.fileName.lastIndexOf(".")).toLowerCase() || ".bin";
-    const objectPath = `${userId}/${jobId}/source${ext}`;
+    const objectPath = `${principalId}/${jobId}/source${ext}`;
 
     // 4. Update the document row with the real object key.
     await (supabaseAdmin.from("prep_documents" as never) as any)
@@ -215,6 +246,11 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
       return { error: "over_limit" as const, document: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, document: null };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*, documents:document_id(*)")
       .eq("id", data.jobId)
@@ -223,7 +259,7 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
       return { error: "not-found" as const, document: null };
     }
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, document: null };
     }
     if (job.status !== "pending") {
@@ -334,6 +370,14 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
     if (!(await authorizePrep(supabase, userId, "ai.prep_document", data.jobId))) {
       return { error: "not_authorized" as const, extracted: null };
     }
+    if (!prepAiEnabled()) {
+      return { error: "over_limit" as const, extracted: null };
+    }
+
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, extracted: null };
+    }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*, documents:document_id(*)")
@@ -341,7 +385,7 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, extracted: null };
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, extracted: null };
     }
     if (job.status === "cancelled") {
@@ -448,6 +492,14 @@ export const prepMapContent = createServerFn({ method: "POST" })
     if (!(await authorizePrep(supabase, userId, "ai.prep_document", data.jobId))) {
       return { error: "not_authorized" as const, sources: null };
     }
+    if (!prepAiEnabled()) {
+      return { error: "over_limit" as const, sources: null };
+    }
+
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, sources: null };
+    }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*, documents:document_id(*)")
@@ -455,7 +507,7 @@ export const prepMapContent = createServerFn({ method: "POST" })
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, sources: null };
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, sources: null };
     }
 
@@ -529,6 +581,14 @@ export const prepSetBlueprint = createServerFn({ method: "POST" })
     if (!(await authorizePrep(supabase, userId, "ai.prep_job", data.jobId))) {
       return { error: "not_authorized" as const, blueprint: null };
     }
+    if (!prepAiEnabled()) {
+      return { error: "over_limit" as const, blueprint: null };
+    }
+
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, blueprint: null };
+    }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*, documents:document_id(*)")
@@ -536,7 +596,7 @@ export const prepSetBlueprint = createServerFn({ method: "POST" })
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, blueprint: null };
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, blueprint: null };
     }
 
@@ -611,13 +671,18 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
       return { error: "over_limit" as const, generated: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, generated: null };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*, documents:document_id(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, generated: null };
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, generated: null };
     }
     if (job.status === "cancelled") {
@@ -781,12 +846,18 @@ export const prepValidate = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, validated: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, validated: null };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, validated: null };
-    if (!isJobOwner(job, userId)) return { error: "not_authorized" as const, validated: null };
+    if (job.owner_principal_id !== principalId)
+      return { error: "not_authorized" as const, validated: null };
 
     // Pull the latest draft's questions (authoritative assembled set).
     const { data: draft } = await (supabaseAdmin.from("prep_drafts" as never) as any)
@@ -867,13 +938,18 @@ export const prepQualityReview = createServerFn({ method: "POST" })
       return { error: "over_limit" as const, reviewed: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, reviewed: null };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*, documents:document_id(*)")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, reviewed: null };
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, reviewed: null };
     }
 
@@ -965,12 +1041,18 @@ export const prepAssembleDraft = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, draft: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, draft: null };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("*")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, draft: null };
-    if (!isJobOwner(job, userId)) return { error: "not_authorized" as const, draft: null };
+    if (job.owner_principal_id !== principalId)
+      return { error: "not_authorized" as const, draft: null };
 
     // Validate the full question set against the canonical schema.
     const report = validateQuiz({ title: data.title, questions: data.questions });
@@ -1046,6 +1128,11 @@ export const prepPublish = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, inserted: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, inserted: null };
+    }
+
     const { data: draft, error: draftErr } = await (
       supabaseAdmin.from("prep_drafts" as never) as any
     )
@@ -1054,7 +1141,7 @@ export const prepPublish = createServerFn({ method: "POST" })
       .maybeSingle();
     if (draftErr || !draft) return { error: "not-found" as const, inserted: null };
     const job = (draft as any).prep_jobs;
-    if (!job || job.owner_principal_id !== userId) {
+    if (!job || job.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, inserted: null };
     }
     if (draft.status !== "pending_review") {
@@ -1114,6 +1201,11 @@ export const prepJobStatus = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, job: null };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, job: null };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select(
         "id, status, current_stage, progress_pct, error, created_at, updated_at, completed_at, documents:document_id(*)",
@@ -1122,7 +1214,7 @@ export const prepJobStatus = createServerFn({ method: "POST" })
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const, job: null };
     const document = (job as any).documents;
-    if (!document || document.owner_principal_id !== userId) {
+    if (!document || document.owner_principal_id !== principalId) {
       return { error: "not_authorized" as const, job: null };
     }
 
@@ -1181,12 +1273,17 @@ export const prepCancel = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const };
     }
 
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const };
+    }
+
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .select("owner_principal_id, status")
       .eq("id", data.jobId)
       .maybeSingle();
     if (jobErr || !job) return { error: "not-found" as const };
-    if (job.owner_principal_id !== userId) return { error: "not_authorized" as const };
+    if (job.owner_principal_id !== principalId) return { error: "not_authorized" as const };
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
       .update({ status: "cancelled", cancelled_at: new Date().toISOString() })
