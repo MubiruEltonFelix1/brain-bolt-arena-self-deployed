@@ -77,14 +77,15 @@ async function authorizePrep(
  * reference principals.id.
  */
 async function resolvePrincipalId(supabaseAdmin: Supabase, userId: string): Promise<string | null> {
-  const { data: principal, error: pErr } = await supabaseAdmin
+  // claims.sub may map to principals.user_id OR principals.id — try both,
+  // mirroring the can() function which accepts either.
+  const { data: principal } = await supabaseAdmin
     .from("principals")
     .select("id")
     .eq("type", "user")
-    .eq("user_id", userId)
+    .or(`user_id.eq.${userId},id.eq.${userId}`)
     .maybeSingle();
-  if (pErr || !principal) {
-    console.error("[prep] resolve principal failed", pErr);
+  if (!principal) {
     return null;
   }
   return (principal as { id: string }).id;
