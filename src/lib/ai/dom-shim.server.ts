@@ -1,6 +1,11 @@
-// Shim browser globals that pdfjs-dist (used by pdf-parse) references at
-// module load time. Serverless/server runtimes have no DOM, so importing
-// pdf-parse or rendering a page would otherwise throw before any work runs.
+// Shim the browser globals that pdfjs-dist genuinely needs on a server.
+//
+// Keep this list MINIMAL. pdfjs-dist (via pdf-parse) needs DOMMatrix at module
+// load, and its page render loop needs requestAnimationFrame. It does NOT need
+// window or document: stubbing `document` here would make SSR-time code that
+// probes `typeof document !== "undefined"` take the browser path and crash.
+// sonner's <Toaster/> did exactly that — `document.documentElement` was
+// undefined, which 500'd every page in production.
 //
 // IMPORTANT: `package.json` declares `"sideEffects": false`, so a bare
 // `import "@/lib/ai/dom-shim.server"` is tree-shaken out of the SSR/Nitro
@@ -58,50 +63,15 @@ export function installDomShims(): void {
     (globalThis as Record<string, unknown>).DOMMatrix = ShimMatrix;
   }
 
-  // pdfjs-dist may probe for these at load time. Provide no-op stubs so the
-  // module loads; text extraction does not use them.
-
-  if (typeof globalThis.window === "undefined") {
-    (globalThis as Record<string, unknown>).window = globalThis;
-  }
-
-  if (typeof globalThis.document === "undefined") {
-    (globalThis as Record<string, unknown>).document = {
-      createElement: () => ({}),
-      createElementNS: () => ({}),
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    };
-  }
-
-  if (typeof globalThis.navigator === "undefined") {
-    (globalThis as Record<string, unknown>).navigator = { userAgent: "node" };
-  }
-
-  // pdfjs-dist's page render loop schedules itself with window.requestAnimationFrame
+  // pdfjs-dist's page render loop schedules itself with requestAnimationFrame
   // (see _scheduleNext in pdf.mjs). Text extraction never reaches it, but
   // rasterizing a page for OCR does — without this the render rejects with
   // "window.requestAnimationFrame is not a function".
   if (typeof (globalThis as Record<string, unknown>).requestAnimationFrame === "undefined") {
-    const shimRaf = (cb: (time: number) => void): unknown => setTimeout(() => cb(Date.now()), 16);
-    (globalThis as Record<string, unknown>).requestAnimationFrame = shimRaf;
+    (globalThis as Record<string, unknown>).requestAnimationFrame = (cb: (time: number) => void) =>
+      setTimeout(() => cb(Date.now()), 16);
     (globalThis as Record<string, unknown>).cancelAnimationFrame = (id: unknown) =>
       clearTimeout(id as ReturnType<typeof setTimeout>);
-  }
-
-  if (typeof globalThis.Image === "undefined") {
-    class ShimImage {}
-    (globalThis as Record<string, unknown>).Image = ShimImage;
-  }
-
-  if (typeof globalThis.OffscreenCanvas === "undefined") {
-    class ShimOffscreenCanvas {}
-    (globalThis as Record<string, unknown>).OffscreenCanvas = ShimOffscreenCanvas;
-  }
-
-  if (typeof globalThis.HTMLCanvasElement === "undefined") {
-    class ShimHTMLCanvasElement {}
-    (globalThis as Record<string, unknown>).HTMLCanvasElement = ShimHTMLCanvasElement;
   }
 }
 

@@ -5,6 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { detectMimeType, ACCEPTED_MIME_TYPES, extractImage } from "@/lib/ai/pdf-extraction.server";
+import { installDomShims } from "@/lib/ai/dom-shim.server";
 
 describe("ai / extraction: mime detection from magic bytes", () => {
   test("pdf signature detected", () => {
@@ -59,5 +60,30 @@ describe("ai / extraction: image upload", () => {
     expect(res.needsOcr).toBe(true);
     expect(res.unreadablePages).toEqual([1]);
     expect(res.error).toBeNull();
+  });
+});
+
+describe("ai / dom shim: must not fake browser document state", () => {
+  // Regression guard: stubbing `document` made server-rendered components that
+  // probe for it take the browser path. sonner's <Toaster/> read
+  // `document.documentElement.getAttribute("dir")` on an undefined
+  // documentElement and returned HTTP 500 for every page in production.
+  test("leaves document and window exactly as it found them", () => {
+    const g = globalThis as Record<string, unknown>;
+    const documentBefore = g.document;
+    const windowBefore = g.window;
+
+    installDomShims();
+
+    expect(g.document).toBe(documentBefore);
+    expect(g.window).toBe(windowBefore);
+  });
+
+  test("still provides what pdfjs actually needs", () => {
+    const g = globalThis as Record<string, unknown>;
+    installDomShims();
+    expect(typeof g.DOMMatrix).toBe("function");
+    expect(typeof g.requestAnimationFrame).toBe("function");
+    expect(typeof g.cancelAnimationFrame).toBe("function");
   });
 });
