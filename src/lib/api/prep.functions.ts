@@ -254,7 +254,7 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
 
     const principalId = await resolvePrincipalId(supabaseAdmin, userId);
     if (!principalId) {
-      return { error: "unknown" as const, document: null };
+      return { error: "principal_resolve_failed" as const, document: null };
     }
 
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
@@ -269,10 +269,10 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, document: null };
     }
     if (job.status !== "pending") {
-      return { error: "unknown" as const, document: null };
+      return { error: "invalid_state" as const, document: null };
     }
     if (!document.object_key || document.object_key === "pending") {
-      return { error: "unknown" as const, document: null };
+      return { error: "invalid_state" as const, document: null };
     }
 
     // Download the object and validate actual bytes.
@@ -285,7 +285,7 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
       fileBuffer = Buffer.from(await downloaded.arrayBuffer());
     } catch (e) {
       console.error("[prep/confirm] download failed", e);
-      return { error: "unknown" as const, document: null };
+      return { error: "download_failed" as const, document: null };
     }
 
     // Validate mime from actual bytes (never trust extension / hint).

@@ -93,13 +93,16 @@ function PrepNew() {
       // 3. Confirm + validate (mime/size/pages) server-side.
       const confirmed = await prepConfirmUpload({ data: { jobId: started.jobId } });
       if (confirmed.error) {
-        setError(
-          confirmed.error === "validation_failed"
-            ? "Unsupported file type or the file could not be read."
-            : confirmed.error === "over_limit"
-              ? "File exceeds the size or page limit."
-              : "Couldn't validate the upload. Try again.",
-        );
+        const confirmErrors: Record<string, string> = {
+          validation_failed: "Unsupported file type or the file could not be read.",
+          over_limit: "File exceeds the size or page limit.",
+          not_authorized: "You don't have permission to access this upload. Try again.",
+          "not-found": "Upload not found. Start a new preparation.",
+          principal_resolve_failed: "Couldn't resolve your account. Sign in again and try again.",
+          invalid_state: "This upload was already processed. Start a new preparation.",
+          download_failed: "Couldn't read the uploaded file from storage. Try again.",
+        };
+        setError(confirmErrors[confirmed.error] ?? "Couldn't validate the upload. Try again.");
         return;
       }
 
