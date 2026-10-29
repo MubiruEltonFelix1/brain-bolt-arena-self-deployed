@@ -2,7 +2,7 @@
 //
 // R1 is the current production default; switch to V3.2 by setting
 // BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3 and
-// BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0. V3.2 is cheaper and faster but
+// BRAINBOLT_AI_MODEL=deepseek.v3.2. V3.2 is cheaper and faster but
 // stays off the default path because R1 has been more reliable for
 // structured output in production so far.
 //
@@ -29,7 +29,7 @@ import type { AiProvider, AiPrompt, AiRawResponse } from "@/lib/ai/types";
 import { getPricingForModel } from "@/lib/ai/cost-table";
 
 /** DeepSeek V3.2 on Bedrock via the cross-region inference profile. */
-const DEEPSEEK_V32_MODEL = "us.deepseek.v3.2:0";
+const DEEPSEEK_V32_MODEL = "deepseek.v3.2";
 
 /**
  * Request body for InvokeModelCommand with DeepSeek V3.2.

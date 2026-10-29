@@ -29,7 +29,7 @@ const DEEPSEEK_R1_BEDROCK: ModelPricing = {
  * V3.2 example). ~2.2x cheaper than R1 for the same generation.
  *
  * Switch back to V3.2 by setting BRAINBOLT_AI_PROVIDER=bedrock-deepseek-v3
- * and BRAINBOLT_AI_MODEL=us.deepseek.v3.2:0.
+ * and BRAINBOLT_AI_MODEL=deepseek.v3.2.
  */
 const DEEPSEEK_V32_BEDROCK: ModelPricing = {
   inputPerMTok: 0.62,
@@ -61,7 +61,7 @@ const CLAUDE_35_SONNET_BEDROCK: ModelPricing = {
 
 const PRICING_TABLE: Record<string, ModelPricing> = {
   "us.deepseek.r1-v1:0": DEEPSEEK_R1_BEDROCK,
-  "us.deepseek.v3.2:0": DEEPSEEK_V32_BEDROCK,
+  "deepseek.v3.2": DEEPSEEK_V32_BEDROCK,
   "anthropic.claude-3-5-haiku-20241022-v1:0": CLAUDE_35_HAIKU_BEDROCK,
   "anthropic.claude-3-5-sonnet-20241022-v2:0": CLAUDE_35_SONNET_BEDROCK,
 };
@@ -70,7 +70,7 @@ const PRICING_TABLE: Record<string, ModelPricing> = {
 export const DEFAULT_MODEL_ID = "us.deepseek.r1-v1:0";
 
 /** Default model for source-grounded question generation (Phase 10 prep pipeline). */
-export const PREP_DEFAULT_GENERATE_MODEL = "us.deepseek.v3.2:0";
+export const PREP_DEFAULT_GENERATE_MODEL = "deepseek.v3.2";
 
 /* ------------------------------------------------------------------ */
 /* Prep-pipeline task model configuration                             */
@@ -95,12 +95,12 @@ export const PREP_TASK_DEFAULTS: Record<
     temperature: 0.2,
   },
   question_generate: {
-    modelId: "us.deepseek.v3.2:0",
+    modelId: "deepseek.v3.2",
     maxOutputTokens: 8000,
     temperature: 0.4,
   },
   question_regenerate: {
-    modelId: "us.deepseek.v3.2:0",
+    modelId: "deepseek.v3.2",
     maxOutputTokens: 2000,
     temperature: 0.5,
   },
@@ -110,7 +110,7 @@ export const PREP_TASK_DEFAULTS: Record<
     temperature: 0.2,
   },
   simple: {
-    modelId: "us.deepseek.v3.2:0",
+    modelId: "deepseek.v3.2",
     maxOutputTokens: 4000,
     temperature: 0.3,
   },

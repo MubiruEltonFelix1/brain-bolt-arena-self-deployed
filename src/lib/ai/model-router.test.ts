@@ -38,7 +38,7 @@ describe("ai / router: task model configuration", () => {
   });
 
   test("question_generate defaults to DeepSeek V3.2", () => {
-    expect(prepTaskConfig("question_generate").modelId).toBe("us.deepseek.v3.2:0");
+    expect(prepTaskConfig("question_generate").modelId).toBe("deepseek.v3.2");
   });
 
   test("router modelIdFor matches prepTaskConfig", () => {
