@@ -114,6 +114,7 @@ export class ModelRouter {
     return provider.generate({
       system: prompt.system,
       user: prompt.user,
+      images: prompt.images,
       maxOutputTokens: prompt.maxOutputTokens ?? cfg.maxOutputTokens,
       temperature: prompt.temperature ?? cfg.temperature,
     });

@@ -18,6 +18,8 @@ import { z } from "zod";
 import { requireSupabaseAuth } from "@/integrations/supabase/auth-middleware";
 import { BrainBoltAiService } from "@/lib/ai/service.server";
 import { modelRouter, PrepTask, prepAiEnabled } from "@/lib/ai/model-router";
+import { prepTaskConfig } from "@/lib/ai/cost-table";
+import { PROMPT_PREP_VERSIONS } from "@/lib/ai/prep-prompts";
 import { recordUsage } from "@/lib/ai/usage-log.server";
 import { FRIENDLY_MESSAGES, type AiErrorCode } from "@/lib/ai/types";
 import {
@@ -464,6 +466,17 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
       })
       .eq("id", document.id);
 
+    if (extraction.needsOcr) {
+      await (supabaseAdmin.from("prep_job_stages" as never) as any).insert({
+        job_id: job.id,
+        stage: "document_ocr",
+        attempt: 1,
+        status: "pending",
+        retry_count: 0,
+        started_at: null,
+      });
+    }
+
     await (supabaseAdmin.from("prep_jobs" as never) as any)
       .update({
         status: "running",
@@ -479,6 +492,191 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
         pageCount: extraction.pageCount,
         needsOcr: extraction.needsOcr,
         unreadablePages: extraction.unreadablePages,
+      },
+    };
+  });
+
+/* ------------------------------------------------------------------ */
+/* Stage 3 — OCR (scanned/image-based PDF pages)                      */
+/* ------------------------------------------------------------------ */
+
+const MIN_OCR_CHARS_PER_PAGE = 20;
+
+const prepOcrDocumentInput = z.object({
+  jobId: z.string().uuid(),
+});
+
+export const prepOcrDocument = createServerFn({ method: "POST" })
+  .middleware([requireSupabaseAuth])
+  .inputValidator(prepOcrDocumentInput)
+  .handler(async ({ data, context }) => {
+    const { supabase, userId } = context as { supabase: Supabase; userId: string };
+    const supabaseAdmin = await getAdmin();
+
+    if (!(await authorizePrep(supabaseAdmin, userId, "ai.prep_generate", data.jobId))) {
+      return { error: "not_authorized" as const, extracted: null };
+    }
+    if (!prepAiEnabled()) {
+      return { error: "over_limit" as const, extracted: null };
+    }
+
+    const principalId = await resolvePrincipalId(supabaseAdmin, userId);
+    if (!principalId) {
+      return { error: "unknown" as const, extracted: null };
+    }
+
+    const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
+      .select("*, documents:prep_documents!prep_jobs_document_id_fkey(*)")
+      .eq("id", data.jobId)
+      .maybeSingle();
+    if (jobErr || !job) return { error: "not-found" as const, extracted: null };
+    const document = (job as any).documents;
+    if (!document || document.owner_principal_id !== principalId) {
+      return { error: "not_authorized" as const, extracted: null };
+    }
+
+    let fileBuffer: Buffer;
+    try {
+      const { data: downloaded, error: dErr } = await supabaseAdmin.storage
+        .from(PREP_DOCUMENTS_BUCKET)
+        .download(document.object_key);
+      if (dErr || !downloaded) throw new Error(dErr?.message ?? "download failed");
+      fileBuffer = Buffer.from(await downloaded.arrayBuffer());
+    } catch (e) {
+      console.error("[prep/ocr] download failed", e);
+      return { error: "unknown" as const, extracted: null };
+    }
+
+    const { data: stages } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
+      .select("output_summary")
+      .eq("job_id", job.id)
+      .eq("stage", "document_extract")
+      .maybeSingle();
+    const summary = (stages as any)?.output_summary ?? {};
+    const pageCount: number = summary.pageCount ?? 0;
+
+    if (pageCount === 0) {
+      return { error: "validation_failed" as const, extracted: null };
+    }
+
+    const { getDocument } = await import("pdfjs-dist");
+    const { createCanvas } = await import("canvas");
+
+    const loadingTask = getDocument({ data: fileBuffer });
+    const pdf = await loadingTask.promise;
+
+    const ocrPages: Array<{ page: number; text: string; section: string | null }> = [];
+    const unreadablePages: number[] = [];
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalLatencyMs = 0;
+
+    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+      try {
+        const page = await pdf.getPage(pageNum);
+        const viewport = page.getViewport({ scale: 2.0 });
+        const canvas = createCanvas(viewport.width, viewport.height);
+        const context = canvas.getContext("2d");
+        await (page.render as unknown as any)({ canvasContext: context, viewport }).promise;
+        const pngBuffer = canvas.toBuffer("image/png");
+        const base64 = pngBuffer.toString("base64");
+
+        const response = await modelRouter.generate("ocr", {
+          system: PROMPT_PREP_VERSIONS.prep_ocr_v1.system,
+          user: PROMPT_PREP_VERSIONS.prep_ocr_v1.buildUser({ page: pageNum }),
+          images: [{ data: base64, mediaType: "image/png" }],
+          maxOutputTokens: prepTaskConfig("ocr").maxOutputTokens,
+          temperature: prepTaskConfig("ocr").temperature,
+        });
+
+        totalInputTokens += response.inputTokens;
+        totalOutputTokens += response.outputTokens;
+        totalLatencyMs += response.latencyMs;
+
+        const parsed = extractJsonObject(response.text);
+        let ocrText = "";
+        if (parsed) {
+          const parsedByVersion = PROMPT_PREP_VERSIONS.prep_ocr_v1.parse(parsed);
+          if (parsedByVersion) {
+            ocrText = (parsedByVersion as { text: string }).text ?? "";
+          }
+        }
+
+        ocrPages.push({ page: pageNum, text: ocrText, section: null });
+        if (ocrText.length < MIN_OCR_CHARS_PER_PAGE) {
+          unreadablePages.push(pageNum);
+        }
+      } catch (e) {
+        console.error(`[prep/ocr] page ${pageNum} failed`, e);
+        unreadablePages.push(pageNum);
+        ocrPages.push({ page: pageNum, text: "", section: null });
+      }
+    }
+
+    const readableCount = ocrPages.filter((p) => p.text.length >= MIN_OCR_CHARS_PER_PAGE).length;
+    const stillNeedsOcr = readableCount === 0 || readableCount < Math.ceil(pageCount * 0.4);
+
+    const pagesPayload = ocrPages.map((p) => ({ page: p.page, text: p.text, section: p.section }));
+
+    await recordUsage(
+      supabaseAdmin,
+      {
+        principalId,
+        capability: "ai.prep_generate",
+        model: modelRouter.modelIdFor("ocr"),
+        promptVersion: "prep_ocr_v1",
+        inputTokens: totalInputTokens,
+        outputTokens: totalOutputTokens,
+        latencyMs: totalLatencyMs,
+        estimatedCostUsd: modelRouter.estimateCost("ocr", totalInputTokens, totalOutputTokens),
+        success: true,
+        errorKind: null,
+        jobId: job.id,
+        stage: "document_ocr",
+      },
+    );
+
+    const { error: stageErr } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
+      .update({
+        finished_at: new Date().toISOString(),
+        output_summary: {
+          pages: pagesPayload,
+          pageCount,
+          needsOcr: false,
+          unreadablePages,
+        },
+        status: "succeeded",
+      })
+      .eq("job_id", job.id)
+      .eq("stage", "document_ocr");
+
+    if (stageErr) {
+      console.error("[prep/ocr] stage update failed", stageErr);
+      return { error: "unknown" as const, extracted: null };
+    }
+
+    await (supabaseAdmin.from("prep_documents" as never) as any)
+      .update({
+        status: stillNeedsOcr ? "ocr" : "extracted",
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", document.id);
+
+    await (supabaseAdmin.from("prep_jobs" as never) as any)
+      .update({
+        status: "running",
+        current_stage: stillNeedsOcr ? "document_ocr" : "content_map",
+        progress_pct: stillNeedsOcr ? 25 : 40,
+      })
+      .eq("id", job.id);
+
+    return {
+      error: null,
+      extracted: {
+        pages: pagesPayload,
+        pageCount,
+        needsOcr: false,
+        unreadablePages,
       },
     };
   });

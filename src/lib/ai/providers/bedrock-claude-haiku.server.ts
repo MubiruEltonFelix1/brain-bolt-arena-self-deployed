@@ -65,12 +65,23 @@ export class BedrockClaudeHaikuProvider implements AiProvider {
     const maxTokens = prompt.maxOutputTokens ?? 4000;
     const temperature = prompt.temperature ?? 0.2;
 
+    const contentBlocks: ClaudeContentBlock[] = [];
+    if (prompt.images && prompt.images.length > 0) {
+      for (const img of prompt.images) {
+        contentBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: img.mediaType, data: img.data },
+        });
+      }
+    }
+    contentBlocks.push({ type: "text", text: prompt.user });
+
     const body: ClaudeBody = {
       anthropic_version: "bedrock-2023-05-31",
       max_tokens: maxTokens,
       temperature,
       system: prompt.system,
-      messages: [{ role: "user", content: [{ type: "text", text: prompt.user }] }],
+      messages: [{ role: "user", content: contentBlocks }],
     };
 
     type BedrockRuntimeModule = {

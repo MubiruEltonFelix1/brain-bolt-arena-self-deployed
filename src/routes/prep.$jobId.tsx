@@ -20,6 +20,7 @@ import {
   prepQualityReview,
   prepAssembleDraft,
   prepPublish,
+  prepOcrDocument,
   prepCancel,
   PREP_MAX_GENERATION_BATCH,
 } from "@/lib/api/prep.functions";
@@ -195,6 +196,11 @@ function PrepJob() {
     return runStage("document_extract", () => prepExtractDocument({ data: { jobId } }));
   }
 
+  async function doOcr() {
+    const { prepOcrDocument } = await import("@/lib/api/prep.functions");
+    return runStage("document_ocr", () => prepOcrDocument({ data: { jobId } }));
+  }
+
   async function doMap() {
     setMapping(true);
     try {
@@ -350,6 +356,7 @@ function PrepJob() {
               <div className="flex items-center gap-2">
                 {[
                   "document_extract",
+                  "document_ocr",
                   "content_map",
                   "host_blueprint",
                   "question_generate",
@@ -405,6 +412,15 @@ function PrepJob() {
                 description="Reading the document page by page."
                 pending={job.currentStage === "document_extract" && job.status === "running"}
                 onStart={doExtract}
+              />
+            ) : null}
+
+            {current === "document_ocr" ? (
+              <StagePanel
+                title="OCR / reading pages"
+                description="Reading scanned pages via AI vision (Claude Haiku)."
+                pending={job.currentStage === "document_ocr" && job.status === "running"}
+                onStart={doOcr}
               />
             ) : null}
 

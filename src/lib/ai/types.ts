@@ -174,6 +174,8 @@ export interface BrainBoltAiServiceOptions {
 export type AiPrompt = {
   system: string;
   user: string;
+  /** Optional image content blocks (base64 + media type) for multimodal models. */
+  images?: Array<{ data: string; mediaType: string }>;
   /** Soft cap on output tokens. Defaults to 8000. */
   maxOutputTokens?: number;
   /** Sampling temperature. Defaults to 0.4. */

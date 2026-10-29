@@ -40,6 +40,11 @@ const qualityReviewSchema = z.object({
   questions: z.array(z.any()).min(1),
 });
 
+const ocrPageSchema = z.object({
+  text: z.string(),
+  page: z.number(),
+});
+
 /* ------------------------------------------------------------------ */
 /* Stage 7 — source-grounded question generation                      */
 /* ------------------------------------------------------------------ */
@@ -254,6 +259,16 @@ Output ONLY a JSON object with one key: "questions". Each entry:
 These are advisory warnings only — your approval is not proof of factual correctness.`;
 
 /* ------------------------------------------------------------------ */
+/* Stage 2 — OCR (scanned/image-based PDF pages)                      */
+/* ------------------------------------------------------------------ */
+
+const SYSTEM_OCR_V1 = `You are an OCR engine for Brain Bolt. You are given one page image of a document. Extract ALL readable text from the page, preserving reading order. Return ONLY valid JSON with keys "text" (the full extracted text) and "page" (the page number). Do not include markdown fences, commentary, or chain-of-thought. If a page has no readable text, return an empty string for "text".`;
+
+function buildUserOcrV1(req: { page: number }): string {
+  return `Page: ${req.page}\nExtract all readable text from this page image.`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Public registry                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -287,6 +302,15 @@ export const PROMPT_PREP_VERSIONS = {
     )() as (req: unknown) => string,
     parse: (raw: unknown): unknown => {
       const parsed = qualityReviewSchema.safeParse(raw);
+      return parsed.success ? parsed.data : null;
+    },
+    schemaVersion: 1 as const,
+  },
+  prep_ocr_v1: {
+    system: SYSTEM_OCR_V1,
+    buildUser: buildUserOcrV1 as (req: unknown) => string,
+    parse: (raw: unknown): unknown => {
+      const parsed = ocrPageSchema.safeParse(raw);
       return parsed.success ? parsed.data : null;
     },
     schemaVersion: 1 as const,
