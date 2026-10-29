@@ -88,7 +88,10 @@ export class BedrockClaudeSonnetProvider implements AiProvider {
 
     let response;
     try {
-      response = await (await this.getClient()).send(command);
+      const client = (await this.getClient()) as {
+        send: (cmd: unknown) => Promise<{ body?: unknown }>;
+      };
+      response = await client.send(command);
     } catch (e: unknown) {
       const eAsRecord = e as { name?: unknown; message?: unknown };
       const name = typeof eAsRecord.name === "string" ? eAsRecord.name : "";

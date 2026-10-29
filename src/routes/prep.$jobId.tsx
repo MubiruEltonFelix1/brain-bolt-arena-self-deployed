@@ -95,6 +95,8 @@ function PrepJob() {
   const [pages, setPages] = useState<ExtractedPage[]>([]);
   const [includedPages, setIncludedPages] = useState<Set<number>>(new Set());
   const [mapping, setMapping] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [ocrRunning, setOcrRunning] = useState(false);
 
   // Blueprint
   const [blueprint, setBlueprint] = useState({
@@ -157,9 +159,18 @@ function PrepJob() {
   }, [load, jobId]);
 
   useEffect(() => {
-    if (job?.document?.mimeType === "application/pdf" && job.stages) {
-      const extract = job.stages.find((s) => s.stage === "document_extract");
-      const loadedPages: ExtractedPage[] = extract?.outputSummary?.pages ?? [];
+    if (job?.stages) {
+      const withText = (p: ExtractedPage) => (p.text ?? "").trim().length > 0;
+      const extractPages: ExtractedPage[] =
+        job.stages.find((s) => s.stage === "document_extract")?.outputSummary?.pages ?? [];
+      const ocrPages: ExtractedPage[] =
+        job.stages.find((s) => s.stage === "document_ocr")?.outputSummary?.pages ?? [];
+
+      // Image-based documents carry no native text in the extract stage; the
+      // OCR stage holds the readable pages for those.
+      const loadedPages =
+        ocrPages.some(withText) || !extractPages.some(withText) ? ocrPages : extractPages;
+
       setPages(loadedPages);
       if (loadedPages.length > 0 && includedPages.size === 0) {
         setIncludedPages(new Set(loadedPages.map((p) => p.page)));
@@ -192,13 +203,23 @@ function PrepJob() {
   }
 
   async function doExtract() {
-    const { prepExtractDocument } = await import("@/lib/api/prep.functions");
-    return runStage("document_extract", () => prepExtractDocument({ data: { jobId } }));
+    setExtracting(true);
+    try {
+      const { prepExtractDocument } = await import("@/lib/api/prep.functions");
+      return await runStage("document_extract", () => prepExtractDocument({ data: { jobId } }));
+    } finally {
+      setExtracting(false);
+    }
   }
 
   async function doOcr() {
-    const { prepOcrDocument } = await import("@/lib/api/prep.functions");
-    return runStage("document_ocr", () => prepOcrDocument({ data: { jobId } }));
+    setOcrRunning(true);
+    try {
+      const { prepOcrDocument } = await import("@/lib/api/prep.functions");
+      return await runStage("document_ocr", () => prepOcrDocument({ data: { jobId } }));
+    } finally {
+      setOcrRunning(false);
+    }
   }
 
   async function doMap() {
@@ -410,7 +431,7 @@ function PrepJob() {
               <StagePanel
                 title="Extracting content"
                 description="Reading the document page by page."
-                pending={job.currentStage === "document_extract" && job.status === "running"}
+                pending={extracting}
                 onStart={doExtract}
               />
             ) : null}
@@ -418,8 +439,8 @@ function PrepJob() {
             {current === "document_ocr" ? (
               <StagePanel
                 title="OCR / reading pages"
-                description="Reading scanned pages via AI vision (Claude Haiku)."
-                pending={job.currentStage === "document_ocr" && job.status === "running"}
+                description="This document has no text layer (scan or image). Reading it with AI vision."
+                pending={ocrRunning}
                 onStart={doOcr}
               />
             ) : null}
@@ -796,7 +817,8 @@ function PrepJob() {
                     Publish to quiz
                   </button>
                   <Link
-                    to={`/quizzes/${job.draft.id}`}
+                    to="/quizzes/$id"
+                    params={{ id: job.draft.id }}
                     className="border border-border px-4 py-3 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors"
                   >
                     Open in editor

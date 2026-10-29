@@ -415,7 +415,12 @@ export const prepExtractDocument = createServerFn({ method: "POST" })
       return { error: "unknown" as const, extracted: null };
     }
 
-    const extraction = await extractPdf(fileBuffer);
+    // Images have no native text layer — extractImage flags them for the OCR
+    // stage. Running pdf-parse on image bytes would just throw.
+    const extraction =
+      document.mime_type === "application/pdf"
+        ? await extractPdf(fileBuffer)
+        : extractImage(fileBuffer, document.mime_type);
 
     const pagesPayload = extraction.pages.map((p) => ({
       page: p.page,
@@ -559,11 +564,40 @@ export const prepOcrDocument = createServerFn({ method: "POST" })
       return { error: "validation_failed" as const, extracted: null };
     }
 
-    const { getDocument } = await import("pdfjs-dist");
-    const { createCanvas } = await import("canvas");
+    // Build one image per page. PDFs are rasterized at 2x; image uploads are
+    // sent to the vision model as-is (they are already a single-page image).
+    const pageImages: Array<{ page: number; base64: string; mediaType: string }> = [];
 
-    const loadingTask = getDocument({ data: fileBuffer });
-    const pdf = await loadingTask.promise;
+    if (document.mime_type === "application/pdf") {
+      const { getDocument } = await import("pdfjs-dist");
+      const { createCanvas } = await import("canvas");
+      const pdf = await (getDocument({ data: fileBuffer }) as unknown as {
+        promise: Promise<any>;
+      }).promise;
+
+      for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+        try {
+          const page = await pdf.getPage(pageNum);
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = createCanvas(viewport.width, viewport.height);
+          const context = canvas.getContext("2d");
+          await (page.render as unknown as any)({ canvasContext: context, viewport }).promise;
+          pageImages.push({
+            page: pageNum,
+            base64: canvas.toBuffer("image/png").toString("base64"),
+            mediaType: "image/png",
+          });
+        } catch (e) {
+          console.error(`[prep/ocr] rasterize page ${pageNum} failed`, e);
+        }
+      }
+    } else {
+      pageImages.push({
+        page: 1,
+        base64: fileBuffer.toString("base64"),
+        mediaType: document.mime_type || "image/png",
+      });
+    }
 
     const ocrPages: Array<{ page: number; text: string; section: string | null }> = [];
     const unreadablePages: number[] = [];
@@ -571,20 +605,12 @@ export const prepOcrDocument = createServerFn({ method: "POST" })
     let totalOutputTokens = 0;
     let totalLatencyMs = 0;
 
-    for (let pageNum = 1; pageNum <= pageCount; pageNum++) {
+    for (const img of pageImages) {
       try {
-        const page = await pdf.getPage(pageNum);
-        const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = createCanvas(viewport.width, viewport.height);
-        const context = canvas.getContext("2d");
-        await (page.render as unknown as any)({ canvasContext: context, viewport }).promise;
-        const pngBuffer = canvas.toBuffer("image/png");
-        const base64 = pngBuffer.toString("base64");
-
         const response = await modelRouter.generate("ocr", {
           system: PROMPT_PREP_VERSIONS.prep_ocr_v1.system,
-          user: PROMPT_PREP_VERSIONS.prep_ocr_v1.buildUser({ page: pageNum }),
-          images: [{ data: base64, mediaType: "image/png" }],
+          user: PROMPT_PREP_VERSIONS.prep_ocr_v1.buildUser({ page: img.page }),
+          images: [{ data: img.base64, mediaType: img.mediaType }],
           maxOutputTokens: prepTaskConfig("ocr").maxOutputTokens,
           temperature: prepTaskConfig("ocr").temperature,
         });
@@ -602,14 +628,14 @@ export const prepOcrDocument = createServerFn({ method: "POST" })
           }
         }
 
-        ocrPages.push({ page: pageNum, text: ocrText, section: null });
+        ocrPages.push({ page: img.page, text: ocrText, section: null });
         if (ocrText.length < MIN_OCR_CHARS_PER_PAGE) {
-          unreadablePages.push(pageNum);
+          unreadablePages.push(img.page);
         }
       } catch (e) {
-        console.error(`[prep/ocr] page ${pageNum} failed`, e);
-        unreadablePages.push(pageNum);
-        ocrPages.push({ page: pageNum, text: "", section: null });
+        console.error(`[prep/ocr] page ${img.page} failed`, e);
+        unreadablePages.push(img.page);
+        ocrPages.push({ page: img.page, text: "", section: null });
       }
     }
 
@@ -636,37 +662,68 @@ export const prepOcrDocument = createServerFn({ method: "POST" })
       },
     );
 
-    const { error: stageErr } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        finished_at: new Date().toISOString(),
-        output_summary: {
-          pages: pagesPayload,
-          pageCount,
-          needsOcr: false,
-          unreadablePages,
-        },
-        status: "succeeded",
-      })
+    const ocrFailure = stillNeedsOcr
+      ? "Couldn't read enough text from this document. Try a clearer scan or a text-based PDF."
+      : null;
+
+    // Ensure the stage row exists (jobs started before this stage shipped, or
+    // an extract run that failed to insert it) before recording the result.
+    const { data: existingStage } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
+      .select("job_id")
       .eq("job_id", job.id)
-      .eq("stage", "document_ocr");
+      .eq("stage", "document_ocr")
+      .maybeSingle();
+
+    const stageRow = {
+      finished_at: new Date().toISOString(),
+      output_summary: {
+        pages: pagesPayload,
+        pageCount,
+        needsOcr: false,
+        unreadablePages,
+      },
+      status: ocrFailure ? "failed" : "succeeded",
+      error: ocrFailure,
+    };
+
+    const { error: stageErr } = existingStage
+      ? await (supabaseAdmin.from("prep_job_stages" as never) as any)
+          .update(stageRow)
+          .eq("job_id", job.id)
+          .eq("stage", "document_ocr")
+      : await (supabaseAdmin.from("prep_job_stages" as never) as any).insert({
+          job_id: job.id,
+          stage: "document_ocr",
+          attempt: 1,
+          retry_count: 0,
+          started_at: new Date().toISOString(),
+          ...stageRow,
+        });
 
     if (stageErr) {
       console.error("[prep/ocr] stage update failed", stageErr);
       return { error: "unknown" as const, extracted: null };
     }
 
+    if (ocrFailure) {
+      await (supabaseAdmin.from("prep_documents" as never) as any)
+        .update({ status: "failed", error: ocrFailure })
+        .eq("id", document.id);
+      await (supabaseAdmin.from("prep_jobs" as never) as any)
+        .update({ status: "failed", error: ocrFailure, current_stage: "document_ocr" })
+        .eq("id", job.id);
+      return { error: "validation_failed" as const, extracted: null };
+    }
+
     await (supabaseAdmin.from("prep_documents" as never) as any)
-      .update({
-        status: stillNeedsOcr ? "ocr" : "extracted",
-        updated_at: new Date().toISOString(),
-      })
+      .update({ status: "extracted", updated_at: new Date().toISOString() })
       .eq("id", document.id);
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
       .update({
         status: "running",
-        current_stage: stillNeedsOcr ? "document_ocr" : "content_map",
-        progress_pct: stillNeedsOcr ? 25 : 40,
+        current_stage: "content_map",
+        progress_pct: 40,
       })
       .eq("id", job.id);
 
@@ -719,12 +776,24 @@ export const prepMapContent = createServerFn({ method: "POST" })
     }
 
     const { data: stages } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .select("output_summary")
+      .select("stage, output_summary, status")
       .eq("job_id", job.id)
-      .eq("stage", "document_extract")
-      .maybeSingle();
-    const summary = (stages as any)?.output_summary ?? {};
-    const pages: Array<{ page: number; text: string; section?: string }> = summary.pages ?? [];
+      .in("stage", ["document_extract", "document_ocr"]);
+
+    // Prefer OCR pages when the document was image-based: the extract stage
+    // holds empty text for scanned pages, so mapping from it would produce
+    // blank sources and fail downstream generation.
+    const byStage: Record<string, any> = Object.fromEntries(
+      ((stages as any[]) ?? []).map((s) => [s.stage, s.output_summary ?? {}]),
+    );
+    const extractPages: Array<{ page: number; text: string; section?: string }> =
+      byStage.document_extract?.pages ?? [];
+    const ocrPages: Array<{ page: number; text: string; section?: string }> =
+      byStage.document_ocr?.pages ?? [];
+
+    const usable = (p: { text: string }) => (p.text ?? "").trim().length > 0;
+    const pages =
+      ocrPages.some(usable) || !extractPages.some(usable) ? ocrPages : extractPages;
 
     if (pages.length === 0) {
       return { error: "validation_failed" as const, sources: null };
@@ -1455,7 +1524,19 @@ export const prepJobStatus = createServerFn({ method: "POST" })
               needsOcr: document.needs_ocr,
             }
           : null,
-        stages: stages ?? [],
+        // Normalize stage rows to the camelCase shape the client consumes.
+        // The DB returns output_summary / retry_count; the job page reads
+        // outputSummary / retryCount.
+        stages: ((stages as any[]) ?? []).map((s) => ({
+          stage: s.stage,
+          attempt: s.attempt,
+          status: s.status,
+          retryCount: s.retry_count ?? 0,
+          error: s.error ?? null,
+          startedAt: s.started_at ?? null,
+          finishedAt: s.finished_at ?? null,
+          outputSummary: s.output_summary ?? null,
+        })),
         draft: draft ?? null,
       },
     };
