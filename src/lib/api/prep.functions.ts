@@ -161,6 +161,48 @@ async function writeJobSources(
   };
 }
 
+/**
+ * Write a stage result, creating the row first when it does not exist.
+ *
+ * Only document_extract and document_ocr rows were ever inserted; every other
+ * stage relied on .update(). Supabase treats an update that matches zero rows as
+ * a success, so blueprint/generate/validate/quality/draft results were silently
+ * discarded — the blueprint's includedPageNumbers never persisted, which made
+ * generation see no pages.
+ */
+async function upsertStage(
+  supabaseAdmin: Supabase,
+  jobId: string,
+  stage: string,
+  patch: Record<string, unknown>,
+): Promise<{ error: string | null }> {
+  const { data: existing } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
+    .select("job_id")
+    .eq("job_id", jobId)
+    .eq("stage", stage)
+    .maybeSingle();
+
+  const toMessage = (e: unknown) =>
+    e ? ((e as { message?: string }).message ?? "write failed") : null;
+
+  if (existing) {
+    const { error } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
+      .update(patch)
+      .eq("job_id", jobId)
+      .eq("stage", stage);
+    return { error: toMessage(error) };
+  }
+
+  const { error } = await (supabaseAdmin.from("prep_job_stages" as never) as any).insert({
+    job_id: jobId,
+    stage,
+    attempt: 1,
+    retry_count: 0,
+    ...patch,
+  });
+  return { error: toMessage(error) };
+}
+
 async function recordPrepUsage(
   supabaseAdmin: Supabase,
   principalId: string,
@@ -894,14 +936,14 @@ export const prepMapContent = createServerFn({ method: "POST" })
       };
     }
 
-    await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        status: "succeeded",
-        finished_at: new Date().toISOString(),
-        output_summary: { sourceCount: sources.length },
-      })
-      .eq("job_id", job.id)
-      .eq("stage", "content_map");
+    const mapWrite = await upsertStage(supabaseAdmin, job.id, "content_map", {
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+      output_summary: { sourceCount: sources.length },
+    });
+    if (mapWrite.error) {
+      return { error: "unknown" as const, detail: mapWrite.error, sources: null };
+    }
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
       .update({ current_stage: "host_blueprint", progress_pct: 55 })
@@ -1010,18 +1052,15 @@ export const prepSetBlueprint = createServerFn({ method: "POST" })
       quizId: data.quizId ?? null,
     };
 
-    const { error: stageErr } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        status: "succeeded",
-        finished_at: new Date().toISOString(),
-        output_summary: blueprint,
-      })
-      .eq("job_id", job.id)
-      .eq("stage", "host_blueprint");
+    const blueprintWrite = await upsertStage(supabaseAdmin, job.id, "host_blueprint", {
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+      output_summary: blueprint,
+    });
 
-    if (stageErr) {
-      console.error("[prep/blueprint] stage update failed", stageErr);
-      return { error: "unknown" as const, blueprint: null };
+    if (blueprintWrite.error) {
+      console.error("[prep/blueprint] stage write failed", blueprintWrite.error);
+      return { error: "unknown" as const, detail: blueprintWrite.error, blueprint: null };
     }
 
     // Persist the target quiz on the job so the draft can be published into it.
@@ -1089,19 +1128,31 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
       .select("page, section, excerpt")
       .eq("job_id", job.id)
       .order("page", { ascending: true });
-    const sources = (allSources ?? []).filter((s: any) => includedPages.includes(s.page));
+
+    // Older builds never persisted the blueprint stage row, leaving jobs with no
+    // selected pages here. Fall back to every stored page rather than stranding
+    // the job, and say so in the warnings.
+    const blueprintFallback = includedPages.length === 0;
+    const storedPageNumbers: number[] = (
+      (allSources as Array<{ page?: number }> | null) ?? []
+    ).map((s) => Number(s.page ?? 0));
+    const effectivePages: number[] = blueprintFallback
+      ? Array.from(new Set(storedPageNumbers)).sort((a, b) => a - b)
+      : includedPages;
+
+    const sources = (allSources ?? []).filter((s: any) => effectivePages.includes(s.page));
 
     if (sources.length === 0) {
       return {
         error: "validation_failed" as const,
         detail: `No stored text matches the page(s) selected in the blueprint (${
-          includedPages.length > 0 ? includedPages.join(", ") : "none selected"
+          effectivePages.length > 0 ? effectivePages.join(", ") : "none selected"
         }). Re-save the blueprint.`,
         generated: null,
       };
     }
 
-    const questionCount = Number(blueprint.questionCount ?? PREP_MAX_GENERATION_BATCH);
+    const questionCount = Number(blueprint.questionCount ?? 5);
     const types = blueprint.types ?? ["mcq", "true_false"];
     const difficulty = blueprint.difficulty ?? "medium";
     const title = blueprint.title ?? "Quiz";
@@ -1115,6 +1166,11 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
       excerpt: string;
     }> = [];
     const warnings: string[] = [];
+    if (blueprintFallback) {
+      warnings.push(
+        "No saved blueprint was found for this job, so questions were drafted from all stored pages with default settings.",
+      );
+    }
 
     let generatedSoFar = 0;
     for (let b = 0; b < Math.ceil(questionCount / 5) && generatedSoFar < questionCount; b++) {
@@ -1143,15 +1199,12 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
 
       if (result.error) {
         const failureWarnings = [...warnings, ...result.warnings];
-        await (supabaseAdmin.from("prep_job_stages" as never) as any)
-          .update({
-            status: "failed",
-            finished_at: new Date().toISOString(),
-            error: result.error,
-            output_summary: { generated: generatedSoFar, warnings: failureWarnings },
-          })
-          .eq("job_id", job.id)
-          .eq("stage", "question_generate");
+        await upsertStage(supabaseAdmin, job.id, "question_generate", {
+          status: "failed",
+          finished_at: new Date().toISOString(),
+          error: result.error,
+          output_summary: { generated: generatedSoFar, warnings: failureWarnings },
+        });
         await (supabaseAdmin.from("prep_jobs" as never) as any)
           .update({ status: "failed", error: result.error, current_stage: "question_generate" })
           .eq("id", job.id);
@@ -1178,18 +1231,15 @@ export const prepGenerateBatch = createServerFn({ method: "POST" })
 
     // Persist the full question list in the stage so the draft can be
     // reassembled after a refresh (resumable).
-    const { error: stageErr } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        status: "succeeded",
-        finished_at: new Date().toISOString(),
-        output_summary: { generated: allQuestions.length, warnings, questions: allQuestions },
-      })
-      .eq("job_id", job.id)
-      .eq("stage", "question_generate");
+    const generateWrite = await upsertStage(supabaseAdmin, job.id, "question_generate", {
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+      output_summary: { generated: allQuestions.length, warnings, questions: allQuestions },
+    });
 
-    if (stageErr) {
-      console.error("[prep/generate] stage update failed", stageErr);
-      return { error: "unknown" as const, generated: null };
+    if (generateWrite.error) {
+      console.error("[prep/generate] stage write failed", generateWrite.error);
+      return { error: "unknown" as const, detail: generateWrite.error, generated: null };
     }
 
     // Insert prep_sources rows (provenance) keyed by draft question index.
@@ -1294,24 +1344,21 @@ export const prepValidate = createServerFn({ method: "POST" })
       report = validateQuiz({ title: (draft as any)?.title ?? "Quiz", questions });
     }
 
-    const { error: stageErr } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        status: report.valid ? "succeeded" : "failed",
-        finished_at: new Date().toISOString(),
-        output_summary: {
-          valid: report.valid,
-          errorCount: report.errors.length,
-          warningCount: report.warnings.length,
-          errors: report.errors,
-          warnings: report.warnings,
-        },
-      })
-      .eq("job_id", job.id)
-      .eq("stage", "validate");
+    const validateWrite = await upsertStage(supabaseAdmin, job.id, "validate", {
+      status: report.valid ? "succeeded" : "failed",
+      finished_at: new Date().toISOString(),
+      output_summary: {
+        valid: report.valid,
+        errorCount: report.errors.length,
+        warningCount: report.warnings.length,
+        errors: report.errors,
+        warnings: report.warnings,
+      },
+    });
 
-    if (stageErr) {
-      console.error("[prep/validate] stage update failed", stageErr);
-      return { error: "unknown" as const, validated: null };
+    if (validateWrite.error) {
+      console.error("[prep/validate] stage write failed", validateWrite.error);
+      return { error: "unknown" as const, detail: validateWrite.error, validated: null };
     }
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
@@ -1402,24 +1449,21 @@ export const prepQualityReview = createServerFn({ method: "POST" })
       }
     }
 
-    const { error: stageErr } = await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        status: "succeeded",
-        finished_at: new Date().toISOString(),
-        output_summary: {
-          flags,
-          reviewed: questions.length,
-          modelUnavailable,
-          advisory: true,
-        },
-        error: modelUnavailable ? "quality model unavailable — host review required" : null,
-      })
-      .eq("job_id", job.id)
-      .eq("stage", "quality_review");
+    const qualityWrite = await upsertStage(supabaseAdmin, job.id, "quality_review", {
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+      output_summary: {
+        flags,
+        reviewed: questions.length,
+        modelUnavailable,
+        advisory: true,
+      },
+      error: modelUnavailable ? "quality model unavailable — host review required" : null,
+    });
 
-    if (stageErr) {
-      console.error("[prep/quality] stage update failed", stageErr);
-      return { error: "unknown" as const, reviewed: null };
+    if (qualityWrite.error) {
+      console.error("[prep/quality] stage write failed", qualityWrite.error);
+      return { error: "unknown" as const, detail: qualityWrite.error, reviewed: null };
     }
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
@@ -1500,14 +1544,11 @@ export const prepAssembleDraft = createServerFn({ method: "POST" })
       return { error: "unknown" as const, draft: null };
     }
 
-    await (supabaseAdmin.from("prep_job_stages" as never) as any)
-      .update({
-        status: "succeeded",
-        finished_at: new Date().toISOString(),
-        output_summary: { draftId: draft.id },
-      })
-      .eq("job_id", job.id)
-      .eq("stage", "draft_assembled");
+    await upsertStage(supabaseAdmin, job.id, "draft_assembled", {
+      status: "succeeded",
+      finished_at: new Date().toISOString(),
+      output_summary: { draftId: draft.id },
+    });
 
     await (supabaseAdmin.from("prep_jobs" as never) as any)
       .update({ status: "running", current_stage: "complete", progress_pct: 100 })
