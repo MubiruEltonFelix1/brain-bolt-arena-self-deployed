@@ -16,6 +16,48 @@
 // installer as a binding and call it inside extractPdf, before pdf-parse loads.
 import { installDomShims } from "@/lib/ai/dom-shim.server";
 
+/**
+ * pdf.js loads its worker with `import(this.workerSrc)`, and this build defaults
+ * workerSrc to the RELATIVE path "./pdf.worker.mjs" (see pdf.mjs:21179). Once
+ * the server bundle relocates the module into a chunk directory, that relative
+ * import has no file to resolve and the parse fails with:
+ *   Setting up fake worker failed: "Cannot find module .../pdf.worker.mjs"
+ *
+ * Before that import, pdf.js checks `globalThis.pdfjsWorker?.WorkerMessageHandler`
+ * (pdf.mjs:21356), and pdf.worker.mjs assigns exactly that global at load. So
+ * importing the worker module explicitly — which also puts it in the bundle
+ * graph instead of a runtime file lookup — removes the file dependency.
+ *
+ * Must run before any PDFParse/getDocument call.
+ */
+let pdfWorkerReady: Promise<void> | null = null;
+
+export function ensurePdfWorker(): Promise<void> {
+  pdfWorkerReady ??= (async () => {
+    installDomShims();
+    const g = globalThis as Record<string, unknown>;
+    try {
+      const mod = (await import("pdfjs-dist/legacy/build/pdf.worker.mjs")) as {
+        WorkerMessageHandler?: unknown;
+      };
+      // A bundler may flatten this namespace to the handler itself, so accept
+      // either shape. pdf.js requires an OBJECT carrying a WorkerMessageHandler
+      // property (pdf.mjs:21358) — assigning the bare handler would silently
+      // regress to the missing-file import.
+      const handler = mod?.WorkerMessageHandler ?? (mod as unknown);
+      const existing = g.pdfjsWorker as { WorkerMessageHandler?: unknown } | undefined;
+      if (!existing || typeof existing.WorkerMessageHandler === "undefined") {
+        if (typeof handler !== "undefined") {
+          g.pdfjsWorker = { WorkerMessageHandler: handler };
+        }
+      }
+    } catch (e) {
+      console.error("[pdf] failed to preload the pdf.js worker module", e);
+    }
+  })();
+  return pdfWorkerReady;
+}
+
 export type ExtractedPage = {
   page: number; // 1-based
   text: string;
@@ -91,8 +133,8 @@ export async function extractPdf(buffer: Buffer): Promise<ExtractionResult> {
     error: null,
   };
 
-  // Must run before pdf-parse evaluates pdfjs-dist at import time.
-  installDomShims();
+  // Shim globals and resolve the pdf.js worker before pdf-parse evaluates.
+  await ensurePdfWorker();
   const { PDFParse } = await import("pdf-parse");
 
   try {

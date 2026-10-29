@@ -26,9 +26,9 @@ import {
   detectMimeType,
   extractPdf,
   extractImage,
+  ensurePdfWorker,
   ACCEPTED_MIME_TYPES,
 } from "@/lib/ai/pdf-extraction.server";
-import { installDomShims } from "@/lib/ai/dom-shim.server";
 import { validateQuiz, type BrainBoltQuestion, type BrainBoltQuiz } from "@/lib/quiz/validate";
 import { extractJsonObject } from "@/lib/ai/prompts";
 import { questionToDbRow } from "@/lib/quiz/validate";
@@ -604,8 +604,8 @@ export const prepOcrDocument = createServerFn({ method: "POST" })
     const pageImages: Array<{ page: number; base64: string; mediaType: string }> = [];
 
     if (document.mime_type === "application/pdf") {
-      // pdfjs-dist needs DOMMatrix/window/rAF before it evaluates.
-      installDomShims();
+      // Shims + pdf.js worker must both be ready before pdfjs-dist evaluates.
+      await ensurePdfWorker();
       const { getDocument } = await import("pdfjs-dist");
       const { createCanvas } = await import("canvas");
       const pdf = await (getDocument({ data: fileBuffer }) as unknown as {

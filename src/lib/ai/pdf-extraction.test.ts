@@ -4,7 +4,12 @@
 // instead; here we assert the type/size/page validation surface and mime sniff.
 
 import { describe, expect, test } from "bun:test";
-import { detectMimeType, ACCEPTED_MIME_TYPES, extractImage } from "@/lib/ai/pdf-extraction.server";
+import {
+  detectMimeType,
+  ACCEPTED_MIME_TYPES,
+  extractImage,
+  ensurePdfWorker,
+} from "@/lib/ai/pdf-extraction.server";
 import { installDomShims } from "@/lib/ai/dom-shim.server";
 
 describe("ai / extraction: mime detection from magic bytes", () => {
@@ -85,5 +90,30 @@ describe("ai / dom shim: must not fake browser document state", () => {
     expect(typeof g.DOMMatrix).toBe("function");
     expect(typeof g.requestAnimationFrame).toBe("function");
     expect(typeof g.cancelAnimationFrame).toBe("function");
+  });
+});
+
+describe("ai / pdf worker: global handler shape", () => {
+  // pdf.js reads globalThis.pdfjsWorker.WorkerMessageHandler before falling back
+  // to importing its worker file relative to the bundle. In the deployed Nitro
+  // chunk that relative path does not exist, so this global is what makes
+  // extraction work at all. A bundler flattening the namespace to the handler
+  // itself would silently reintroduce the failure.
+  test("ensurePdfWorker builds a usable global from the module export", async () => {
+    type PdfjsWorkerGlobal = { WorkerMessageHandler?: unknown };
+    const read = () => (globalThis as unknown as { pdfjsWorker?: PdfjsWorkerGlobal }).pdfjsWorker;
+    const write = (value: unknown) => {
+      (globalThis as unknown as { pdfjsWorker?: unknown }).pdfjsWorker = value;
+    };
+
+    // Start empty so this exercises our own construction rather than the worker
+    // module's import-time side effect (which a bundle may drop).
+    write(undefined);
+
+    await ensurePdfWorker();
+
+    const after = read();
+    expect(after).toBeDefined();
+    expect(typeof after?.WorkerMessageHandler).not.toBe("undefined");
   });
 });
