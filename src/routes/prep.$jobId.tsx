@@ -122,37 +122,61 @@ function PrepJob() {
     warnings: string[];
   } | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    const result = await prepJobStatus({ data: { jobId } });
-    if (result.error) {
-      setError(
-        result.error === "not_authorized" ? "You can't view this job." : "Couldn't load the job.",
-      );
-      setLoading(false);
-      return;
-    }
-    setJob(result.job ?? null);
-    if (user) {
+  // Signatures of the last draft/pages payload applied to local state. The
+  // poll returns a fresh object every 3s, so identity-based effects would
+  // re-sync (and wipe in-progress edits) on every tick.
+  const draftSyncRef = useRef<string>("");
+  const pagesSyncRef = useRef<string>("");
+
+  const load = useCallback(
+    async (opts?: { silent?: boolean }) => {
+      // Silent refreshes (background polling, post-stage refresh) must NOT
+      // toggle `loading`, or the whole job UI unmounts every poll tick.
+      const silent = opts?.silent ?? false;
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      const result = await prepJobStatus({ data: { jobId } });
+      if (result.error) {
+        setError(
+          result.error === "not_authorized" ? "You can't view this job." : "Couldn't load the job.",
+        );
+        if (!silent) setLoading(false);
+        return;
+      }
+      setJob(result.job ?? null);
+      if (!silent) setLoading(false);
+    },
+    [jobId],
+  );
+
+  // Quizzes are needed once for the blueprint picker, not on every poll.
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
+    (async () => {
       const { data: qs } = await supabase
         .from("quizzes")
         .select("id,title")
         .eq("owner_principal_id", user.id)
         .is("archived_at", null)
         .order("created_at", { ascending: false });
+      if (cancelled) return;
       setQuizzes(
         ((qs as Array<{ id: string; title: string } | null>) ?? []).filter(
           (q): q is { id: string; title: string } => !!q,
         ),
       );
-    }
-    setLoading(false);
-  }, [jobId, user]);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
 
   useEffect(() => {
     load();
-    pollRef.current = setInterval(load, 3000);
+    pollRef.current = setInterval(() => load({ silent: true }), 3000);
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
@@ -171,6 +195,10 @@ function PrepJob() {
       const loadedPages =
         ocrPages.some(withText) || !extractPages.some(withText) ? ocrPages : extractPages;
 
+      const signature = loadedPages.map((p) => `${p.page}:${p.text.length}`).join("|");
+      if (signature === pagesSyncRef.current) return;
+      pagesSyncRef.current = signature;
+
       setPages(loadedPages);
       if (loadedPages.length > 0 && includedPages.size === 0) {
         setIncludedPages(new Set(loadedPages.map((p) => p.page)));
@@ -179,11 +207,18 @@ function PrepJob() {
   }, [job, includedPages.size]);
 
   useEffect(() => {
-    if (job?.draft?.questions) {
-      setQuestions(job.draft.questions);
-      setEditedTexts({});
-      setExcluded(new Set());
-    }
+    const draft = job?.draft;
+    if (!draft?.questions) return;
+
+    // Only re-sync when the draft content actually changed. Keying this on the
+    // object identity reset editedTexts/excluded on every poll tick.
+    const signature = `${draft.id}:${draft.questions.length}:${JSON.stringify(draft.questions).length}`;
+    if (signature === draftSyncRef.current) return;
+    draftSyncRef.current = signature;
+
+    setQuestions(draft.questions);
+    setEditedTexts({});
+    setExcluded(new Set());
   }, [job?.draft]);
 
   async function runStage(
@@ -197,7 +232,7 @@ function PrepJob() {
         res.error === "not_authorized" ? "You're not allowed to do that." : String(res.error),
       );
     } else {
-      await load();
+      await load({ silent: true });
     }
     return res;
   }
@@ -327,7 +362,7 @@ function PrepJob() {
 
   async function doCancel() {
     await prepCancel({ data: { jobId } });
-    await load();
+    await load({ silent: true });
   }
 
   const current = job?.currentStage ?? null;
@@ -362,7 +397,7 @@ function PrepJob() {
         {error && (
           <div className="border border-pink-shock/40 bg-pink-shock/5 p-4 font-mono text-xs uppercase text-pink-shock">
             {error}
-            <button onClick={load} className="ml-3 underline underline-offset-4 hover:text-volt">
+            <button onClick={() => load()} className="ml-3 underline underline-offset-4 hover:text-volt">
               Retry
             </button>
           </div>
@@ -837,7 +872,7 @@ function PrepJob() {
               <div className="bg-pink-shock/10 border border-pink-shock/20 p-4 font-mono text-xs uppercase text-pink-shock">
                 Job failed: {job.error}
                 <button
-                  onClick={load}
+                  onClick={() => load()}
                   className="ml-3 underline underline-offset-4 hover:text-volt"
                 >
                   Retry
