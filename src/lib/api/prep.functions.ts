@@ -200,9 +200,13 @@ export const prepUploadDocument = createServerFn({ method: "POST" })
     const objectPath = `${principalId}/${jobId}/source${ext}`;
 
     // 4. Update the document row with the real object key.
-    await (supabaseAdmin.from("prep_documents" as never) as any)
+    const { error: keyErr } = await (supabaseAdmin.from("prep_documents" as never) as any)
       .update({ object_key: objectPath })
       .eq("id", documentId);
+    if (keyErr) {
+      console.error("[prep/upload] update object key failed", keyErr);
+      return { error: "unknown" as const, jobId: null, documentId: null, uploadUrl: null };
+    }
 
     // 5. Short-lived signed upload URL (client PUTs the file directly).
     const { data: signed, error: sErr } = await supabaseAdmin.storage
@@ -263,6 +267,9 @@ export const prepConfirmUpload = createServerFn({ method: "POST" })
       return { error: "not_authorized" as const, document: null };
     }
     if (job.status !== "pending") {
+      return { error: "unknown" as const, document: null };
+    }
+    if (!document.object_key || document.object_key === "pending") {
       return { error: "unknown" as const, document: null };
     }
 

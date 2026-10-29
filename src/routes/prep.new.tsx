@@ -15,7 +15,11 @@ import { useCallback, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useAuthUser } from "@/hooks/use-auth-user";
-import { prepUploadDocument, prepConfirmUpload } from "@/lib/api/prep.functions";
+import {
+  prepUploadDocument,
+  prepConfirmUpload,
+  PREP_MAX_FILE_SIZE,
+} from "@/lib/api/prep.functions";
 import { toastError } from "@/lib/errors";
 
 const ACCEPTED_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg", ".webp"];
@@ -174,8 +178,8 @@ function PrepNew() {
           </label>
           {file && (
             <p className="mt-2 font-mono text-[10px] uppercase text-foreground/40">
-              {file.name} · {file.type} · {((file.size / 1024 / 1024) * 100).toFixed(0)}% of 25 MB
-              cap
+              {file.name} · {file.type} · {((file.size / PREP_MAX_FILE_SIZE) * 100).toFixed(1)}% of
+              25 MB cap
             </p>
           )}
           <div className="mt-5 flex items-center gap-3">
