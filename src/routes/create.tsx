@@ -302,7 +302,7 @@ function CreateQuiz() {
           <DialogTrigger asChild>
             <button type="button" style={{ display: "none" }} />
           </DialogTrigger>
-          <DialogContent>
+          <DialogContent className="flex flex-col max-h-[88vh]">
             <DialogHeader>
               <DialogTitle>
                 {source === "blank" ? "New Blank Quiz" : source === "topic" ? "New Topic Quiz" : "New Material Quiz"}
@@ -311,7 +311,7 @@ function CreateQuiz() {
                 Configure the quiz before preparation starts.
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4">
+            <div className="flex-1 overflow-y-auto space-y-4 py-2">
               <div className="space-y-2">
                 <label className="font-mono text-[10px] uppercase text-foreground/60">
                   Quiz title
