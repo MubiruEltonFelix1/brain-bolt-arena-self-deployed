@@ -12,11 +12,20 @@
 // created implicitly when the draft is published to /quizzes/$id.
 
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { getQuestionType } from "@/lib/question-registry";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { prepCreateTopicJob } from "@/lib/api/prep-topic.functions";
 import { prepSetBlueprint } from "@/lib/api/prep.functions";
 import { toastError } from "@/lib/errors";
@@ -85,8 +94,8 @@ function CreateQuiz() {
   const [topic, setTopic] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   if (!user) {
     return (
@@ -111,6 +120,11 @@ function CreateQuiz() {
     },
     [],
   );
+
+  // Open the brief dialog whenever a source is selected.
+  useEffect(() => {
+    if (source) setDialogOpen(true);
+  }, [source]);
 
   const toggleType = useCallback((t: string) => {
     setBrief((prev) => ({
@@ -166,6 +180,7 @@ function CreateQuiz() {
         return;
       }
 
+      setDialogOpen(false);
       navigate({ to: `/create/$jobId`, params: { jobId: started.jobId } });
     } catch (e) {
       console.error("[create/topic] failed", e);
@@ -183,6 +198,7 @@ function CreateQuiz() {
     // Documents go through the existing /prep/new flow, which handles
     // signed upload, validation, extraction, OCR, and content mapping.
     // The brief is configured on the job page at the host_blueprint stage.
+    setDialogOpen(false);
     navigate({ to: "/prep/new" });
   }
 
@@ -203,6 +219,7 @@ function CreateQuiz() {
         setUploadError("Couldn't create the quiz. Try again.");
         return;
       }
+      setDialogOpen(false);
       navigate({ to: `/quizzes/${data.id}` });
     } catch (e) {
       console.error("[create/blank] failed", e);
@@ -233,16 +250,16 @@ function CreateQuiz() {
           <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50 mb-4 block">
             01 · Source
           </p>
-            <div className="grid gap-3 md:grid-cols-3">
-              {Object.values(SOURCE_TYPES).map((s) => {
-                const selected = source === s.id;
-                const isDisabled = (s as { disabled?: boolean }).disabled === true;
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    disabled={isDisabled}
-                    onClick={isDisabled ? undefined : () => setSource(s.id)}
+          <div className="grid gap-3 md:grid-cols-3">
+            {Object.values(SOURCE_TYPES).map((s) => {
+              const selected = source === s.id;
+              const isDisabled = (s as { disabled?: boolean }).disabled === true;
+              return (
+                <button
+                  key={s.id}
+                  type="button"
+                  disabled={isDisabled}
+                  onClick={isDisabled ? undefined : () => setSource(s.id)}
                   className={`flex flex-col items-center gap-3 p-5 border rounded-sm transition-colors ${
                     selected
                       ? "border-volt bg-volt/5"
@@ -269,97 +286,161 @@ function CreateQuiz() {
           </div>
         </div>
 
-        {source && (
-          <>
-            {/* Step 2: Quiz Brief */}
-            <div className="border border-border bg-card/40 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
-                  02 · Quiz Brief
-                </p>
-                <span className={`font-mono text-xs uppercase ${
-                  source === "topic"
-                    ? "text-volt"
-                    : source === "blank"
-                      ? "text-volt"
-                      : "text-foreground/40"
-                }`}>
-                  {source === "blank" ? "Blank quiz" : source === "topic" ? "Topic-to-quiz" : "Material-to-quiz"}
-                </span>
+        {/* Step 2: Quiz Brief (overlay dialog) */}
+        <Dialog open={dialogOpen} onOpenChange={(open) => {
+          if (!open) {
+            setDialogOpen(false);
+            setSource(null);
+            setUploadError(null);
+            setBrief({ ...DEFAULT_BRIEF });
+            setTopic("");
+            setFile(null);
+          } else {
+            setDialogOpen(true);
+          }
+        }}>
+          <DialogTrigger asChild>
+            <button type="button" style={{ display: "none" }} />
+          </DialogTrigger>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>
+                {source === "blank" ? "New Blank Quiz" : source === "topic" ? "New Topic Quiz" : "New Material Quiz"}
+              </DialogTitle>
+              <DialogDescription>
+                Configure the quiz before preparation starts.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label className="font-mono text-[10px] uppercase text-foreground/60">
+                  Quiz title
+                </label>
+                <input
+                  value={brief.title}
+                  onChange={(e) => updateBrief({ title: e.target.value })}
+                  placeholder="e.g. Genetics 101"
+                  className="w-full bg-background border border-border p-3 font-sans text-sm focus:border-volt"
+                  autoFocus
+                />
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
-                <div className="space-y-2">
-                  <label className="font-mono text-[10px] uppercase text-foreground/60">
-                    Quiz title
-                  </label>
-                  <input
-                    value={brief.title}
-                    onChange={(e) => updateBrief({ title: e.target.value })}
-                    placeholder="e.g. Genetics 101"
-                    className="w-full bg-background border border-border p-3 font-sans text-sm focus:border-volt"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="font-mono text-[10px] uppercase text-foreground/60">
-                    Difficulty
-                  </label>
-                  <select
-                    value={brief.difficulty}
-                    onChange={(e) => updateBrief({ difficulty: e.target.value as Difficulty })}
-                    className="w-full bg-background border border-border p-3 font-sans text-sm focus:border-volt"
-                  >
-                    <option value="easy">Easy</option>
-                    <option value="medium">Medium</option>
-                    <option value="hard">Hard</option>
-                  </select>
-                </div>
-                <div className="space-y-2">
-                  <label className="font-mono text-[10px] uppercase text-foreground/60">
-                    Number of questions
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={brief.questionCount}
-                    onChange={(e) =>
-                      updateBrief({
-                        questionCount: Math.max(1, Math.min(20, Number(e.target.value) || 1)),
-                      })
-                    }
-                    className="w-full bg-background border border-border p-3 font-mono text-sm text-center focus:border-volt"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="font-mono text-[10px] uppercase text-foreground/60">
-                    Question types
-                  </label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {ALL_TYPES.map((t) => {
-                      const isSelected = brief.types.includes(t);
-                      return (
-                        <label
-                          key={t}
-                          className={`flex items-center gap-2 p-3 border rounded-sm cursor-pointer transition-colors ${
-                            isSelected
-                              ? "border-volt text-volt bg-volt/5"
-                              : "border-border text-foreground/70 hover:border-foreground/40"
-                          }`}
-                        >
-                          <input
-                            type="checkbox"
-                            checked={isSelected}
-                            onChange={() => toggleType(t)}
-                            className="accent-volt"
-                          />
-                          <span className="font-mono text-[10px] uppercase">
-                            {getQuestionType(t).label}
-                          </span>
-                        </label>
-                      );
-                    })}
+              {source === "topic" && (
+                <>
+                  <div className="space-y-2">
+                    <label className="font-mono text-[10px] uppercase text-foreground/60 block">
+                      Topic
+                    </label>
+                    <textarea
+                      value={topic}
+                      onChange={(e) => setTopic(e.target.value)}
+                      rows={3}
+                      placeholder="e.g. Mendelian inheritance, Punnett squares, and genetic probability"
+                      className="w-full bg-background border border-border p-3 font-sans text-sm focus:border-volt"
+                    />
                   </div>
+                </>
+              )}
+
+              {source === "material" && (
+                <>
+                  <div className="space-y-2">
+                    <label className="font-mono text-[10px] uppercase text-foreground/60 block">
+                      Source file (PDF, PNG, JPEG, WebP)
+                    </label>
+                    <div
+                      className="border border-border bg-background/20 p-6 rounded cursor-pointer"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf,.png,.jpg,.jpeg,.webp"
+                        hidden
+                        onChange={(e) => {
+                          const f = e.target.files?.[0] ?? null;
+                          setFile(f);
+                          setUploadError(null);
+                        }}
+                      />
+                      {file ? (
+                        <p className="font-mono text-xs uppercase text-foreground/70">
+                          {file.name} · {((file.size / 1024 / 1024).toFixed(2))} MB
+                        </p>
+                      ) : (
+                        <p className="font-mono text-xs uppercase text-foreground/60">
+                          Choose file
+                        </p>
+                      )}
+                    </div>
+                    <p className="font-mono text-[9px] uppercase text-foreground/40">
+                      The quiz brief is configured on the preparation page after upload.
+                    </p>
+                  </div>
+                </>
+              )}
+
+              <div className="space-y-2">
+                <label className="font-mono text-[10px] uppercase text-foreground/60">
+                  Difficulty
+                </label>
+                <select
+                  value={brief.difficulty}
+                  onChange={(e) => updateBrief({ difficulty: e.target.value as Difficulty })}
+                  className="w-full bg-background border border-border p-3 font-sans text-sm focus:border-volt"
+                >
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </div>
+
+              <div className="space-y-2">
+                <label className="font-mono text-[10px] uppercase text-foreground/60">
+                  Number of questions
+                </label>
+                <input
+                  type="number"
+                  min={1}
+                  max={20}
+                  value={brief.questionCount}
+                  onChange={(e) =>
+                    updateBrief({
+                      questionCount: Math.max(1, Math.min(20, Number(e.target.value) || 1)),
+                    })
+                  }
+                  className="w-full bg-background border border-border p-3 font-mono text-sm text-center focus:border-volt"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="font-mono text-[10px] uppercase text-foreground/60">
+                  Question types
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {ALL_TYPES.map((t) => {
+                    const isSelected = brief.types.includes(t);
+                    return (
+                      <label
+                        key={t}
+                        className={`flex items-center gap-2 p-3 border rounded-sm cursor-pointer transition-colors ${
+                          isSelected
+                            ? "border-volt text-volt bg-volt/5"
+                            : "border-border text-foreground/70 hover:border-foreground/40"
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleType(t)}
+                          className="accent-volt"
+                        />
+                        <span className="font-mono text-[10px] uppercase">
+                          {getQuestionType(t).label}
+                        </span>
+                      </label>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -376,71 +457,26 @@ function CreateQuiz() {
                 />
               </div>
 
-              {source === "topic" && (
-                <div className="space-y-2">
-                  <label className="font-mono text-[10px] uppercase text-foreground/60 block">
-                    Topic
-                  </label>
-                  <textarea
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    rows={3}
-                    placeholder="e.g. Mendelian inheritance, Punnett squares, and genetic probability"
-                    className="w-full bg-background border border-border p-3 font-sans text-sm focus:border-volt"
-                  />
-                </div>
-              )}
-
-              {source === "material" && (
-                <div className="space-y-2">
-                  <label className="font-mono text-[10px] uppercase text-foreground/60 block">
-                    Source file (PDF, PNG, JPEG, WebP)
-                  </label>
-                  <div
-                    className="border border-border bg-background/20 p-6 rounded cursor-pointer"
-                    onClick={() => fileInputRef.current?.click()}
-                  >
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept=".pdf,.png,.jpg,.jpeg,.webp"
-                      hidden
-                      onChange={(e) => {
-                        const f = e.target.files?.[0] ?? null;
-                        setFile(f);
-                        setUploadError(null);
-                      }}
-                    />
-                    {file ? (
-                      <p className="font-mono text-xs uppercase text-foreground/70">
-                        {file.name} · {((file.size / 1024 / 1024).toFixed(2))} MB
-                      </p>
-                    ) : (
-                      <p className="font-mono text-xs uppercase text-foreground/60">
-                        Choose file
-                      </p>
-                    )}
-                  </div>
-                  <p className="font-mono text-[9px] uppercase text-foreground/40">
-                    The quiz brief is configured on the preparation page after upload.
-                  </p>
+              {uploadError && (
+                <div className="border border-pink-shock/40 bg-pink-shock/5 p-4 font-mono text-xs uppercase text-pink-shock">
+                  {uploadError}
                 </div>
               )}
             </div>
-
-            {uploadError && (
-              <div className="border border-pink-shock/40 bg-pink-shock/5 p-4 font-mono text-xs uppercase text-pink-shock">
-                {uploadError}
-              </div>
-            )}
-
-            <div className="flex gap-3 flex-wrap">
+            <DialogFooter>
+              <button
+                type="button"
+                onClick={() => setDialogOpen(false)}
+                className="border border-border px-4 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors"
+              >
+                Cancel
+              </button>
               {source === "blank" ? (
                 <button
                   type="button"
                   onClick={startBlankQuiz}
                   disabled={creating || !brief.title || brief.types.length === 0}
-                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {creating ? "Creating…" : "Create Empty Quiz"}
                 </button>
@@ -451,7 +487,7 @@ function CreateQuiz() {
                   disabled={
                     creating || !topic.trim() || brief.types.length === 0 || !brief.title
                   }
-                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   {creating ? "Starting…" : "Start Preparation"}
                 </button>
@@ -459,21 +495,15 @@ function CreateQuiz() {
                 <button
                   type="button"
                   onClick={startMaterialPrep}
-                  disabled={!file || uploading}
-                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                  disabled={!file || creating}
+                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed"
                 >
-                  {uploading ? "Uploading…" : "Start from Material"}
+                  {creating ? "Uploading…" : "Start from Material"}
                 </button>
               )}
-              <Link
-                to="/dashboard"
-                className="border border-border px-6 py-3 font-mono text-xs uppercase hover:border-volt hover:text-volt transition-colors"
-              >
-                Cancel
-              </Link>
-            </div>
-          </>
-        )}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       </div>
     </HostShell>
   );

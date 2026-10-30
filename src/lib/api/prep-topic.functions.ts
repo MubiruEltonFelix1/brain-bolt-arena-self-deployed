@@ -126,25 +126,7 @@ export const prepCreateTopicJob = createServerFn({ method: "POST" })
     }
     const documentId = doc.id;
 
-    // Synthetic prep_source carrying the topic text as the excerpt.
-    // Page 1, section "Topic" — the single source anchor for topic-based jobs.
-    const { error: srcErr } = await (
-      supabaseAdmin.from("prep_sources" as never) as any
-    ).insert({
-      job_id: "00000000-0000-0000-0000-000000000000", // placeholder, updated after job insert
-      question_index: -1,
-      document_id: documentId,
-      version: 1,
-      page: 1,
-      section: "Topic",
-      excerpt: data.topic,
-      confidence: 1,
-    });
-    if (srcErr) {
-      console.error("[prep/topic] insert placeholder source failed", srcErr);
-      // Non-fatal: blueprint stage self-heals missing sources.
-    }
-
+    // Create the job first so we have a real job_id for the source FK.
     const { data: job, error: jobErr } = await (supabaseAdmin.from("prep_jobs" as never) as any)
       .insert({
         document_id: documentId,
@@ -163,11 +145,23 @@ export const prepCreateTopicJob = createServerFn({ method: "POST" })
     }
     const jobId = job.id;
 
-    // Fix the placeholder job_id on the synthetic source row.
-    if (!srcErr) {
-      await (supabaseAdmin.from("prep_sources" as never) as any)
-        .update({ job_id: jobId })
-        .eq("job_id", "00000000-0000-0000-0000-000000000000");
+    // Synthetic prep_source carrying the topic text as the excerpt.
+    // Page 1, section "Topic" — the single source anchor for topic-based jobs.
+    const { error: srcErr } = await (
+      supabaseAdmin.from("prep_sources" as never) as any
+    ).insert({
+      job_id: jobId,
+      question_index: -1,
+      document_id: documentId,
+      version: 1,
+      page: 1,
+      section: "Topic",
+      excerpt: data.topic,
+      confidence: 1,
+    });
+    if (srcErr) {
+      console.error("[prep/topic] insert placeholder source failed", srcErr);
+      // Non-fatal: blueprint stage self-heals missing sources.
     }
 
     // Content-map stage is trivially satisfied (one synthetic source).
