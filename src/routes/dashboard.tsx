@@ -86,21 +86,9 @@ function Dashboard() {
     load(); /* eslint-disable-next-line */
   }, [user?.id]);
 
-  async function createQuiz() {
-    if (!user) return;
-    const { data, error } = await supabase
-      .from("quizzes")
-      .insert({ owner_principal_id: user.id, title: "Untitled Quiz" } as never)
-      .select("id")
-      .single();
-    if (error || !data)
-      return toastError(error, {
-        context: "create quiz",
-        fallback: "Could not create the quiz.",
-        retry: () => createQuiz(),
-      });
-    navigate({ to: "/quizzes/$id", params: { id: data.id } });
-  }
+  useEffect(() => {
+    load(); /* eslint-disable-next-line */
+  }, [user?.id]);
 
   async function startSession(
     quizId: string,
@@ -169,20 +157,8 @@ function Dashboard() {
             <h1 className="font-display text-5xl italic uppercase mt-1">Your quizzes</h1>
           </div>
           <button
-            onClick={createQuiz}
-            className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95"
-          >
-            + NEW QUIZ
-          </button>
-          <button
-            onClick={() => navigate({ to: "/prep/new" })}
-            className="border border-border px-6 py-3 font-display text-xs uppercase hover:border-volt hover:text-volt transition-colors active:scale-95"
-          >
-            NEW FROM MATERIAL
-          </button>
-          <button
             onClick={() => navigate({ to: "/create" })}
-            className="bg-volt text-background font-display text-xs uppercase px-6 py-3 skew-cta active:scale-95"
+            className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95"
           >
             CREATE A QUIZ
           </button>
@@ -203,16 +179,10 @@ function Dashboard() {
             body="Quizzes are the source of every BrainBolt match. Create one, add questions, then start a live session and share the game code with your players."
           >
             <button
-              onClick={createQuiz}
+              onClick={() => navigate({ to: "/create" })}
               className="bg-volt text-background font-display text-lg px-6 py-3 skew-cta active:scale-95"
             >
-              + NEW QUIZ
-            </button>
-            <button
-              onClick={() => navigate({ to: "/prep/new" })}
-              className="border border-border px-6 py-3 font-display text-xs uppercase hover:border-volt hover:text-volt transition-colors active:scale-95"
-            >
-              NEW FROM MATERIAL
+              CREATE A QUIZ
             </button>
             <Link
               to="/arena"
