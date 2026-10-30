@@ -3,6 +3,7 @@
 // One coherent workflow: Source → Quiz Brief → Preparation → Review → Quiz Editor.
 //
 // Entry options:
+//   * Blank Quiz — create an empty quiz and open the editor (replaces "+ NEW QUIZ")
 //   * From a Topic — topic text + brief config → topic-based prep job → /create/$jobId
 //   * From Material — document upload → existing /prep/new flow (unchanged)
 //   * From Existing Questions — deferred (Question Bank not yet implemented)
@@ -12,6 +13,7 @@
 
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useCallback, useRef, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
 import { HostShell } from "@/components/host-shell";
 import { useAuthUser } from "@/hooks/use-auth-user";
 import { getQuestionType } from "@/lib/question-registry";
@@ -42,6 +44,13 @@ const DEFAULT_BRIEF: Brief = {
 };
 
 const SOURCE_TYPES = {
+  blank: {
+    id: "blank" as const,
+    label: "Blank Quiz",
+    description:
+      "Create an empty quiz and add questions yourself in the editor.",
+    icon: "📝",
+  },
   topic: {
     id: "topic" as const,
     label: "From a Topic",
@@ -71,7 +80,7 @@ function CreateQuiz() {
   const navigate = useNavigate();
   const { user } = useAuthUser();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [source, setSource] = useState<"topic" | "material" | "bank" | null>(null);
+  const [source, setSource] = useState<"blank" | "topic" | "material" | "bank" | null>(null);
   const [brief, setBrief] = useState<Brief>({ ...DEFAULT_BRIEF });
   const [topic, setTopic] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -177,6 +186,32 @@ function CreateQuiz() {
     navigate({ to: "/prep/new" });
   }
 
+  async function startBlankQuiz() {
+    if (!brief.title) {
+      setUploadError("Give your quiz a title first.");
+      return;
+    }
+    setCreating(true);
+    setUploadError(null);
+    try {
+      const { data, error } = await supabase
+        .from("quizzes")
+        .insert({ owner_principal_id: user!.id, title: brief.title } as never)
+        .select("id")
+        .single();
+      if (error || !data) {
+        setUploadError("Couldn't create the quiz. Try again.");
+        return;
+      }
+      navigate({ to: `/quizzes/${data.id}` });
+    } catch (e) {
+      console.error("[create/blank] failed", e);
+      setUploadError("Couldn't create the quiz. Try again.");
+    } finally {
+      setCreating(false);
+    }
+  }
+
   return (
     <HostShell title="Create a Quiz">
       <div className="max-w-4xl mx-auto px-6 py-10 space-y-12">
@@ -243,9 +278,13 @@ function CreateQuiz() {
                   02 · Quiz Brief
                 </p>
                 <span className={`font-mono text-xs uppercase ${
-                  source === "topic" ? "text-volt" : "text-foreground/40"
+                  source === "topic"
+                    ? "text-volt"
+                    : source === "blank"
+                      ? "text-volt"
+                      : "text-foreground/40"
                 }`}>
-                  {source === "topic" ? "Topic-to-quiz" : "Material-to-quiz"}
+                  {source === "blank" ? "Blank quiz" : source === "topic" ? "Topic-to-quiz" : "Material-to-quiz"}
                 </span>
               </div>
 
@@ -396,7 +435,16 @@ function CreateQuiz() {
             )}
 
             <div className="flex gap-3 flex-wrap">
-              {source === "topic" ? (
+              {source === "blank" ? (
+                <button
+                  type="button"
+                  onClick={startBlankQuiz}
+                  disabled={creating || !brief.title || brief.types.length === 0}
+                  className="bg-volt text-background font-display text-sm uppercase px-6 py-3 skew-cta disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {creating ? "Creating…" : "Create Empty Quiz"}
+                </button>
+              ) : source === "topic" ? (
                 <button
                   type="button"
                   onClick={startTopicPrep}
