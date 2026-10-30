@@ -180,6 +180,12 @@ function Dashboard() {
           >
             NEW FROM MATERIAL
           </button>
+          <button
+            onClick={() => navigate({ to: "/create" })}
+            className="bg-volt text-background font-display text-xs uppercase px-6 py-3 skew-cta active:scale-95"
+          >
+            CREATE A QUIZ
+          </button>
         </div>
 
         <HostAuthorizationCard

@@ -15,6 +15,8 @@ import { Route as ArenaRouteImport } from './routes/arena'
 import { Route as AuthRouteImport } from './routes/auth'
 import { Route as BrandingRouteImport } from './routes/branding'
 import { Route as CompetitionsRouteImport } from './routes/competitions'
+import { Route as CreateRouteImport } from './routes/create'
+import { Route as CreateJobIdRouteImport } from './routes/create.$jobId'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as LeaguesRouteImport } from './routes/leagues'
 import { Route as ProfileRouteImport } from './routes/profile'
@@ -63,6 +65,16 @@ const BrandingRoute = BrandingRouteImport.update({
 const CompetitionsRoute = CompetitionsRouteImport.update({
   id: '/competitions',
   path: '/competitions',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreateRoute = CreateRouteImport.update({
+  id: '/create',
+  path: '/create',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreateJobIdRoute = CreateJobIdRouteImport.update({
+  id: '/create/$jobId',
+  path: '/create/$jobId',
   getParentRoute: () => rootRouteImport,
 } as any)
 const DashboardRoute = DashboardRouteImport.update({
@@ -168,6 +180,8 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/branding': typeof BrandingRoute
   '/competitions': typeof CompetitionsRoute
+  '/create': typeof CreateRoute
+  '/create/$jobId': typeof CreateJobIdRoute
   '/dashboard': typeof DashboardRoute
   '/leagues': typeof LeaguesRouteWithChildren
   '/profile': typeof ProfileRoute
@@ -194,6 +208,8 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/branding': typeof BrandingRoute
   '/competitions': typeof CompetitionsRoute
+  '/create': typeof CreateRoute
+  '/create/$jobId': typeof CreateJobIdRoute
   '/dashboard': typeof DashboardRoute
   '/profile': typeof ProfileRoute
   '/request-hosting': typeof RequestHostingRoute
@@ -220,6 +236,8 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/branding': typeof BrandingRoute
   '/competitions': typeof CompetitionsRoute
+  '/create': typeof CreateRoute
+  '/create/$jobId': typeof CreateJobIdRoute
   '/dashboard': typeof DashboardRoute
   '/leagues': typeof LeaguesRouteWithChildren
   '/profile': typeof ProfileRoute
@@ -249,6 +267,8 @@ export interface FileRouteTypes {
     | '/auth'
     | '/branding'
     | '/competitions'
+    | '/create'
+    | '/create/$jobId'
     | '/dashboard'
     | '/leagues'
     | '/profile'
@@ -275,6 +295,8 @@ export interface FileRouteTypes {
     | '/auth'
     | '/branding'
     | '/competitions'
+    | '/create'
+    | '/create/$jobId'
     | '/dashboard'
     | '/profile'
     | '/request-hosting'
@@ -300,6 +322,8 @@ export interface FileRouteTypes {
     | '/auth'
     | '/branding'
     | '/competitions'
+    | '/create'
+    | '/create/$jobId'
     | '/dashboard'
     | '/leagues'
     | '/profile'
@@ -328,6 +352,8 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   BrandingRoute: typeof BrandingRoute
   CompetitionsRoute: typeof CompetitionsRoute
+  CreateRoute: typeof CreateRoute
+  CreateJobIdRoute: typeof CreateJobIdRoute
   DashboardRoute: typeof DashboardRoute
   LeaguesRoute: typeof LeaguesRouteWithChildren
   ProfileRoute: typeof ProfileRoute
@@ -385,6 +411,20 @@ declare module '@tanstack/react-router' {
       path: '/competitions'
       fullPath: '/competitions'
       preLoaderRoute: typeof CompetitionsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/create': {
+      id: '/create'
+      path: '/create'
+      fullPath: '/create'
+      preLoaderRoute: typeof CreateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/create/$jobId': {
+      id: '/create/$jobId'
+      path: '/create/$jobId'
+      fullPath: '/create/$jobId'
+      preLoaderRoute: typeof CreateJobIdRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/dashboard': {
@@ -569,6 +609,8 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   BrandingRoute: BrandingRoute,
   CompetitionsRoute: CompetitionsRoute,
+  CreateRoute: CreateRoute,
+  CreateJobIdRoute: CreateJobIdRoute,
   DashboardRoute: DashboardRoute,
   LeaguesRoute: LeaguesRouteWithChildren,
   ProfileRoute: ProfileRoute,
