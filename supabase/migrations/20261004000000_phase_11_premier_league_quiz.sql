@@ -22,13 +22,13 @@ INSERT INTO public.quizzes(
   id, title, description, difficulty, time_per_question,
   estimated_duration_minutes, arena_publication_status,
   arena_admin_status, arena_featured_rank, arena_category, tags,
-  owner_principal_id, created_at, updated_at
+  owner_principal_id, created_at
 )
 VALUES (
   'a1b2c3d4-e5f6-7890-abcd-ef1234567890',
   'Premier League 2026/27 — Season So Far',
   'Test your knowledge of the current Premier League season, from match results and standout performances to team statistics and memorable moments.',
-  'mixed',
+  'medium',
   20,
   15,
   'published',
@@ -37,7 +37,6 @@ VALUES (
   'Football',
   'football;premier-league;2026-27;season',
   NULL,
-  now(),
   now()
 )
 ON CONFLICT (id) DO NOTHING;
@@ -52,7 +51,7 @@ INSERT INTO public.questions(
   options, correct_index, correct_number, number_min, number_max,
   number_tolerance, accepted_answers, correct_lat, correct_lng,
   max_distance_km, geo_region, geo_region_label, audio_url,
-  reveal_stages, created_at, updated_at
+  reveal_stages, created_at
 )
 VALUES
   -- Q1: Champions
@@ -61,7 +60,7 @@ VALUES
     'Which team won the Premier League 2026/27 title?', 20, 1000,
     'mcq', NULL, false, true,
     '["Arsenal","Liverpool","Manchester City","Chelsea"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q2: Arsenal points
   (
@@ -69,7 +68,7 @@ VALUES
     'How many points did champions Arsenal finish with?', 20, 1000,
     'mcq', NULL, false, true,
     '["90","88","83","80"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q3: Runner-up
   (
@@ -77,7 +76,7 @@ VALUES
     'Which team finished second in the Premier League 2026/27 table?', 20, 1000,
     'mcq', NULL, false, true,
     '["Liverpool","Manchester City","Chelsea","Newcastle United"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q4: Top scorer
   (
@@ -85,7 +84,7 @@ VALUES
     'Who finished as the Premier League 2026/27 top scorer with 27 goals?', 20, 1000,
     'mcq', NULL, false, true,
     '["Erling Haaland","Mohamed Salah","Cole Palmer","Ollie Watkins"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q5: Most goals scored
   (
@@ -93,7 +92,7 @@ VALUES
     'Which team scored the most goals in the 2026/27 season (89)?', 20, 1000,
     'mcq', NULL, false, true,
     '["Arsenal","Liverpool","Manchester City","Chelsea"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q6: Fewest goals conceded
   (
@@ -101,7 +100,7 @@ VALUES
     'Which team conceded the fewest goals in the 2026/27 season (32)?', 20, 1000,
     'mcq', NULL, false, true,
     '["Liverpool","Manchester City","Arsenal","Chelsea"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q7: Most wins
   (
@@ -109,7 +108,7 @@ VALUES
     'How many league wins did Arsenal record in the 2026/27 season?', 20, 1000,
     'mcq', NULL, false, true,
     '["28","27","25","22"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q8: Cole Palmer goals
   (
@@ -117,7 +116,7 @@ VALUES
     'How many goals did Cole Palmer score for Chelsea in the 2026/27 season?', 20, 1000,
     'mcq', NULL, false, true,
     '["22","24","27","19"]'::jsonb, 1,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q9: Fourth place
   (
@@ -125,7 +124,7 @@ VALUES
     'Which team finished fourth in the 2026/27 Premier League with 75 points?', 20, 1000,
     'mcq', NULL, false, true,
     '["Chelsea","Newcastle United","Brighton","Aston Villa"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q10: Salah goals
   (
@@ -133,7 +132,7 @@ VALUES
     'How many goals did Mohamed Salah score for Liverpool in the 2026/27 season?', 20, 1000,
     'mcq', NULL, false, true,
     '["24","27","22","18"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q11: Third place
   (
@@ -141,7 +140,7 @@ VALUES
     'Which team finished third in the 2026/27 Premier League with 83 points?', 20, 1000,
     'mcq', NULL, false, true,
     '["Manchester City","Liverpool","Chelsea","Arsenal"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q12: Liverpool draws
   (
@@ -149,7 +148,7 @@ VALUES
     'How many draws did Liverpool record in the 2026/27 season?', 20, 1000,
     'mcq', NULL, false, true,
     '["7","6","4","9"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q13: Saka goals
   (
@@ -157,7 +156,7 @@ VALUES
     'Which Arsenal player scored 18 goals in the 2026/27 season?', 20, 1000,
     'mcq', NULL, false, true,
     '["Bukayo Saka","Erling Haaland","Mohamed Salah","Cole Palmer"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q14: Fifth place
   (
@@ -165,7 +164,7 @@ VALUES
     'Which team finished fifth in the 2026/27 Premier League with 64 points?', 20, 1000,
     'mcq', NULL, false, true,
     '["Newcastle United","Brighton","Aston Villa","Tottenham Hotspur"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   ),
   -- Q15: Matches played
   (
@@ -173,7 +172,7 @@ VALUES
     'How many Premier League matches did each team play in the 2026/27 season?', 20, 1000,
     'mcq', NULL, false, true,
     '["38","34","30","42"]'::jsonb, 0,
-    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now(), now()
+    NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, now()
   );
 
 -- ---------------------------------------------------------------------------

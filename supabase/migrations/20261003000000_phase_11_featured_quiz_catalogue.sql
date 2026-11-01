@@ -42,11 +42,13 @@ CREATE INDEX IF NOT EXISTS featured_quiz_metadata_verified_idx
 -- 3. RLS
 ALTER TABLE public.featured_quiz_metadata ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "featured_quiz_metadata public read" ON public.featured_quiz_metadata;
 CREATE POLICY "featured_quiz_metadata public read"
   ON public.featured_quiz_metadata FOR SELECT
   TO anon, authenticated
   USING (true);
 
+DROP POLICY IF EXISTS "featured_quiz_metadata admin write" ON public.featured_quiz_metadata;
 CREATE POLICY "featured_quiz_metadata admin write"
   ON public.featured_quiz_metadata FOR ALL
   TO authenticated
