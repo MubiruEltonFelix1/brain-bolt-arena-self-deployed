@@ -1,4 +1,4 @@
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toastError } from "@/lib/errors";
@@ -16,6 +16,10 @@ import {
 } from "@/lib/arena";
 import { ArenaCard, ArenaEmptyState, ArenaHero, CategoryChip } from "@/components/arena/ArenaVisuals";
 import { ARENA_LENGTH_FILTERS, LOADING, arenaSortLabel } from "@/lib/terminology";
+import { z } from "zod";
+import { Trophy } from "lucide-react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
 
 export const Route = createFileRoute("/arena/")({
   head: () => ({
@@ -39,29 +43,39 @@ export const Route = createFileRoute("/arena/")({
 });
 
 /* ------------------------------------------------------------------ */
-/* Hero / shell                                                        */
+/* Join game form (live competitions)                                 */
+/* ------------------------------------------------------------------ */
+
+const joinGameSchema = z.object({
+  code: z.string().min(4, "Enter a valid Game PIN"),
+});
+
+type JoinGameValues = z.infer<typeof joinGameSchema>;
+
+/* ------------------------------------------------------------------ */
+/* Hero / shell                                                       */
 /* ------------------------------------------------------------------ */
 
 function Arena() {
   const { user } = useAuthUser();
+  const navigate = useNavigate();
 
-  // Platform state — closed banner reads from here
   const platform = useQuery({
     queryKey: ["arena", "platform"],
     queryFn: () => fetchArenaPlatformState(),
     staleTime: 30_000,
   });
 
-  // "Continue exploring" + "Your best" need the signed-in profile id; the same
-  // query also supplies every card's personal-best badge.
   const bests = useQuery({
     queryKey: ["arena", "personal-bests", user?.id ?? "anon"],
-    queryFn: () => (user ? fetchPersonalBests(user.id) : Promise.resolve(new Map<string, number>())),
+    queryFn: () =>
+      user
+        ? fetchPersonalBests(user.id)
+        : Promise.resolve(new Map<string, number>()),
     enabled: !!user,
   });
   const personalBests = bests.data ?? new Map<string, number>();
 
-  // 7 sections fetched in parallel via useQuery
   const sections = useArenaSections(user?.id ?? null);
 
   const [searchOpen, setSearchOpen] = useState(false);
@@ -70,13 +84,14 @@ function Arena() {
 
   const search = useQuery({
     queryKey: ["arena", "search", query, filters],
-    queryFn: () => searchArenaQuizzes({ query, filters, limit: 24, offset: 0 }),
+    queryFn: () =>
+      searchArenaQuizzes({ query, filters, limit: 24, offset: 0 }),
     enabled: searchOpen,
   });
 
-  // Aggregate "Play Now" target: first featured, fallback to first published.
   const playNowHref = useMemo(() => {
-    const featured = sections.featured.data?.[0] ?? sections.trending.data?.[0] ?? null;
+    const featured =
+      sections.featured.data?.[0] ?? sections.trending.data?.[0] ?? null;
     return featured ? `/arena/${featured.id}` : "/arena";
   }, [sections.featured.data, sections.trending.data]);
 
@@ -94,7 +109,9 @@ function Arena() {
           <div className="size-8 bg-volt grid place-items-center skew-x-[-12deg]">
             <span className="font-display text-background text-xl italic">B</span>
           </div>
-          <span className="font-display text-2xl tracking-tight italic">BRAINBOLT</span>
+          <span className="font-display text-2xl tracking-tight italic">
+            BRAINBOLT
+          </span>
         </Link>
         <Link
           to="/"
@@ -108,7 +125,9 @@ function Arena() {
         <Hero
           playNowHref={playNowHref}
           onExplore={() =>
-            document.getElementById("arena-explore")?.scrollIntoView({ behavior: "smooth" })
+            document.getElementById("arena-explore")?.scrollIntoView({
+              behavior: "smooth",
+            })
           }
           onSearch={() => setSearchOpen(true)}
         />
@@ -116,6 +135,9 @@ function Arena() {
         {platform.data && !platform.data.arena_open && (
           <ClosedBanner message={platform.data.arena_closed_message} />
         )}
+
+        {/* Live Competitions — host-led, real-time */}
+        <LiveCompetitionsSection onJoinGame={handleJoinGame} />
 
         {!searchOpen && (
           <CategoryBar
@@ -161,14 +183,15 @@ function Arena() {
           <div id="arena-explore" className="space-y-14">
             {sections.featured.data && sections.featured.data.length > 0 && (
               <Section
-                eyebrow="Official picks"
-                title="Featured"
-                subtitle="Hand-picked challenges ready right now."
+                eyebrow="Play whenever"
+                title="Featured Quizzes"
+                subtitle="Curated challenges you can start instantly — no host needed."
               >
                 {sections.featured.data[0] && (
                   <ArenaHero
                     item={sections.featured.data[0]}
                     personalBest={personalBests.get(sections.featured.data[0].id) ?? null}
+                    ribbon="Featured"
                   />
                 )}
                 {sections.featured.data.length > 1 && (
@@ -274,70 +297,178 @@ function Arena() {
       </main>
     </div>
   );
-}
 
-/* ------------------------------------------------------------------ */
-/* Hooks                                                               */
-/* ------------------------------------------------------------------ */
+  function handleJoinGame(values: JoinGameValues) {
+    const clean = values.code.replace(/\D/g, "");
+    navigate({ to: `/join/${clean}` });
+  }
 
-function useArenaSections(profileId: string | null) {
-  const make = (section: ArenaSection) => () =>
-    fetchArenaSection(section, profileId).catch((e) => {
-      toastError(e, { context: `arena section ${section}`, fallback: "Couldn't load" });
-      return [];
+  function useArenaSections(profileId: string | null) {
+    const make = (section: ArenaSection) => () =>
+      fetchArenaSection(section, profileId).catch((e) => {
+        toastError(e, { context: `arena section ${section}`, fallback: "Couldn't load" });
+        return [];
+      });
+
+    const featured = useQuery({
+      queryKey: ["arena", "section", "featured"],
+      queryFn: make("featured"),
+    });
+    const trending = useQuery({
+      queryKey: ["arena", "section", "trending"],
+      queryFn: make("trending"),
+    });
+    const fresh = useQuery({
+      queryKey: ["arena", "section", "new"],
+      queryFn: make("new"),
+    });
+    const quick_bolts = useQuery({
+      queryKey: ["arena", "section", "quick_bolts"],
+      queryFn: make("quick_bolts"),
+    });
+    const hard_mode = useQuery({
+      queryKey: ["arena", "section", "hard_mode"],
+      queryFn: make("hard_mode"),
+    });
+    const continue_exploring = useQuery({
+      queryKey: ["arena", "section", "continue_exploring", profileId],
+      queryFn: make("continue_exploring"),
+      enabled: !!profileId,
+    });
+    const your_best = useQuery({
+      queryKey: ["arena", "section", "your_best", profileId],
+      queryFn: make("your_best"),
+      enabled: !!profileId,
     });
 
-  const featured = useQuery({ queryKey: ["arena", "section", "featured"], queryFn: make("featured") });
-  const trending = useQuery({ queryKey: ["arena", "section", "trending"], queryFn: make("trending") });
-  const fresh = useQuery({ queryKey: ["arena", "section", "new"], queryFn: make("new") });
-  const quick_bolts = useQuery({ queryKey: ["arena", "section", "quick_bolts"], queryFn: make("quick_bolts") });
-  const hard_mode = useQuery({ queryKey: ["arena", "section", "hard_mode"], queryFn: make("hard_mode") });
-  const continue_exploring = useQuery({
-    queryKey: ["arena", "section", "continue_exploring", profileId],
-    queryFn: make("continue_exploring"),
-    enabled: !!profileId,
-  });
-  const your_best = useQuery({
-    queryKey: ["arena", "section", "your_best", profileId],
-    queryFn: make("your_best"),
-    enabled: !!profileId,
-  });
+    const categories = useQuery({
+      queryKey: ["arena", "categories"],
+      queryFn: async () => {
+        const all = await fetchArenaList();
+        const map = new Map<string, ArenaListItem[]>();
+        for (const item of all) {
+          const cat = (item.arena_category ?? "").trim();
+          if (!cat) continue;
+          const arr = map.get(cat) ?? [];
+          arr.push(item);
+          map.set(cat, arr);
+        }
+        return Array.from(map.entries())
+          .filter(([, items]) => items.length > 0)
+          .sort(([a], [b]) => a.localeCompare(b));
+      },
+    });
 
-  // Category buckets derived from the full list (server doesn't expose a
-  // "by category" endpoint — we derive it from get_arena_quizzes to keep
-  // the catalog surface to a single RPC).
-  const categories = useQuery({
-    queryKey: ["arena", "categories"],
-    queryFn: async () => {
-      const all = await fetchArenaList();
-      const map = new Map<string, ArenaListItem[]>();
-      for (const item of all) {
-        const cat = (item.arena_category ?? "").trim();
-        if (!cat) continue;
-        const arr = map.get(cat) ?? [];
-        arr.push(item);
-        map.set(cat, arr);
-      }
-      return Array.from(map.entries())
-        .filter(([, items]) => items.length > 0)
-        .sort(([a], [b]) => a.localeCompare(b));
-    },
-  });
-
-  return {
-    featured,
-    trending,
-    new: fresh,
-    quick_bolts,
-    hard_mode,
-    continue_exploring,
-    your_best,
-    categories: categories.data ?? [],
-  };
+    return {
+      featured,
+      trending,
+      new: fresh,
+      quick_bolts,
+      hard_mode,
+      continue_exploring,
+      your_best,
+      categories: categories.data ?? [],
+    };
+  }
 }
 
 /* ------------------------------------------------------------------ */
-/* Hero                                                                */
+/* Live Competitions section                                          */
+/* ------------------------------------------------------------------ */
+
+function LiveCompetitionsSection({
+  onJoinGame,
+}: {
+  onJoinGame: (values: JoinGameValues) => void;
+}) {
+  const form = useForm<JoinGameValues>({
+    resolver: zodResolver(joinGameSchema),
+    defaultValues: { code: "" },
+  });
+
+  const onSubmit = (values: JoinGameValues) => {
+    void onJoinGame(values);
+  };
+
+  return (
+    <section className="border-2 border-volt bg-card overflow-hidden">
+      <div className="grid md:grid-cols-2 gap-6 p-6 sm:p-8 items-center">
+        <div className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Trophy className="size-5 text-volt" />
+            <span className="font-mono text-[10px] uppercase tracking-widest text-volt">
+              Live Competitions
+            </span>
+          </div>
+          <h2 className="font-display text-3xl sm:text-4xl italic uppercase tracking-tight">
+            Join a hosted match
+          </h2>
+          <p className="text-foreground/70 text-sm sm:text-base max-w-md">
+            Real-time, host-led competitions. A host creates the room, starts
+            the game, and advances the questions — you just play along with
+            everyone else in the room.
+          </p>
+          <div className="flex items-center gap-2 pt-2">
+            <span className="font-mono text-[10px] uppercase text-foreground/50">
+              How it works:
+            </span>
+            <span className="font-mono text-[10px] text-foreground/60">
+              Enter the 6-digit Game PIN from your host's screen
+            </span>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-3">
+            <div className="space-y-2">
+              <label
+                htmlFor="arena-join-code"
+                className="block font-mono text-[10px] uppercase text-foreground/70"
+              >
+                Game PIN
+              </label>
+              <div className="relative">
+                <input
+                  id="arena-join-code"
+                  type="text"
+                  maxLength="6"
+                  {...form.register("code")}
+                  className="w-full min-h-12 bg-background border-2 border-border px-4 py-3 font-display text-xl text-center uppercase tracking-widest focus:outline-none focus:border-volt placeholder:text-muted-foreground"
+                  placeholder="000000"
+                  inputMode="numeric"
+                />
+                {form.formState.errors.code && (
+                  <p className="font-mono text-[9px] text-pink-shock">
+                    {form.formState.errors.code.message}
+                  </p>
+                )}
+              </div>
+            </div>
+            <button
+              type="submit"
+              className="w-full min-h-12 bg-volt text-background font-display text-xl uppercase italic px-7 py-3 skew-cta active:scale-95 transition-transform focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt"
+            >
+              Join game
+            </button>
+          </form>
+
+          <div className="border-t border-border pt-4">
+            <p className="font-mono text-[10px] uppercase text-foreground/50">
+              Prefer solo?
+            </p>
+            <p className="text-foreground/60 text-sm max-w-sm">
+              Play featured quizzes on your own time — no host, no schedule.
+              Scroll down to browse the catalogue.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* Hero                                                               */
 /* ------------------------------------------------------------------ */
 
 function Hero({
@@ -388,7 +519,7 @@ function Hero({
 }
 
 /* ------------------------------------------------------------------ */
-/* Sections                                                            */
+/* Sections                                                           */
 /* ------------------------------------------------------------------ */
 
 function Section({
@@ -468,10 +599,6 @@ function CategorySections({
   );
 }
 
-/**
- * Category browse bar — the fastest route from "I fancy a quiz" to a quiz.
- * Derived from the published catalog, so an empty category never appears.
- */
 function CategoryBar({
   categories,
   onPick,
@@ -482,10 +609,7 @@ function CategoryBar({
   if (categories.length === 0) return null;
   return (
     <section aria-labelledby="arena-categories" className="space-y-4">
-      <h2
-        id="arena-categories"
-        className="font-display text-2xl italic uppercase tracking-tight"
-      >
+      <h2 id="arena-categories" className="font-display text-2xl italic uppercase tracking-tight">
         Browse by category
       </h2>
       <div className="flex flex-wrap gap-2">
@@ -519,7 +643,7 @@ function ClosedBanner({ message }: { message: string }) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Search panel                                                        */
+/* Search panel                                                       */
 /* ------------------------------------------------------------------ */
 
 function SearchPanel({
@@ -572,7 +696,9 @@ function SearchPanel({
 
       <div className="grid sm:grid-cols-3 gap-4">
         <label className="block">
-          <span className="font-mono text-[10px] uppercase text-foreground/60">Difficulty</span>
+          <span className="font-mono text-[10px] uppercase text-foreground/60">
+            Difficulty
+          </span>
           <select
             value={filters.difficulty ?? ""}
             onChange={(e) =>
@@ -591,17 +717,22 @@ function SearchPanel({
         </label>
 
         <label className="block">
-          <span className="font-mono text-[10px] uppercase text-foreground/60">Category</span>
+          <span className="font-mono text-[10px] uppercase text-foreground/60">
+            Category
+          </span>
           <input
             value={filters.category ?? ""}
-            onChange={(e) => setFilters({ ...filters, category: e.target.value || undefined })}
+            onChange={(e) =>
+              setFilters({ ...filters, category: e.target.value || undefined })}
             placeholder="Any category"
             className="mt-1 w-full min-h-11 bg-background border border-border px-3 py-2 font-mono text-xs"
           />
         </label>
 
         <label className="block">
-          <span className="font-mono text-[10px] uppercase text-foreground/60">Sort by</span>
+          <span className="font-mono text-[10px] uppercase text-foreground/60">
+            Sort by
+          </span>
           <select
             value={filters.sort ?? "featured"}
             onChange={(e) =>
@@ -621,7 +752,9 @@ function SearchPanel({
       </div>
 
       <fieldset className="space-y-2">
-        <legend className="font-mono text-[10px] uppercase text-foreground/60">Length</legend>
+        <legend className="font-mono text-[10px] uppercase text-foreground/60">
+          Length
+        </legend>
         <div className="flex flex-wrap gap-2">
           {ARENA_LENGTH_FILTERS.map((f) => {
             const active = activeLength === f.value;
@@ -632,11 +765,7 @@ function SearchPanel({
                 title={f.hint}
                 aria-pressed={active}
                 onClick={() => setFilters({ ...filters, duration_max: f.max })}
-                className={`min-h-11 border px-3 font-mono text-xs uppercase transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt ${
-                  active
-                    ? "border-volt bg-volt/10 text-volt"
-                    : "border-border text-foreground/70 hover:border-volt hover:text-volt"
-                }`}
+                className={`min-h-11 border px-3 font-mono text-xs uppercase transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-volt ${active ? "border-volt bg-volt/10 text-volt" : "border-border text-foreground/70 hover:border-volt hover:text-volt"}`}
               >
                 {f.label}
                 <span className="ml-2 text-foreground/40">{f.hint}</span>
@@ -661,7 +790,10 @@ function SearchPanel({
       </p>
 
       {result && result.length > 0 && (
-        <CardGrid items={result as unknown as ArenaListItem[]} personalBests={personalBests} />
+        <CardGrid
+          items={result as unknown as ArenaListItem[]}
+          personalBests={personalBests}
+        />
       )}
 
       {result && result.length === 0 && (

@@ -731,5 +731,25 @@ export function createMarkers({ q, yes }) {
         colExists("ai_usage_log", "stage") &&
         fnBodyLike("can", "Phase 10 AI Quiz Preparation"),
     },
+    {
+      file: "20261003000000_phase_11_featured_quiz_catalogue.sql",
+      marker: "featured_quiz_metadata table + admin_featured_quiz_metadata RPCs (Phase 11 Featured Quiz Catalogue)",
+      applied: () =>
+        tableExists("featured_quiz_metadata") &&
+        fnExists("admin_featured_quiz_metadata_set") &&
+        fnExists("admin_featured_quiz_metadata_get") &&
+        fnExists("admin_arena_quiz_update"),
+    },
+    {
+      file: "20261004000000_phase_11_premier_league_quiz.sql",
+      marker: "Premier League 2026/27 quiz data + featured_quiz_metadata row (Phase 11 launch quiz)",
+      applied: () =>
+        yes(
+          `SELECT EXISTS (SELECT 1 FROM public.quizzes WHERE id = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890')`,
+        ) &&
+        yes(
+          `SELECT EXISTS (SELECT 1 FROM public.featured_quiz_metadata WHERE quiz_id = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890')`,
+        ),
+    },
   ];
 }

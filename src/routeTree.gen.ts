@@ -16,7 +16,6 @@ import { Route as AuthRouteImport } from './routes/auth'
 import { Route as BrandingRouteImport } from './routes/branding'
 import { Route as CompetitionsRouteImport } from './routes/competitions'
 import { Route as CreateRouteImport } from './routes/create'
-import { Route as CreateJobIdRouteImport } from './routes/create.$jobId'
 import { Route as DashboardRouteImport } from './routes/dashboard'
 import { Route as LeaguesRouteImport } from './routes/leagues'
 import { Route as ProfileRouteImport } from './routes/profile'
@@ -25,6 +24,7 @@ import { Route as SitemapDotxmlRouteImport } from './routes/sitemap[.]xml'
 import { Route as TrainingRouteImport } from './routes/training'
 import { Route as ArenaIndexRouteImport } from './routes/arena.index'
 import { Route as ArenaQuizIdRouteImport } from './routes/arena.$quizId'
+import { Route as CreateJobIdRouteImport } from './routes/create.$jobId'
 import { Route as DebugMapRouteImport } from './routes/debug.map'
 import { Route as HostSessionIdRouteImport } from './routes/host.$sessionId'
 import { Route as JoinCodeRouteImport } from './routes/join.$code'
@@ -72,11 +72,6 @@ const CreateRoute = CreateRouteImport.update({
   path: '/create',
   getParentRoute: () => rootRouteImport,
 } as any)
-const CreateJobIdRoute = CreateJobIdRouteImport.update({
-  id: '/create/$jobId',
-  path: '/create/$jobId',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const DashboardRoute = DashboardRouteImport.update({
   id: '/dashboard',
   path: '/dashboard',
@@ -116,6 +111,11 @@ const ArenaQuizIdRoute = ArenaQuizIdRouteImport.update({
   id: '/$quizId',
   path: '/$quizId',
   getParentRoute: () => ArenaRoute,
+} as any)
+const CreateJobIdRoute = CreateJobIdRouteImport.update({
+  id: '/$jobId',
+  path: '/$jobId',
+  getParentRoute: () => CreateRoute,
 } as any)
 const DebugMapRoute = DebugMapRouteImport.update({
   id: '/debug/map',
@@ -180,8 +180,7 @@ export interface FileRoutesByFullPath {
   '/auth': typeof AuthRoute
   '/branding': typeof BrandingRoute
   '/competitions': typeof CompetitionsRoute
-  '/create': typeof CreateRoute
-  '/create/$jobId': typeof CreateJobIdRoute
+  '/create': typeof CreateRouteWithChildren
   '/dashboard': typeof DashboardRoute
   '/leagues': typeof LeaguesRouteWithChildren
   '/profile': typeof ProfileRoute
@@ -189,6 +188,7 @@ export interface FileRoutesByFullPath {
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/training': typeof TrainingRoute
   '/arena/$quizId': typeof ArenaQuizIdRouteWithChildren
+  '/create/$jobId': typeof CreateJobIdRoute
   '/debug/map': typeof DebugMapRoute
   '/host/$sessionId': typeof HostSessionIdRoute
   '/join/$code': typeof JoinCodeRoute
@@ -208,13 +208,13 @@ export interface FileRoutesByTo {
   '/auth': typeof AuthRoute
   '/branding': typeof BrandingRoute
   '/competitions': typeof CompetitionsRoute
-  '/create': typeof CreateRoute
-  '/create/$jobId': typeof CreateJobIdRoute
+  '/create': typeof CreateRouteWithChildren
   '/dashboard': typeof DashboardRoute
   '/profile': typeof ProfileRoute
   '/request-hosting': typeof RequestHostingRoute
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/training': typeof TrainingRoute
+  '/create/$jobId': typeof CreateJobIdRoute
   '/debug/map': typeof DebugMapRoute
   '/host/$sessionId': typeof HostSessionIdRoute
   '/join/$code': typeof JoinCodeRoute
@@ -236,8 +236,7 @@ export interface FileRoutesById {
   '/auth': typeof AuthRoute
   '/branding': typeof BrandingRoute
   '/competitions': typeof CompetitionsRoute
-  '/create': typeof CreateRoute
-  '/create/$jobId': typeof CreateJobIdRoute
+  '/create': typeof CreateRouteWithChildren
   '/dashboard': typeof DashboardRoute
   '/leagues': typeof LeaguesRouteWithChildren
   '/profile': typeof ProfileRoute
@@ -245,6 +244,7 @@ export interface FileRoutesById {
   '/sitemap.xml': typeof SitemapDotxmlRoute
   '/training': typeof TrainingRoute
   '/arena/$quizId': typeof ArenaQuizIdRouteWithChildren
+  '/create/$jobId': typeof CreateJobIdRoute
   '/debug/map': typeof DebugMapRoute
   '/host/$sessionId': typeof HostSessionIdRoute
   '/join/$code': typeof JoinCodeRoute
@@ -268,7 +268,6 @@ export interface FileRouteTypes {
     | '/branding'
     | '/competitions'
     | '/create'
-    | '/create/$jobId'
     | '/dashboard'
     | '/leagues'
     | '/profile'
@@ -276,6 +275,7 @@ export interface FileRouteTypes {
     | '/sitemap.xml'
     | '/training'
     | '/arena/$quizId'
+    | '/create/$jobId'
     | '/debug/map'
     | '/host/$sessionId'
     | '/join/$code'
@@ -296,12 +296,12 @@ export interface FileRouteTypes {
     | '/branding'
     | '/competitions'
     | '/create'
-    | '/create/$jobId'
     | '/dashboard'
     | '/profile'
     | '/request-hosting'
     | '/sitemap.xml'
     | '/training'
+    | '/create/$jobId'
     | '/debug/map'
     | '/host/$sessionId'
     | '/join/$code'
@@ -323,7 +323,6 @@ export interface FileRouteTypes {
     | '/branding'
     | '/competitions'
     | '/create'
-    | '/create/$jobId'
     | '/dashboard'
     | '/leagues'
     | '/profile'
@@ -331,6 +330,7 @@ export interface FileRouteTypes {
     | '/sitemap.xml'
     | '/training'
     | '/arena/$quizId'
+    | '/create/$jobId'
     | '/debug/map'
     | '/host/$sessionId'
     | '/join/$code'
@@ -352,8 +352,7 @@ export interface RootRouteChildren {
   AuthRoute: typeof AuthRoute
   BrandingRoute: typeof BrandingRoute
   CompetitionsRoute: typeof CompetitionsRoute
-  CreateRoute: typeof CreateRoute
-  CreateJobIdRoute: typeof CreateJobIdRoute
+  CreateRoute: typeof CreateRouteWithChildren
   DashboardRoute: typeof DashboardRoute
   LeaguesRoute: typeof LeaguesRouteWithChildren
   ProfileRoute: typeof ProfileRoute
@@ -420,13 +419,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof CreateRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/create/$jobId': {
-      id: '/create/$jobId'
-      path: '/create/$jobId'
-      fullPath: '/create/$jobId'
-      preLoaderRoute: typeof CreateJobIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/dashboard': {
       id: '/dashboard'
       path: '/dashboard'
@@ -482,6 +474,13 @@ declare module '@tanstack/react-router' {
       fullPath: '/arena/$quizId'
       preLoaderRoute: typeof ArenaQuizIdRouteImport
       parentRoute: typeof ArenaRoute
+    }
+    '/create/$jobId': {
+      id: '/create/$jobId'
+      path: '/$jobId'
+      fullPath: '/create/$jobId'
+      preLoaderRoute: typeof CreateJobIdRouteImport
+      parentRoute: typeof CreateRoute
     }
     '/debug/map': {
       id: '/debug/map'
@@ -589,6 +588,17 @@ const ArenaRouteChildren: ArenaRouteChildren = {
 
 const ArenaRouteWithChildren = ArenaRoute._addFileChildren(ArenaRouteChildren)
 
+interface CreateRouteChildren {
+  CreateJobIdRoute: typeof CreateJobIdRoute
+}
+
+const CreateRouteChildren: CreateRouteChildren = {
+  CreateJobIdRoute: CreateJobIdRoute,
+}
+
+const CreateRouteWithChildren =
+  CreateRoute._addFileChildren(CreateRouteChildren)
+
 interface LeaguesRouteChildren {
   LeaguesIdRoute: typeof LeaguesIdRoute
   LeaguesIndexRoute: typeof LeaguesIndexRoute
@@ -609,8 +619,7 @@ const rootRouteChildren: RootRouteChildren = {
   AuthRoute: AuthRoute,
   BrandingRoute: BrandingRoute,
   CompetitionsRoute: CompetitionsRoute,
-  CreateRoute: CreateRoute,
-  CreateJobIdRoute: CreateJobIdRoute,
+  CreateRoute: CreateRouteWithChildren,
   DashboardRoute: DashboardRoute,
   LeaguesRoute: LeaguesRouteWithChildren,
   ProfileRoute: ProfileRoute,

@@ -8,6 +8,7 @@ import {
   Brain,
   Cpu,
   FileText,
+  Trophy,
 } from "lucide-react";
 
 /**
@@ -93,6 +94,14 @@ export const SECTIONS: Record<SectionKey, SectionDef> = {
     implemented: true,
     icon: Cpu,
   },
+  "featured-quizzes": {
+    key: "featured-quizzes",
+    label: "Featured Quizzes",
+    description: "Manage the Arena's featured quiz catalogue.",
+    group: "operations",
+    implemented: true,
+    icon: Trophy,
+  },
   audit: {
     key: "audit",
     label: "Audit Log",
@@ -105,7 +114,13 @@ export const SECTIONS: Record<SectionKey, SectionDef> = {
 
 export const PLATFORM_SECTIONS: SectionKey[] = ["overview", "users", "live", "analytics"];
 
-export const OPERATIONS_SECTIONS: SectionKey[] = ["email", "ai", "health", "audit"];
+export const OPERATIONS_SECTIONS: SectionKey[] = [
+  "email",
+  "ai",
+  "health",
+  "featured-quizzes",
+  "audit",
+];
 
 export function sectionByKey(key: string): SectionDef | undefined {
   return SECTIONS[key as SectionKey];

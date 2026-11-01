@@ -14,6 +14,7 @@ import { HealthSection } from "@/components/admin/HealthSection";
 import { CampaignListSection } from "@/components/admin/campaigns/CampaignListSection";
 import { CampaignDetailSection } from "@/components/admin/campaigns/CampaignDetailSection";
 import { PlaceholderSection } from "@/components/admin/PlaceholderSection";
+import { FeaturedQuizzesSection } from "@/components/admin/featured-quizzes/FeaturedQuizzesSection";
 
 export const Route = createFileRoute("/admin")({
   component: AdminPage,
@@ -100,6 +101,8 @@ function renderSection(
       return <AiSection />;
     case "health":
       return <HealthSection />;
+    case "featured-quizzes":
+      return <FeaturedQuizzesSection />;
     case "audit":
       return <PlaceholderSection key={key} />;
   }
