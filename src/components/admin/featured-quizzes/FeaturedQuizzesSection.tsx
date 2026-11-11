@@ -323,19 +323,6 @@ export function FeaturedQuizzesSection() {
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-        <div>
-          <p className="font-mono text-[10px] uppercase tracking-widest text-pink-shock">
-            Mission Control
-          </p>
-          <h1 className="font-display text-4xl italic uppercase tracking-tight mb-1">
-            Featured Quizzes
-          </h1>
-          <p className="text-sm text-foreground/60 max-w-2xl">
-            Admin-managed catalogue of quizzes shown in the Arena. Use archive/unpublish for removal
-            — never delete underlying quiz content.
-          </p>
-        </div>
-
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2 border border-border bg-background/30 px-3 py-2">
             <label className="font-mono text-[9px] uppercase text-foreground/50">Status</label>

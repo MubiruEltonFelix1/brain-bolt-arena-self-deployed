@@ -22,6 +22,19 @@ import {
 } from "@/lib/errors";
 import { toast } from "sonner";
 import { ArrowUp } from "lucide-react";
+import {
+  SECTION_TITLE_MAX,
+  type QuizSection,
+  type QuestionFlow,
+  type SectionValidation,
+  groupQuestions,
+  isQuestionFlow,
+  nextSectionPosition,
+  normalizeSectionTitle,
+  sectionTitleKey,
+  sortSections,
+  validateQuizSections,
+} from "@/lib/quiz/sections";
 
 export const Route = createFileRoute("/quizzes/$id")({
   component: QuizEditor,
@@ -33,6 +46,12 @@ type Quiz = {
   description: string | null;
   time_per_question: number;
   owner_principal_id: string;
+  /**
+   * Authoring layout. Absent on responses from a database that predates the
+   * Phase 12 migration, so every read is normalised through `isQuestionFlow`
+   * and treated as `"flat"` when unrecognised.
+   */
+  question_flow?: QuestionFlow;
 };
 type QuestionType =
   | "mcq"
@@ -69,6 +88,8 @@ type Question = {
   audio_url?: string | null;
   geo_region?: GeoRegion | null;
   geo_region_label?: string | null;
+  /** Owning section for categorized quizzes; null = ungrouped. */
+  section_id?: string | null;
 };
 
 // Delete an image/audio upload that is no longer referenced by any question
@@ -102,18 +123,18 @@ function removeOrphanedUpload(url: string | null | undefined) {
 // `question_type` and `question`; the importer ignores columns that do not
 // apply to a given row's type. Old templates (question,option_a..d,correct,
 // time,points) continue to import unchanged.
-const CSV_TEMPLATE = `question_type,question,option_a,option_b,option_c,option_d,correct_answer,explanation,time_limit,points,image_url,audio_url,map_latitude,map_longitude,map_zoom,numeric_answer,tolerance,answer_format,slider_min,slider_max,accepted_answers,reveal_duration,order_items,match_pairs,double_points,region
-multiple_choice,What is 2 + 2?,1,2,3,4,D,Basic arithmetic,20,1000,,,,,,,,,,,,,,,false
-true_false,The sky is blue on a clear day.,,,,,TRUE,,15,1000,,,,,,,,,,,,,,,false
-multiple_choice,Largest planet in our solar system?,Earth,Mars,Jupiter,Venus,Jupiter,Gas giant,25,2000,,,,,,,,,,,,,,,true
-text,Which fruit keeps the doctor away?,,,,,,Common English proverb,20,1000,,,,,,,,,,,apple;an apple;apples,,,,false
-free_text,What did you enjoy most about today?,,,,,,Open feedback question,30,0,,,,,,,,,,,,,,,false
-closest_number,In what year did the Berlin Wall fall?,,,,,,Historical event,25,1000,,,,,,1989,2,year,1950,2000,,,,,false
-map_pin,Locate Paris on the map,,,,,,Capital of France,30,1000,,,48.8566,2.3522,4,,3000,,,,,,,,false
-image_reveal,Guess the landmark as the image reveals,Eiffel Tower,Big Ben,Colosseum,Statue of Liberty,Eiffel Tower,,30,1500,https://example.com/landmark.jpg,,,,,,,,,,,5,,,false
-audio,Name this song,Song A,Song B,Song C,Song D,Song B,,25,1000,,https://example.com/clip.mp3,,,,,,,,,,,,,false
-ordering,Put these events in chronological order,,,,,,Earliest to latest,45,1500,,,,,,,,,,,,,Wake up;Eat breakfast;Go to school;Study,,false
-matching,Match each country to its capital,,,,,,Not yet supported in gameplay,30,1000,,,,,,,,,,,,,,France=Paris;Japan=Tokyo;Kenya=Nairobi,false
+const CSV_TEMPLATE = `question_type,question,option_a,option_b,option_c,option_d,correct_answer,explanation,time_limit,points,image_url,audio_url,map_latitude,map_longitude,map_zoom,numeric_answer,tolerance,answer_format,slider_min,slider_max,accepted_answers,reveal_duration,order_items,match_pairs,double_points,region,section
+multiple_choice,What is 2 + 2?,1,2,3,4,D,Basic arithmetic,20,1000,,,,,,,,,,,,,,,false,
+true_false,The sky is blue on a clear day.,,,,,TRUE,,15,1000,,,,,,,,,,,,,,,false,
+multiple_choice,Largest planet in our solar system?,Earth,Mars,Jupiter,Venus,Jupiter,Gas giant,25,2000,,,,,,,,,,,,,,,true,
+text,Which fruit keeps the doctor away?,,,,,,Common English proverb,20,1000,,,,,,,,,,,apple;an apple;apples,,,,false,
+free_text,What did you enjoy most about today?,,,,,,Open feedback question,30,0,,,,,,,,,,,,,,,false,
+closest_number,In what year did the Berlin Wall fall?,,,,,,Historical event,25,1000,,,,,,1989,2,year,1950,2000,,,,,false,
+map_pin,Locate Paris on the map,,,,,,Capital of France,30,1000,,,48.8566,2.3522,4,,3000,,,,,,,,false,
+image_reveal,Guess the landmark as the image reveals,Eiffel Tower,Big Ben,Colosseum,Statue of Liberty,Eiffel Tower,,30,1500,https://example.com/landmark.jpg,,,,,,,,,,,5,,,false,
+audio,Name this song,Song A,Song B,Song C,Song D,Song B,,25,1000,,https://example.com/clip.mp3,,,,,,,,,,,,,false,
+ordering,Put these events in chronological order,,,,,,Earliest to latest,45,1500,,,,,,,,,,,,,Wake up;Eat breakfast;Go to school;Study,,false,
+matching,Match each country to its capital,,,,,,Not yet supported in gameplay,30,1000,,,,,,,,,,,,,,France=Paris;Japan=Tokyo;Kenya=Nairobi,false,
 `;
 
 const CSV_README = `BrainBolt CSV Template - Column Reference
@@ -148,6 +169,12 @@ explanation     Free text shown as context. Currently stored only in CSV;
                 ignored by gameplay.
 double_points   true/false. Doubles score for the round.
 image_url       Optional cover image for the question.
+section         Optional. Categorized quizzes only — the section this question
+                belongs to. Rows with the same section name (case and
+                whitespace insensitive) join the same section; a name that
+                does not exist yet is created. On a STANDARD quiz this column
+                is ignored, never applied — switch the quiz to Categorized
+                first. See "Sections" below.
 
 Type-specific columns
 ---------------------
@@ -179,7 +206,25 @@ matching          match_pairs, formatted "Key=Value;Key=Value". Not yet
 Backward compatibility
 ----------------------
 Files that only include: question, option_a..d, correct_answer, time,
-points still import exactly as before. Unknown columns are ignored.
+points still import exactly as before. Unknown columns are ignored, and a file
+without a section column imports exactly as before.
+
+Sections
+--------
+A quiz is either a STANDARD quiz (questions play in one continuous order) or a
+CATEGORIZED quiz (questions are grouped into named, ordered sections). The
+section column is only meaningful for categorized quizzes:
+
+  * The column is optional. A file with no section column imports fine.
+  * Section names are compared after trimming and collapsing repeated spaces,
+    and case-insensitively — "Round  1", " round 1 " and "ROUND 1" are all the
+    same section.
+  * Two sections with the same name are allowed in the editor, but a CSV can
+    only ever address the first one. Keep names distinct in files.
+  * A section name that does not exist on the quiz yet is created, appended
+    after the existing sections.
+  * Importing NEVER switches a quiz into categorized mode. If the quiz is
+    standard, the section column is ignored and a note is shown.
 `;
 
 function QuizEditor() {
@@ -188,6 +233,10 @@ function QuizEditor() {
   const navigate = useNavigate();
   const [quiz, setQuiz] = useState<Quiz | null>(null);
   const [questions, setQuestions] = useState<Question[]>([]);
+  // Authoring-side sections. Empty for every pre-Phase-12 flat quiz, which is
+  // why nothing below this line is reachable until the owner opts in.
+  const [sections, setSections] = useState<QuizSection[]>([]);
+  const [sectionsError, setSectionsError] = useState<unknown>(null);
   const [saving, setSaving] = useState(false);
   const [csvErrors, setCsvErrors] = useState<string[]>([]);
   const [missing, setMissing] = useState(false);
@@ -222,6 +271,27 @@ function QuizEditor() {
       .order("position");
     if (seq !== loadSeq.current) return;
     setQuestions((qs as Question[] | null) ?? []);
+    // Sections load in the same pass so a categorized quiz never renders with
+    // an empty section list and momentarily looks like all its questions lost
+    // their grouping. Ordered by the same tiebreakers the shared helper uses
+    // (position, created_at, id) — see src/lib/quiz/sections.ts.
+    const { data: sec, error: secErr } = await supabase
+      .from("quiz_sections")
+      .select("id,quiz_id,title,position,created_at")
+      .eq("quiz_id", id)
+      .order("position", { ascending: true })
+      .order("created_at", { ascending: true })
+      .order("id", { ascending: true });
+    if (seq !== loadSeq.current) return;
+    if (secErr) {
+      // Tolerated rather than fatal: the rest of the editor is fully usable on
+      // a database where the Phase 12 migration has not been applied yet.
+      setSectionsError(secErr);
+      setSections([]);
+    } else {
+      setSectionsError(null);
+      setSections((sec as QuizSection[] | null) ?? []);
+    }
   }
   useEffect(() => {
     load(); /* eslint-disable-next-line */
@@ -407,6 +477,145 @@ function QuizEditor() {
     }
   }
 
+  // ---- Quiz flow + sections (Phase 12) ----
+  //
+  // A quiz is `flat` (the historical layout: one continuous question order) or
+  // `categorized` (questions are grouped into named, ordered sections). An
+  // unrecognised / absent value reads as `flat`, so a database that predates
+  // the Phase 12 migration behaves exactly as it always did.
+  const flow: QuestionFlow = isQuestionFlow(quiz.question_flow) ? quiz.question_flow : "flat";
+  const categorized = flow === "categorized";
+  const orderedSections = sortSections(sections);
+
+  async function setFlow(next: QuestionFlow) {
+    if (next === flow) return;
+    setSaving(true);
+    const { error } = await supabase.from("quizzes").update({ question_flow: next }).eq("id", id);
+    setSaving(false);
+    if (error) return toastError(error, { context: "change quiz flow" });
+    setQuiz({ ...quiz!, question_flow: next });
+    toast.success(
+      next === "categorized"
+        ? "Categorized quiz — group your questions into sections below."
+        : "Standard quiz — questions play in one continuous order. Your sections are kept and hidden.",
+    );
+  }
+
+  async function addSection() {
+    const used = new Set(sections.map((s) => sectionTitleKey(s.title)));
+    // Pick the first free "Section N" so a repeated click never creates two
+    // identically named sections, which a CSV `section` column could not
+    // address unambiguously.
+    let n = sections.length + 1;
+    let title = `Section ${n}`;
+    while (used.has(sectionTitleKey(title))) {
+      n += 1;
+      title = `Section ${n}`;
+    }
+    const { data, error } = await supabase
+      .from("quiz_sections")
+      .insert({ quiz_id: id, title, position: nextSectionPosition(sections) })
+      .select("id,quiz_id,title,position,created_at")
+      .single();
+    if (error || !data)
+      return toastError(error, {
+        context: "add section",
+        fallback: "Could not add the section.",
+      });
+    setSections((prev) => [...prev, data as QuizSection]);
+  }
+
+  /** Returns false when the name was rejected so the input can revert. */
+  async function renameSection(sectionId: string, rawTitle: string): Promise<boolean> {
+    const current = sections.find((s) => s.id === sectionId);
+    if (!current) return false;
+    const title = normalizeSectionTitle(rawTitle);
+    if (!title) {
+      toast.error("Section names cannot be empty.");
+      return false;
+    }
+    if (title === normalizeSectionTitle(current.title)) return true;
+    setSections((prev) => prev.map((s) => (s.id === sectionId ? { ...s, title } : s)));
+    const { error } = await supabase.from("quiz_sections").update({ title }).eq("id", sectionId);
+    if (error) {
+      toastError(error, { context: "rename section" });
+      setSections((prev) =>
+        prev.map((s) => (s.id === sectionId ? { ...s, title: current.title } : s)),
+      );
+      return false;
+    }
+    return true;
+  }
+
+  async function moveSection(sectionId: string, dir: -1 | 1) {
+    const list = sortSections(sections);
+    const idx = list.findIndex((s) => s.id === sectionId);
+    const swap = idx + dir;
+    if (idx < 0 || swap < 0 || swap >= list.length) return;
+    const next = [...list];
+    [next[idx], next[swap]] = [next[swap], next[idx]];
+    // Re-rank the WHOLE list 0..n-1 rather than swapping two values. That heals
+    // any duplicate or gapped ranks left behind by an earlier client, and keeps
+    // the order deterministic (position, then created_at, then id).
+    const reranked = next.map((s, i) => ({ ...s, position: i }));
+    setSections(reranked);
+    const changed = reranked.filter((s) => list.find((o) => o.id === s.id)?.position !== s.position);
+    const results = await Promise.all(
+      changed.map((s) =>
+        supabase.from("quiz_sections").update({ position: s.position }).eq("id", s.id),
+      ),
+    );
+    const failed = results.find((r) => r.error);
+    if (failed) {
+      toastError(failed.error, { context: "reorder sections" });
+      load();
+    }
+  }
+
+  async function deleteSection(sectionId: string) {
+    const section = sections.find((s) => s.id === sectionId);
+    if (!section) return;
+    const label = normalizeSectionTitle(section.title) || "this section";
+    // The questions are NEVER deleted. The database's ON DELETE SET NULL clears
+    // their section_id; this confirmation exists so the owner learns how many
+    // questions become ungrouped before it happens, and what that costs.
+    const affected = questions.filter((q) => q.section_id === sectionId);
+    const playableAffected = affected.filter((q) => q.is_playable !== false);
+    if (affected.length === 0) {
+      if (!confirm(`Delete the empty section "${label}"?`)) return;
+    } else {
+      const questionNote = `${affected.length} question${affected.length === 1 ? "" : "s"} will become ungrouped — they are NOT deleted.`;
+      const playNote =
+        playableAffected.length > 0
+          ? `\n\n${playableAffected.length} of them ${playableAffected.length === 1 ? "is" : "are"} included in play, so this quiz will need repair before it can be started.`
+          : "";
+      if (!confirm(`Delete the section "${label}"?\n\n${questionNote}${playNote}`)) return;
+    }
+    setQuestions((prev) =>
+      prev.map((q) => (q.section_id === sectionId ? { ...q, section_id: null } : q)),
+    );
+    const { error } = await supabase.from("quiz_sections").delete().eq("id", sectionId);
+    if (error) {
+      toastError(error, { context: "delete section" });
+      load();
+      return;
+    }
+    setSections((prev) => prev.filter((s) => s.id !== sectionId));
+    toast.success("Section deleted — its questions were kept.");
+  }
+
+  function assignQuestionToSection(qid: string, sectionId: string | null) {
+    // Section membership has its own writer. QuestionEditor.blurSave strips
+    // `section_id` for exactly the reason it strips `position` and
+    // `is_playable`: the blur fired by choosing this dropdown must not race the
+    // assignment and restore the previous section.
+    return updateQuestion(qid, { section_id: sectionId });
+  }
+
+  // Recomputed on every render; the rule set lives in src/lib/quiz/sections.ts
+  // so the pre-start gate in the dashboard applies byte-identical rules.
+  const sectionValidation = validateQuizSections({ flow, sections, questions });
+
   // ---- CSV import ----
   function parseCsvLine(line: string): string[] {
     const out: string[] = [];
@@ -508,6 +717,11 @@ function QuizEditor() {
       geo_region_label?: string | null;
     };
     const toInsert: InsertRow[] = [];
+    // Parallel array: the raw `section` cell for toInsert[i], or "" when the
+    // row had none. Kept separate from InsertRow so the row shape that reaches
+    // the insert statement stays exactly what it was before Phase 12.
+    const sectionByRow: string[] = [];
+    const hasSectionColumn = header.includes("section") || header.includes("section_name");
 
     dataRows.forEach((line, ri) => {
       const lineNo = ri + (hasHeader ? 2 : 1);
@@ -534,6 +748,12 @@ function QuizEditor() {
         matchRaw = "";
       let revealRaw = "",
         answerFormatRaw = "";
+      // Optional categorize column (Phase 12). Only honoured when the quiz is
+      // already in categorized mode — see the resolution pass after the loop.
+      let sectionRaw = "";
+      // Index of the first row this callback may append, so a rejected row
+      // never records a section title for the row that follows it.
+      const firstFreeRow = toInsert.length;
 
       if (header.length) {
         const get = (name: string) => {
@@ -578,6 +798,7 @@ function QuizEditor() {
         matchRaw = get("match_pairs") || get("matches") || get("pairs");
         revealRaw = get("reveal_duration") || get("reveal_stages") || get("stages");
         answerFormatRaw = get("answer_format") || get("format");
+        sectionRaw = get("section") || get("section_name");
       } else {
         if (parts.length < 4) {
           errors.push(`Row ${lineNo}: needs at least question + 2 options + correct`);
@@ -908,6 +1129,10 @@ function QuizEditor() {
           last.point_value = p;
         }
       }
+      // Record the section cell for whichever row this iteration committed.
+      // `toInsert.length > firstFreeRow` is false for every rejected row, so
+      // the parallel array stays index-aligned with toInsert.
+      if (toInsert.length > firstFreeRow) sectionByRow[toInsert.length - 1] = sectionRaw;
     });
 
     if (toInsert.length === 0) {
@@ -915,8 +1140,77 @@ function QuizEditor() {
       return;
     }
 
+    // ---- optional `section` column (Phase 12) ----
+    // Importing NEVER switches a quiz into categorized mode. On a standard quiz
+    // the column is reported and ignored, because silently changing an owner's
+    // quiz layout as a side effect of a file import is exactly the surprise
+    // this feature has to avoid.
+    const sectionIdByRow: (string | null)[] = toInsert.map(() => null);
+    if (hasSectionColumn) {
+      if (!categorized) {
+        errors.push(
+          "`section` column ignored — this is a standard quiz. Switch it to a categorized quiz first, then import again.",
+        );
+      } else {
+        const wanted = new Map<string, string>(); // title key -> display title
+        sectionByRow.forEach((raw) => {
+          const title = normalizeSectionTitle(raw);
+          if (!title) return;
+          const key = sectionTitleKey(title);
+          if (!wanted.has(key)) wanted.set(key, title);
+        });
+
+        // Resolve against existing sections first. `sortSections` + first-match
+        // wins means the file always lands in the earliest section of a given
+        // name, so a duplicate name can never scatter rows unpredictably.
+        const keyToId = new Map<string, string>();
+        for (const s of sortSections(sections)) {
+          const key = sectionTitleKey(s.title);
+          if (!keyToId.has(key)) keyToId.set(key, s.id);
+        }
+
+        const missing = [...wanted.entries()].filter(([key]) => !keyToId.has(key));
+        if (missing.length > 0) {
+          const startPosition = nextSectionPosition(sections);
+          const { data: created, error: createErr } = await supabase
+            .from("quiz_sections")
+            .insert(
+              missing.map(([, title], i) => ({
+                quiz_id: id,
+                title,
+                position: startPosition + i,
+              })),
+            )
+            .select("id,title");
+          if (createErr) {
+            logActionError(createErr, "CSV import (sections)");
+            setCsvErrors([
+              ...errors,
+              `We couldn't create the sections — ${safeErrorMessage(createErr)}`,
+            ]);
+            return;
+          }
+          for (const row of (created ?? []) as Array<{ id: string; title: string }>) {
+            const key = sectionTitleKey(row.title);
+            if (!keyToId.has(key)) keyToId.set(key, row.id);
+          }
+        }
+
+        sectionByRow.forEach((raw, i) => {
+          const title = normalizeSectionTitle(raw);
+          if (!title) return;
+          sectionIdByRow[i] = keyToId.get(sectionTitleKey(title)) ?? null;
+        });
+      }
+    }
+
     let pos = questions.length;
-    const payload = toInsert.map((r) => ({ ...r, quiz_id: id, position: pos++ }));
+    const payload = toInsert.map((r, i) => ({
+      ...r,
+      quiz_id: id,
+      position: pos++,
+      section_id: sectionIdByRow[i],
+    }));
     const { error } = await supabase.from("questions").insert(payload);
     if (error) {
       logActionError(error, "CSV import");
@@ -942,6 +1236,123 @@ function QuizEditor() {
   function downloadTemplate() {
     downloadBlob("brainbolt-questions-template.csv", "text/csv", CSV_TEMPLATE);
     downloadBlob("brainbolt-csv-template-README.txt", "text/plain", CSV_README);
+  }
+
+  /** RFC-4180 quoting. A field is quoted only when it actually needs it. */
+  function csvEscape(value: string): string {
+    if (value === "") return "";
+    return /[",\r\n]|^\s|\s$/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  }
+
+  /**
+   * Exports the quiz's questions to CSV.
+   *
+   * Column order is derived from CSV_TEMPLATE so an exported file re-imports
+   * into the importer above without changes. `option_e` / `option_f` are
+   * spliced in after `option_d` only when some question actually has 5-6
+   * options, which keeps the common file identical to the template.
+   *
+   * `section` is populated only while the quiz is categorized — a standard
+   * quiz exports the same file it always would have, with the column blank.
+   */
+  function exportCsv() {
+    const baseHeader = CSV_TEMPLATE.split("\n")[0].split(",");
+    const choiceTypes = ["mcq", "image_mcq", "image_reveal", "audio"];
+    const maxOptions = questions.reduce(
+      (max, q) => (choiceTypes.includes(q.question_type) ? Math.max(max, q.options?.length ?? 0) : max),
+      0,
+    );
+    const extraOptionColumns = ["option_e", "option_f"].slice(
+      0,
+      Math.max(0, Math.min(6, maxOptions) - 4),
+    );
+    const header = [
+      ...baseHeader.slice(0, 6),
+      ...extraOptionColumns,
+      ...baseHeader.slice(6),
+    ];
+    const optionColumns = 4 + extraOptionColumns.length;
+
+    const typeToken: Record<string, string> = {
+      mcq: "multiple_choice",
+      true_false: "true_false",
+      image_mcq: "image_mcq",
+      map_pin: "map_pin",
+      number: "closest_number",
+      type: "text",
+      feedback: "free_text",
+      image_reveal: "image_reveal",
+      audio: "audio",
+      ordering: "ordering",
+    };
+    const letters = ["A", "B", "C", "D", "E", "F"];
+    const sectionNameById = new Map(
+      sections.map((s) => [s.id, normalizeSectionTitle(s.title)] as const),
+    );
+    const num = (v: number | null | undefined) => (v == null ? "" : String(v));
+
+    const rows = [...questions]
+      .sort((a, b) => (a.position !== b.position ? a.position - b.position : a.id < b.id ? -1 : 1))
+      .map((q) => {
+        const isChoice = choiceTypes.includes(q.question_type);
+        const isTF = q.question_type === "true_false";
+        const isNumber = q.question_type === "number";
+        const isMap = q.question_type === "map_pin";
+        const isOrdering = q.question_type === "ordering";
+        const isText = q.question_type === "type";
+        const opts = isChoice ? (q.options ?? []) : [];
+        const optionCells = Array.from(
+          { length: optionColumns },
+          (_, i) => csvEscape(opts[i] ?? ""),
+        );
+        const correct = isChoice
+          ? (letters[q.correct_index] ?? "")
+          : isTF
+            ? q.correct_index === 0
+              ? "TRUE"
+              : "FALSE"
+            : "";
+
+        return [
+          typeToken[q.question_type] ?? "multiple_choice",
+          csvEscape(q.text),
+          ...optionCells,
+          correct,
+          "", // explanation — input-only, never stored on the row
+          num(q.time_limit_sec),
+          num(q.point_value),
+          csvEscape(q.image_url ?? ""),
+          csvEscape(q.audio_url ?? ""),
+          isMap ? num(q.correct_lat) : "",
+          isMap ? num(q.correct_lng) : "",
+          "", // map_zoom — accepted but ignored by gameplay
+          isNumber ? num(q.correct_number) : "",
+          // The importer reads `tolerance` as km radius for map_pin and as the
+          // numeric tolerance for closest_number, so it round-trips both.
+          isNumber ? num(q.number_tolerance) : isMap ? num(q.max_distance_km) : "",
+          isNumber ? csvEscape(q.options?.[0] ?? "general") : "",
+          isNumber ? num(q.number_min) : "",
+          isNumber ? num(q.number_max) : "",
+          isText ? csvEscape((q.accepted_answers ?? []).join(";")) : "",
+          q.question_type === "image_reveal" ? num(q.reveal_stages ?? 5) : "",
+          isOrdering ? csvEscape((q.options ?? []).join(";")) : "",
+          "", // match_pairs — "Match the Pairs" is not playable yet
+          q.double_points ? "true" : "false",
+          isMap ? csvEscape(q.geo_region_label ?? "") : "",
+          categorized ? csvEscape(sectionNameById.get(q.section_id ?? "") ?? "") : "",
+        ].join(",");
+      });
+
+    const slug =
+      normalizeSectionTitle(quiz!.title)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 60) || "quiz";
+    downloadBlob(`${slug}-questions.csv`, "text/csv", [header.join(","), ...rows].join("\n"));
+    toast.success(
+      `Exported ${questions.length} question${questions.length === 1 ? "" : "s"}`,
+    );
   }
 
   async function deleteQuiz() {
@@ -1000,6 +1411,67 @@ function QuizEditor() {
           </div>
         </div>
 
+        {/* Quiz flow — the only switch that turns sections on at all. */}
+        <div className="border border-border bg-card p-5 space-y-3">
+          <div className="flex items-end justify-between gap-3 flex-wrap">
+            <div className="min-w-0">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-foreground/50">
+                Quiz flow
+              </p>
+              <p className="text-sm text-foreground/70 mt-1">
+                {categorized
+                  ? "Questions are grouped into named, ordered sections."
+                  : "Questions play in one continuous order. This is the default."}
+              </p>
+            </div>
+            <div className="flex gap-2 flex-wrap" role="group" aria-label="Quiz flow">
+              <button
+                type="button"
+                onClick={() => setFlow("flat")}
+                aria-pressed={!categorized}
+                className={`font-mono text-[11px] uppercase px-3 py-2 border ${
+                  !categorized
+                    ? "border-volt bg-volt/10 text-volt"
+                    : "border-border text-foreground/60 hover:border-volt/60"
+                }`}
+              >
+                Standard quiz
+              </button>
+              <button
+                type="button"
+                onClick={() => setFlow("categorized")}
+                aria-pressed={categorized}
+                className={`font-mono text-[11px] uppercase px-3 py-2 border ${
+                  categorized
+                    ? "border-volt bg-volt/10 text-volt"
+                    : "border-border text-foreground/60 hover:border-volt/60"
+                }`}
+              >
+                Categorized quiz
+              </button>
+            </div>
+          </div>
+          {!categorized && sections.length > 0 && (
+            <p className="font-mono text-[10px] text-foreground/40">
+              {sections.length} saved section{sections.length === 1 ? "" : "s"} are kept and hidden
+              while this quiz is standard. Switching back restores them.
+            </p>
+          )}
+        </div>
+
+        {categorized && (
+          <SectionManager
+            sections={orderedSections}
+            questions={questions}
+            sectionsError={sectionsError}
+            validation={sectionValidation}
+            onAdd={addSection}
+            onRename={renameSection}
+            onMove={moveSection}
+            onDelete={deleteSection}
+          />
+        )}
+
         <div className="border-t border-border pt-8 space-y-4">
           <div className="flex items-end justify-between flex-wrap gap-2">
             <h2 className="font-display text-2xl italic uppercase">
@@ -1019,6 +1491,19 @@ function QuizEditor() {
                 Template
               </button>
               <CsvButton onImport={importCsv} />
+              {questions.length > 0 && (
+                <button
+                  onClick={exportCsv}
+                  title={
+                    categorized
+                      ? "Download these questions as CSV, including their section names"
+                      : "Download these questions as CSV"
+                  }
+                  className="border border-border px-3 py-2.5 font-mono text-xs uppercase hover:border-volt hover:text-volt"
+                >
+                  Export CSV
+                </button>
+              )}
               {questions.length > 0 && (
                 <>
                   <button
@@ -1080,18 +1565,97 @@ function QuizEditor() {
           )}
 
           <div className="space-y-3">
-            {questions.map((q, i) => (
-              <QuestionEditor
-                key={q.id}
-                index={i}
-                total={questions.length}
-                question={q}
-                quizDefaultTime={quiz.time_per_question}
-                onChange={(patch) => updateQuestion(q.id, patch)}
-                onDelete={() => deleteQuestion(q.id)}
-                onMove={(dir) => moveQuestion(q.id, dir)}
-              />
-            ))}
+            {(() => {
+              // One card renderer shared by both layouts so the flat view stays
+              // byte-identical to what it was before Phase 12.
+              const renderCard = (q: Question) => {
+                const i = questions.findIndex((x) => x.id === q.id);
+                return (
+                  <QuestionEditor
+                    key={q.id}
+                    index={i < 0 ? 0 : i}
+                    total={questions.length}
+                    question={q}
+                    quizDefaultTime={quiz.time_per_question}
+                    sections={categorized ? orderedSections : null}
+                    onAssignSection={(sectionId) => assignQuestionToSection(q.id, sectionId)}
+                    onChange={(patch) => updateQuestion(q.id, patch)}
+                    onDelete={() => deleteQuestion(q.id)}
+                    onMove={(dir) => moveQuestion(q.id, dir)}
+                  />
+                );
+              };
+
+              if (!categorized) return questions.map(renderCard);
+
+              // Categorized: sections in rank order, each with its questions in
+              // their existing global `position` order, then an explicit
+              // "Ungrouped" bucket. Ordering inside a section is the question's
+              // own position, so the ▲/▼ controls keep working unchanged.
+              const grouping = groupQuestions(orderedSections, questions);
+              const renderGroupHeader = (label: string, count: number, tone: "volt" | "shock") => (
+                <div
+                  className={`flex items-baseline justify-between gap-2 border-b pb-2 ${
+                    tone === "volt" ? "border-volt/30" : "border-pink-shock/40"
+                  }`}
+                >
+                  <p
+                    className={`font-mono text-[11px] uppercase tracking-widest ${
+                      tone === "volt" ? "text-volt" : "text-pink-shock"
+                    }`}
+                  >
+                    {label}
+                  </p>
+                  <span className="font-mono text-[10px] text-foreground/40">
+                    {count} question{count === 1 ? "" : "s"}
+                  </span>
+                </div>
+              );
+              return (
+                <div className="space-y-7">
+                  {grouping.buckets.map((bucket) => {
+                    const section = bucket.section!;
+                    return (
+                      <div key={section.id} className="space-y-3">
+                        {renderGroupHeader(
+                          normalizeSectionTitle(section.title) || "Untitled section",
+                          bucket.questions.length,
+                          "volt",
+                        )}
+                        {bucket.questions.length === 0 ? (
+                          <p className="border border-dashed border-border px-3 py-4 font-mono text-[11px] text-foreground/40">
+                            No questions in this section yet. Move one in with its “Section”
+                            dropdown — an empty section is skipped during play.
+                          </p>
+                        ) : (
+                          bucket.questions.map(renderCard)
+                        )}
+                      </div>
+                    );
+                  })}
+                  {grouping.ungrouped && (
+                    <div className="space-y-3">
+                      {renderGroupHeader(
+                        "Ungrouped",
+                        grouping.ungrouped.questions.length,
+                        "shock",
+                      )}
+                      <p className="font-mono text-[11px] text-foreground/50">
+                        These questions are not in any section. Included questions must be
+                        grouped before the quiz can start; feedback slides may stay ungrouped and
+                        play after the last section.
+                      </p>
+                      {grouping.ungrouped.questions.map(renderCard)}
+                    </div>
+                  )}
+                  {grouping.buckets.length === 0 && !grouping.ungrouped && (
+                    <p className="border border-dashed border-border px-3 py-4 font-mono text-[11px] text-foreground/40">
+                      Add a section above, then move questions into it.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
             {questions.length === 0 && (
               <EmptyState
                 eyebrow="Questions"
@@ -1156,6 +1720,8 @@ function QuestionEditor({
   total,
   question,
   quizDefaultTime,
+  sections,
+  onAssignSection,
   onChange,
   onDelete,
   onMove,
@@ -1164,12 +1730,18 @@ function QuestionEditor({
   total: number;
   question: Question;
   quizDefaultTime: number;
+  /** Non-null only while the quiz is categorized. */
+  sections: QuizSection[] | null;
+  onAssignSection: (sectionId: string | null) => void;
   onChange: (patch: Partial<Question>) => void;
   onDelete: () => void;
   onMove: (dir: -1 | 1) => void;
 }) {
   const [local, setLocal] = useState(question);
-  useEffect(() => setLocal(question), [question.id, question.position, question.is_playable]);
+  useEffect(
+    () => setLocal(question),
+    [question.id, question.position, question.is_playable, question.section_id],
+  );
 
   function setOption(i: number, val: string) {
     const opts = [...local.options];
@@ -1192,15 +1764,17 @@ function QuestionEditor({
   }
 
   function blurSave() {
-    // Send content edits only. Identity, ordering and playability have their
-    // own writers (add/move/delete, moveQuestion, the play toggle) — resending
-    // the full row here raced the bulk Enable/Exclude buttons: the blur fired
-    // by clicking them could land after the bulk write and silently restore
-    // the old flag while the UI showed the new one.
+    // Send content edits only. Identity, ordering, playability and section
+    // membership each have their own writer (add/move/delete, moveQuestion, the
+    // play toggle, the Section dropdown) — resending the full row here raced
+    // the bulk Enable/Exclude buttons: the blur fired by clicking them could
+    // land after the bulk write and silently restore the old flag while the UI
+    // showed the new one. The same race applies to choosing a section.
     const patch: Partial<Question> = { ...local };
     delete patch.id;
     delete patch.position;
     delete patch.is_playable;
+    delete patch.section_id;
     onChange(patch);
   }
 
@@ -1528,6 +2102,38 @@ function QuestionEditor({
           />
           {local.is_playable !== false ? "Included in play" : "Excluded from play"}
         </label>
+        {sections && (
+          <label
+            className={`font-mono text-[10px] uppercase px-2 py-1 border flex items-center gap-1.5 ${
+              local.section_id
+                ? "border-cyan-jolt/40 text-cyan-jolt"
+                : "border-pink-shock/40 text-pink-shock"
+            }`}
+            title={
+              local.section_id
+                ? "This question plays as part of its section"
+                : "Not in any section — an included scored question blocks the quiz from starting"
+            }
+          >
+            <span className="text-foreground/50">Section</span>
+            <select
+              value={local.section_id ?? ""}
+              onChange={(e) => {
+                const next = e.target.value || null;
+                setLocal({ ...local, section_id: next });
+                onAssignSection(next);
+              }}
+              className="bg-background border border-border px-1 py-0.5 font-mono text-[10px] uppercase text-foreground focus:outline-none focus:border-volt max-w-[9rem]"
+            >
+              <option value="">Ungrouped</option>
+              {sections.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {normalizeSectionTitle(s.title) || "Untitled section"}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label
           className={`font-mono text-[10px] uppercase px-2 py-1 border cursor-pointer ml-auto ${local.double_points ? "border-amber-spark bg-amber-spark/10 text-amber-spark" : "border-border text-foreground/60 hover:border-amber-spark/60"}`}
         >
@@ -2144,8 +2750,241 @@ function QuestionEditor({
   );
 }
 
-function CsvButton({ onImport }: { onImport: (text: string) => void }) {
+/* ------------------------------------------------------------------ */
+/* Sections (Phase 12)                                                */
+/* ------------------------------------------------------------------ */
+
+function SectionManager({
+  sections,
+  questions,
+  sectionsError,
+  validation,
+  onAdd,
+  onRename,
+  onMove,
+  onDelete,
+}: {
+  sections: QuizSection[];
+  questions: Question[];
+  sectionsError: unknown;
+  validation: SectionValidation;
+  onAdd: () => void;
+  onRename: (sectionId: string, title: string) => Promise<boolean>;
+  onMove: (sectionId: string, dir: -1 | 1) => void;
+  onDelete: (sectionId: string) => void;
+}) {
+  const sectionIds = new Set(sections.map((s) => s.id));
+  const countBySection = new Map<string, number>();
+  const playableBySection = new Map<string, number>();
+  let ungroupedTotal = 0;
+  let ungroupedPlayable = 0;
+  for (const q of questions) {
+    const sid = q.section_id ?? null;
+    if (!sid || !sectionIds.has(sid)) {
+      ungroupedTotal += 1;
+      if (q.is_playable !== false) ungroupedPlayable += 1;
+      continue;
+    }
+    countBySection.set(sid, (countBySection.get(sid) ?? 0) + 1);
+    if (q.is_playable !== false) {
+      playableBySection.set(sid, (playableBySection.get(sid) ?? 0) + 1);
+    }
+  }
+
   return (
+    <div className="border border-volt/40 bg-card p-5 space-y-4">
+      <div className="flex items-end justify-between gap-2 flex-wrap">
+        <div className="min-w-0">
+          <p className="font-mono text-[10px] uppercase tracking-widest text-volt">Sections</p>
+          <p className="text-sm text-foreground/70 mt-1">
+            Questions play section by section, in the order below.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="border border-border px-3 py-2 font-mono text-xs uppercase hover:border-volt hover:text-volt"
+        >
+          + Add section
+        </button>
+      </div>
+
+      {sectionsError ? (
+        <p className="border border-pink-shock/40 bg-pink-shock/5 p-3 font-mono text-[11px] text-pink-shock">
+          Sections could not be loaded — {safeErrorMessage(sectionsError)}. Question editing still
+          works, but grouping is unavailable until sections can be read.
+        </p>
+      ) : sections.length === 0 ? (
+        <p className="border border-dashed border-border px-3 py-4 font-mono text-[11px] text-foreground/40">
+          No sections yet. Add one, then use each question's “Section” dropdown to move it in.
+        </p>
+      ) : (
+        <div className="space-y-2">
+          {sections.map((s, i) => (
+            <SectionRow
+              key={s.id}
+              section={s}
+              index={i}
+              total={sections.length}
+              questionCount={countBySection.get(s.id) ?? 0}
+              playableCount={playableBySection.get(s.id) ?? 0}
+              onRename={onRename}
+              onMove={onMove}
+              onDelete={onDelete}
+            />
+          ))}
+        </div>
+      )}
+
+      {ungroupedTotal > 0 && (
+        <p className="font-mono text-[11px] text-foreground/50">
+          {ungroupedTotal} question{ungroupedTotal === 1 ? "" : "s"} not in any section
+          {ungroupedPlayable > 0 ? ` (${ungroupedPlayable} included in play)` : ""} — listed under
+          “Ungrouped” with the questions.
+        </p>
+      )}
+
+      <SectionValidationPanel validation={validation} />
+    </div>
+  );
+}
+
+function SectionRow({
+  section,
+  index,
+  total,
+  questionCount,
+  playableCount,
+  onRename,
+  onMove,
+  onDelete,
+}: {
+  section: QuizSection;
+  index: number;
+  total: number;
+  questionCount: number;
+  playableCount: number;
+  onRename: (sectionId: string, title: string) => Promise<boolean>;
+  onMove: (sectionId: string, dir: -1 | 1) => void;
+  onDelete: (sectionId: string) => void;
+}) {
+  const storedTitle = normalizeSectionTitle(section.title);
+  const [title, setTitle] = useState(storedTitle);
+  useEffect(() => setTitle(storedTitle), [section.id, storedTitle]);
+  const blank = normalizeSectionTitle(title).length === 0;
+
+  async function commit() {
+    const ok = await onRename(section.id, title);
+    // Revert the input when the name was rejected (blank, or the write failed)
+    // so the field always shows what is actually stored.
+    if (!ok) setTitle(storedTitle);
+  }
+
+  return (
+    <div
+      className={`border bg-background p-3 flex flex-col gap-2 sm:flex-row sm:items-center ${
+        blank ? "border-pink-shock/50" : "border-border"
+      }`}
+    >
+      <span className="font-display text-xl italic text-volt shrink-0 sm:w-8">
+        {String(index + 1).padStart(2, "0")}
+      </span>
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            e.currentTarget.blur();
+          }
+        }}
+        maxLength={SECTION_TITLE_MAX}
+        placeholder="Section name"
+        aria-label={`Section ${index + 1} name`}
+        className="flex-1 min-w-0 bg-card border border-border px-2 py-1.5 text-sm focus:outline-none focus:border-volt"
+      />
+      <span className="font-mono text-[10px] uppercase text-foreground/40 shrink-0">
+        {questionCount} question{questionCount === 1 ? "" : "s"}
+        {playableCount !== questionCount ? ` · ${playableCount} in play` : ""}
+      </span>
+      <div className="flex items-center gap-1 shrink-0">
+        <button
+          type="button"
+          onClick={() => onMove(section.id, -1)}
+          disabled={index === 0}
+          title="Move section up"
+          className="px-2 py-1 font-mono text-xs text-foreground/40 hover:text-volt disabled:opacity-20"
+        >
+          ▲
+        </button>
+        <button
+          type="button"
+          onClick={() => onMove(section.id, 1)}
+          disabled={index === total - 1}
+          title="Move section down"
+          className="px-2 py-1 font-mono text-xs text-foreground/40 hover:text-volt disabled:opacity-20"
+        >
+          ▼
+        </button>
+        <button
+          type="button"
+          onClick={() => onDelete(section.id)}
+          title="Delete section — its questions are kept"
+          className="px-2 py-1 font-mono text-[10px] uppercase text-pink-shock hover:underline"
+        >
+          Del
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function SectionValidationPanel({ validation }: { validation: SectionValidation }) {
+  return (
+    <div className="space-y-2 border-t border-border pt-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span
+          className={`font-mono text-[10px] uppercase tracking-widest ${
+            validation.ok ? "text-volt" : "text-pink-shock"
+          }`}
+        >
+          {validation.ok
+            ? "Ready to play"
+            : `Not ready to play — ${validation.errors.length} issue${
+                validation.errors.length === 1 ? "" : "s"
+              }`}
+        </span>
+        <span className="font-mono text-[10px] text-foreground/40">
+          {validation.groupedPlayableCount} grouped
+          {validation.ungroupedPlayableCount > 0
+            ? ` · ${validation.ungroupedPlayableCount} ungrouped feedback`
+            : ""}
+        </span>
+      </div>
+      {validation.errors.length > 0 && (
+        <ul className="space-y-1">
+          {validation.errors.map((issue, i) => (
+            <li key={`err-${i}`} className="font-mono text-[11px] text-pink-shock leading-snug">
+              ✕ {issue.message}
+            </li>
+          ))}
+        </ul>
+      )}
+      {validation.warnings.length > 0 && (
+        <ul className="space-y-1">
+          {validation.warnings.map((issue, i) => (
+            <li key={`warn-${i}`} className="font-mono text-[11px] text-amber-spark leading-snug">
+              ! {issue.message}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function CsvButton({ onImport }: { onImport: (text: string) => void }) {  return (
     <label className="border border-border px-4 py-2.5 font-mono text-xs uppercase cursor-pointer hover:border-volt hover:text-volt">
       Import CSV
       <input

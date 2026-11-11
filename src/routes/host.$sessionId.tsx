@@ -293,7 +293,6 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       .eq("session_id", sessionId);
     if (data) setTeams(data as Team[]);
   }, [sessionId]);
-  const onParticipantsChanged = useCoalescedCallback(refetchParticipants);
   const onTeamsChanged = useCoalescedCallback(refetchTeams);
 
   // Phase 9D.3, measured: the `sessions` postgres_changes binding does NOT reach
@@ -320,8 +319,57 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
             );
           },
         )
-        .on("broadcast", { event: "game:join" }, () => onParticipantsChanged())
-        .on("broadcast", { event: "game:answer" }, () => onParticipantsChanged())
+        // game:join — append the new seat optimistically. The payload now
+        // carries nickname/score/team_id/avatar_id (see migration
+        // 20261006000000), so no full participants refetch is needed. Full
+        // reconciliation happens on resync/reconnect via onResync: load.
+        .on("broadcast", { event: "game:join" }, (msg) => {
+          const p = (msg?.payload ?? msg) as {
+            participant_id?: string;
+            nickname?: string;
+            score?: number;
+            team_id?: string | null;
+            avatar_id?: string | null;
+            joined_at?: string;
+          } | null;
+          if (!p?.participant_id) return;
+          setParticipants((prev) => {
+            if (prev.some((x) => x.id === p.participant_id)) return prev;
+            return [
+              ...prev,
+              {
+                id: p.participant_id,
+                nickname: p.nickname ?? "Player",
+                score: p.score ?? 0,
+                team_id: p.team_id ?? null,
+                avatar_id: p.avatar_id ?? null,
+              },
+            ];
+          });
+        })
+        // game:answer — optimistic single-seat delta. NO full refetch: with N
+        // players each answering, a full refetch per broadcast is O(N^2) and
+        // is what causes the ~35-player wall. The resync path reconciles on
+        // reconnect.
+        .on("broadcast", { event: "game:answer" }, (msg) => {
+          const p = (msg?.payload ?? msg) as {
+            participant_id?: string;
+            score?: number;
+            streak?: number;
+          } | null;
+          if (!p?.participant_id) return;
+          setParticipants((prev) =>
+            prev.map((x) =>
+              x.id === p.participant_id
+                ? {
+                    ...x,
+                    score: p.score ?? x.score,
+                    ...(p.streak !== undefined ? { streak: p.streak } : {}),
+                  }
+                : x
+            ),
+          );
+        })
         .on("broadcast", { event: "game:answer_row" }, (msg) => {
           const a = (msg?.payload ?? msg) as Answer;
           if (!a?.participant_id || !a?.question_id) return;
@@ -341,40 +389,6 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
           );
         })
         .on("broadcast", { event: "game:team" }, () => onTeamsChanged())
-        // Phase 9D.3: kept, and load-bearing for players — see the note in
-        // play.$sessionId.tsx. An anonymous player gets no `sessions` WAL
-        // event, so a transition only reaches them through the participants
-        // bindings below (coalesced refetch). Host-side they are redundant
-        // with the broadcast handlers, and duplicate delivery is harmless:
-        // refetches are coalesced and the round-answer append de-dupes by
-        // (participant, question).
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
-          () => onParticipantsChanged(),
-        )
-        .on(
-          "postgres_changes",
-          { event: "INSERT", schema: "public", table: "answers", filter: `session_id=eq.${sessionId}` },
-          (payload) => {
-            const a = payload.new as Answer;
-            if (!a?.participant_id || !a?.question_id) return;
-            setAnswersForRound((prev) =>
-              prev.some(
-                (x) => x.participant_id === a.participant_id && x.question_id === a.question_id,
-              )
-                ? prev
-                : [
-                    ...prev,
-                    {
-                      question_id: a.question_id,
-                      participant_id: a.participant_id,
-                      is_correct: !!a.is_correct,
-                    },
-                  ],
-            );
-          },
-        )
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "teams", filter: `session_id=eq.${sessionId}` },

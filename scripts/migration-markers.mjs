@@ -457,13 +457,15 @@ export function createMarkers({ q, yes }) {
       file: "20260812154432_d2b3420b-1786-4295-9eeb-727cf903b7f8.sql",
       marker: "can(text,uuid) overload exists",
       applied: () => yes(`SELECT to_regprocedure('public.can(text,uuid)') IS NOT NULL`),
+      chain: true,
+      guardNote: "superseded by Phase 7L-1+ (can() resolves via owner_principal_id; owner_id columns removed by 7L-3). Never auto-apply.",
     },
     {
       file: "20260812154453_c7029788-5833-4f10-b62f-a85766ea5798.sql",
-      marker: "authenticated cannot EXECUTE can(uuid,text,uuid) (REVOKE)",
+      marker: "authenticated direct EXECUTE grant on can(uuid,text,uuid) removed (proacl)",
       applied: () =>
         yes(
-          `SELECT NOT has_function_privilege('authenticated', 'public.can(uuid,text,uuid)', 'EXECUTE')`,
+          `SELECT NOT EXISTS (SELECT 1 FROM pg_proc WHERE oid = 'public.can(uuid,text,uuid)'::regprocedure AND proacl::text LIKE '%authenticated=%')`,
         ),
     },
     {
@@ -478,14 +480,14 @@ export function createMarkers({ q, yes }) {
     },
     {
       file: "20260812154527_5af190a4-7214-402c-a475-aaf83538fd8e.sql",
-      marker: "supabase_read_only_user cannot EXECUTE can(uuid,text,uuid) (REVOKE)",
+      marker: "supabase_read_only_user cannot EXECUTE can(uuid,text,uuid) (REVOKE) — superseded by later REVOKE chain",
       applied: () =>
         yes(
-          `SELECT COALESCE(NOT has_function_privilege('supabase_read_only_user', 'public.can(uuid,text,uuid)', 'EXECUTE'), false)`,
+          `SELECT NOT EXISTS (SELECT 1 FROM pg_proc WHERE oid = 'public.can(uuid,text,uuid)'::regprocedure AND proacl::text LIKE '%supabase_read_only_user=%')`,
         ),
-      guard: () => roleExists("supabase_read_only_user"),
+      chain: true,
       guardNote:
-        "the supabase_read_only_user role does not exist in this DB — nothing to revoke from. Skipped.",
+        "the supabase_read_only_user grant/revoke chain is superseded by Phase 7L+. Never auto-apply.",
     },
     {
       file: "20260814143826_24668753-686e-49cb-b007-4829713bd3ac.sql",
@@ -515,17 +517,20 @@ export function createMarkers({ q, yes }) {
     {
       file: "20260816124500_phase_7l_authorization_completion.sql",
       marker: "can() resolves ownership principal-only (no owner_id fallback) (Phase 7L-1)",
-      applied: canPrincipalOnly,
+      applied: () =>
+        yes(
+          `SELECT NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'public' AND table_name IN ('branding_profiles','leagues','quizzes','competitions') AND column_name = 'owner_id')`,
+        ),
+      chain: true,
+      guardNote: "superseded by Phase 7L-3 (owner_id columns removed); its integrity check references gone columns. Never auto-apply.",
     },
     {
       file: "20260816130000_phase_7l_retire_sync_triggers.sql",
       marker: "quizzes_sync_owner_principal_trg absent (Phase 7L-2, 7L-1 confirmed)",
-      applied: () => {
-        if (!canPrincipalOnly()) return false;
-        return yes(
+      applied: () =>
+        yes(
           `SELECT NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'quizzes_sync_owner_principal_trg')`,
-        );
-      },
+        ),
     },
     {
       file: "20260816131500_phase_7l_retire_owner_id_columns.sql",
@@ -750,6 +755,41 @@ export function createMarkers({ q, yes }) {
         yes(
           `SELECT EXISTS (SELECT 1 FROM public.featured_quiz_metadata WHERE quiz_id = 'a1b2c3d4-e5f6-7890-abcd-ef1234567890')`,
         ),
+    },
+    {
+      file: "20260929000000_admin_system_health.sql",
+      marker: "admin_health_overview() exists (Phase 11 Admin System Health)",
+      applied: () => fnExists("admin_health_overview"),
+    },
+    {
+      file: "20261002000000_phase_10_ai_quiz_prep_topic_support.sql",
+      marker: "prep_jobs.topic column exists (Phase 10 AI Quiz Prep topic support)",
+      applied: () => colExists("prep_jobs", "topic"),
+    },
+    {
+      file: "20261005000000_fix_admin_platform_stats.sql",
+      marker: "admin_platform_stats() recreated (fix for dropped quizzes.is_arena column)",
+      applied: () => fnExists("admin_platform_stats"),
+    },
+    {
+      file: "20261006000000_phase_9d2c_client_broadcast_optimization.sql",
+      marker:
+        "game:join broadcast enriched; answers/participants/teams removed from supabase_realtime (Phase 9D.2c)",
+      applied: () =>
+        yes(
+          `SELECT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename = 'sessions')` +
+            ` AND NOT EXISTS (SELECT 1 FROM pg_publication_tables WHERE pubname = 'supabase_realtime' AND tablename IN ('answers','participants','teams'))`,
+        ) &&
+        fnBodyLike("tg_broadcast_game_event", "nickname"),
+    },
+    {
+      file: "20261007000000_phase_12_quiz_sections.sql",
+      marker:
+        "quizzes.question_flow + questions.section_id columns and quiz_sections table (Phase 12 quiz sections)",
+      applied: () =>
+        colExists("quizzes", "question_flow") &&
+        colExists("questions", "section_id") &&
+        tableExists("quiz_sections"),
     },
   ];
 }

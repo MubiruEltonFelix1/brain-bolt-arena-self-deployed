@@ -4,7 +4,7 @@
 // uses (join_session → broadcast game:answer_row → submit_answer).
 //
 // Usage:
-//   bun scripts/load-test.mjs --code <GAME_CODE> [--players 100] [--burst 25] [--dry-run]
+//   bun scripts/load-test.mjs --code <GAME_CODE> [--players 100] [--burst 25] [--questions 5] [--dry-run]
 //
 // How it works:
 //   1. JOIN    — N fake players join your session in waves (session must be
@@ -37,19 +37,22 @@ const arg = (name, fallback) => {
 const CODE = arg("code", "");
 const PLAYERS = Number(arg("players", "100"));
 const BURST = Number(arg("burst", "25"));
+const QUESTIONS = Number(arg("questions", "1"));
 const DRY_RUN = process.argv.includes("--dry-run");
 
 if (!CODE || process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log(
-    "Usage: bun scripts/load-test.mjs --code <GAME_CODE> [--players 100] [--burst 25] [--dry-run]\n" +
+    "Usage: bun scripts/load-test.mjs --code <GAME_CODE> [--players 100] [--burst 25] [--questions 5] [--dry-run]\n" +
       "  Spawns N fake players against a live session (lobby state) and measures\n" +
-      "  join latency, answer latency, and realtime event delivery. Requires the\n" +
-      "  session to be in the LOBBY; you press START when the script says so.\n" +
+      "  join latency, answer latency, and realtime event delivery across multiple\n" +
+      "  questions. Requires the session to be in the LOBBY; you press START when the\n" +
+      "  script says so.\n" +
+      "  --questions N  answer N questions in sequence (default 1)\n" +
       "  --dry-run  validate the session + env without spawning anything.\n",
   );
   process.exit(0);
 }
-if (!Number.isFinite(PLAYERS) || PLAYERS < 1 || !Number.isFinite(BURST) || BURST < 1) {
+if (!Number.isFinite(PLAYERS) || PLAYERS < 1 || !Number.isFinite(BURST) || BURST < 1 || !Number.isFinite(QUESTIONS) || QUESTIONS < 1) {
   console.error("--players and --burst must be positive numbers.");
   process.exit(2);
 }
@@ -248,10 +251,7 @@ if (!liveChannels.length) {
 }
 console.log(`  ${liveChannels.length}/${players.length} channels subscribed (avg ${fmt(channels.reduce((a, c) => a + (c?.connectedMs ?? 0), 0) / channels.length)} to connect)`);
 
-// --- phase 4: answers ---------------------------------------------------------
-console.log(`\n[4/5] Submitting answers (burst ${BURST}, response time 1.5–8s)...`);
-const answerTimes = [];
-let answerErrors = 0;
+// --- phases 4 & 5: answer QUESTIONS questions in sequence ----------------
 function answerPayload(p, i) {
   const resp = 1500 + Math.round(Math.random() * 6500);
   const q = currentQ;
@@ -277,12 +277,6 @@ function shuffle(a) {
   }
   return arr;
 }
-await runBurst(players, BURST, async (p, i) => {
-  const t0 = performance.now();
-  const { error } = await withTimeout(api.rpc(`submit_${answerRpcSuffix(currentQ.type)}`, answerPayload(p, i)), 15000, "submit");
-  answerTimes.push(performance.now() - t0);
-  if (error) answerErrors += 1;
-});
 function answerRpcSuffix(type) {
   switch (type) {
     case "number": return "number_answer";
@@ -293,51 +287,129 @@ function answerRpcSuffix(type) {
     default: return "answer";
   }
 }
-const ansSum = summarize(answerTimes);
-console.log(`Answers sent: ${answerTimes.length - answerErrors}/${answerTimes.length} OK · ${answerErrors} errors`);
-console.log(`  answer RPC latency — avg ${fmt(ansSum.avg)} · p50 ${fmt(ansSum.p50)} · p95 ${fmt(ansSum.p95)} · max ${fmt(ansSum.max)}`);
 
-// --- phase 5: delivery + reveal ----------------------------------------------
-console.log(`\n[5/5] Watching for reveal (max ${currentQ.timeLimit + 15}s)...`);
-const revealDeadline = Date.now() + (currentQ.timeLimit + 15) * 1000;
-let revealed = false;
-while (Date.now() < revealDeadline && !revealed) {
-  const { data: s } = await api.from("sessions").select("current_question_revealed").eq("id", sess.id).maybeSingle();
-  revealed = !!s?.current_question_revealed;
-  if (!revealed) await sleep(500);
+const channelLastCount = liveChannels.map(() => 0);
+const allAnswerTimes = [];
+let allAnswerErrors = 0;
+const allEventDeltas = [];
+const allRevealLatencies = [];
+let firstRevealTs = null;
+
+let qIndex = sess.current_question_index;
+
+for (let round = 1; round <= QUESTIONS; round++) {
+  if (round > 1) {
+    // Wait for the host to advance to the next question.
+    process.stdout.write(`  Round ${round}/${QUESTIONS}: waiting for host to advance...`);
+    const advanceDeadline = Date.now() + 120_000;
+    let advanced = false;
+    while (Date.now() < advanceDeadline && !advanced) {
+      const { data: s } = await api
+        .from("sessions")
+        .select("status,current_question_index")
+        .eq("id", sess.id)
+        .maybeSingle();
+      if (s?.current_question_index != null && s.current_question_index > qIndex) {
+        qIndex = s.current_question_index;
+        advanced = true;
+      } else if (s?.status !== "active") {
+        console.log(` session status is ${s?.status} — stopping at round ${round - 1}.`);
+        break;
+      }
+      await sleep(2000);
+    }
+    if (!advanced) {
+      console.log(` timed out waiting for advance — stopping at round ${round - 1}.`);
+      break;
+    }
+    console.log(" advanced.");
+    const { data: qs } = await api.rpc("get_session_questions", { p_session_id: sess.id });
+    const rows = Array.isArray(qs) ? qs : [];
+    const order = Array.isArray(sess.question_order) && sess.question_order.length
+      ? sess.question_order
+      : rows.slice().sort((a, b) => a.q_position - b.q_position).map((r) => r.q_id);
+    const qid = order[qIndex];
+    const qrow = rows.find((r) => r.q_id === qid);
+    if (!qrow) {
+      console.error(`  Could not find question at index ${qIndex}. Stopping.`);
+      break;
+    }
+    currentQ = {
+      id: qid,
+      type: qrow.q_question_type ?? "mcq",
+      options: Array.isArray(qrow.q_options) ? qrow.q_options : [],
+      min: qrow.q_number_min,
+      max: qrow.q_number_max,
+      timeLimit: qrow.q_time_limit_sec ?? sess.quiz?.time_per_question ?? 20,
+    };
+    console.log(`  Question ${round} live: type=${currentQ.type} · ${currentQ.options.length} options · ${currentQ.timeLimit}s limit`);
+  }
+
+  // Phase 4: submit answers for the current question.
+  console.log(`\n  Round ${round}/${QUESTIONS}: submitting answers (burst ${BURST}, response time 1.5–8s)...`);
+  const answerTimes = [];
+  let answerErrors = 0;
+  await runBurst(players, BURST, async (p, i) => {
+    const t0 = performance.now();
+    const { error } = await withTimeout(api.rpc(`submit_${answerRpcSuffix(currentQ.type)}`, answerPayload(p, i)), 15000, "submit");
+    answerTimes.push(performance.now() - t0);
+    if (error) answerErrors += 1;
+  });
+  allAnswerTimes.push(...answerTimes);
+  allAnswerErrors += answerErrors;
+  const ansSum = summarize(answerTimes);
+  console.log(`  Answers: ${answerTimes.length - answerErrors}/${answerTimes.length} OK · p95 ${fmt(ansSum.p95)} · ${answerErrors} errors`);
+
+  // Phase 5: wait for reveal.
+  console.log(`  Waiting for reveal (max ${currentQ.timeLimit + 15}s)...`);
+  const revealDeadline = Date.now() + (currentQ.timeLimit + 15) * 1000;
+  let revealed = false;
+  while (Date.now() < revealDeadline && !revealed) {
+    const { data: s } = await api.from("sessions").select("current_question_revealed").eq("id", sess.id).maybeSingle();
+    revealed = !!s?.current_question_revealed;
+    if (!revealed) await sleep(500);
+  }
+  await sleep(3000); // let straggler events land
+
+  // Event deltas since last round (count() is cumulative per channel).
+  const roundEventDeltas = liveChannels.map((c, idx) => {
+    const now = c.count();
+    const prev = channelLastCount[idx] ?? 0;
+    channelLastCount[idx] = now;
+    return now - prev;
+  });
+  allEventDeltas.push(...roundEventDeltas);
+  const roundDelivered = roundEventDeltas.reduce((a, b) => a + b, 0);
+  const roundExpected = liveChannels.length * answerTimes.length;
+
+  const revealAt = performance.now();
+  if (firstRevealTs === null) firstRevealTs = revealAt;
+  allRevealLatencies.push(revealAt - firstRevealTs);
+
+  console.log(`  Reveal: ${revealed ? "YES" : "NO — timeout"} · ${roundDelivered}/${roundExpected} events`);
 }
-await sleep(3000); // let straggler events land
 
-const eventCounts = liveChannels.map((c) => c.count());
-const expected = liveChannels.length; // each answer = one game:answer_row broadcast per channel
-const delivered = eventCounts.reduce((a, b) => a + b, 0);
-const perChannel = summarize(eventCounts);
-const revealLatencies = liveChannels.map((c) => c.revealAt()).filter((t) => t !== null);
-const revealSum = summarize(revealLatencies.map((t) => t - Math.min(...revealLatencies)));
-
-console.log(`Reveal: ${revealed ? "YES (host auto-revealed or revealed)" : "NO — timeout (host may be on pause)"}`);
-console.log(`Events per channel — avg ${perChannel.avg.toFixed(1)} · p50 ${perChannel.p50} · p95 ${perChannel.p95} · max ${perChannel.max}`);
-console.log(`  expected ≈ ${expected} (one game:answer_row broadcast per answering player)`);
-console.log(`  total events delivered: ${delivered} / ${expected * liveChannels.length}`);
-if (revealLatencies.length) {
-  console.log(`Reveal propagation (first answer → channel reveal event): avg ${fmt(revealSum.avg)} · max ${fmt(revealSum.max)}`);
-}
-
-// --- verdict ---------------------------------------------------------------
+// --- aggregate verdict ----------------------------------------------------
 console.log("\n=== VERDICT ===");
+const ansSumAll = summarize(allAnswerTimes);
+const perChannelAll = summarize(allEventDeltas);
+const expectedAll = QUESTIONS * liveChannels.length;
+const revealSumAll = summarize(allRevealLatencies);
+const roundsCompleted = Math.floor(allAnswerTimes.length / Math.max(players.length, 1));
 const verdicts = [
   ["Joins", joinSum.ok === PLAYERS, `p95 ${fmt(joinSum.p95)} — all ${PLAYERS} joined`],
-  ["Answers", answerErrors === 0, `p95 ${fmt(ansSum.p95)} — ${answerTimes.length - answerErrors}/${answerTimes.length} accepted`],
-  ["Realtime delivery", perChannel.avg >= expected * 0.9, `avg ${perChannel.avg.toFixed(0)}/${expected} events per channel`],
-  ["Reveal propagation", revealLatencies.length > 0 && revealSum.max < 3000, revealLatencies.length ? `max ${fmt(revealSum.max)}` : "no reveal observed"],
+  ["Answers", allAnswerErrors === 0, `p95 ${fmt(ansSumAll.p95)} — ${allAnswerTimes.length - allAnswerErrors}/${allAnswerTimes.length} accepted`],
+  ["Realtime delivery", perChannelAll.avg >= expectedAll * 0.9, `avg ${perChannelAll.avg.toFixed(0)}/${expectedAll} events per channel`],
+  ["Rounds completed", roundsCompleted === QUESTIONS, `${roundsCompleted}/${QUESTIONS} rounds`],
+  ["Reveal propagation", revealSumAll.length > 0 && revealSumAll.max < 3000, revealSumAll.length ? `max ${fmt(revealSumAll.max)}` : "no reveal observed"],
 ];
 for (const [name, pass, detail] of verdicts) {
   console.log(`  ${pass ? "PASS" : "WARN"}  ${name.padEnd(20)} ${detail}`);
 }
 const allPass = verdicts.every(([, p]) => p);
 console.log(allPass
-  ? "\nFree tier handled the full class. Ready for tomorrow."
-  : "\nSome checks missed — see the numbers above. Re-run once with a fresh question.");
+  ? `\nFree tier handled ${QUESTIONS} questions x ${PLAYERS} players. Ready for launch.`
+  : `\nSome checks missed — see the numbers above.`);
 
 // --- cleanup -----------------------------------------------------------------
 await cleanup(players, sess.id);

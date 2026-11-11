@@ -64,11 +64,17 @@ AS $$
   SELECT
     (SELECT count(*) FROM public.profiles),
     (SELECT count(*) FROM public.quizzes WHERE archived_at IS NULL),
-    (SELECT count(*) FROM public.quizzes WHERE is_arena AND archived_at IS NULL),
+    (SELECT count(*) FROM public.quizzes
+      WHERE arena_publication_status = 'published'
+        AND arena_admin_status = 'visible'
+        AND archived_at IS NULL),
     (SELECT count(*) FROM public.competitions),
     (SELECT count(*) FROM public.sessions WHERE status NOT IN ('ended')),
     (SELECT count(*) FROM public.sessions WHERE created_at > now() - interval '7 days'),
-    (SELECT COALESCE(sum(play_count), 0) FROM public.quizzes WHERE is_arena),
+    (SELECT COALESCE(sum(play_count), 0) FROM public.quizzes
+      WHERE arena_publication_status = 'published'
+        AND arena_admin_status = 'visible'
+        AND archived_at IS NULL),
     (SELECT count(*) FROM public.competition_results WHERE completed_at > now() - interval '7 days'),
     (SELECT count(*) FROM public.host_requests WHERE status = 'pending'),
     (SELECT count(*) FROM public.host_authorizations WHERE status = 'active'),

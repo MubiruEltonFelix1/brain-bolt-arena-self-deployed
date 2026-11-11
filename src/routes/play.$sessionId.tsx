@@ -24,7 +24,6 @@ import { getServerAdjustedNow, syncServerClock } from "@/lib/server-clock";
 import { ShareCardPreview, downloadShareCard, type ShareResultData } from "@/components/ShareResultCard";
 import { BrandBanner } from "@/components/BrandBanner";
 import { PlayerAvatar } from "@/components/PlayerAvatar";
-import { useCoalescedCallback } from "@/hooks/use-coalesced-callback";
 import { liveRevealBlur, type GeoRegion } from "@/lib/question-registry";
 import { playSound, haptic, isSoundMuted, toggleSoundMuted, unlockAudio } from "@/lib/sound";
 import { Confetti } from "@/components/Confetti";
@@ -309,18 +308,6 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
 
   useEffect(() => { void loadState(); }, [loadState]);
 
-  // One row event per participant arrives on every score update; coalesce the
-  // burst into a single authoritative refetch.
-  const refetchParticipants = useCallback(async () => {
-    const { data } = await supabase
-      .from("participants").select("id,nickname,score,streak,team_id,avatar_id,joined_at")
-      .eq("session_id", sessionId).order("score", { ascending: false }).order("joined_at", { ascending: true });
-    if (!data) return;
-    setParticipants(data as Participant[]);
-    const mine = (data as Participant[]).find((p) => p.id === identity?.id);
-    if (mine) setMe(mine);
-  }, [sessionId, identity?.id]);
-  const onParticipantsChanged = useCoalescedCallback(refetchParticipants);
 
   // Phase 9D.2 P0-A: gameplay activity arrives as DATABASE-PUBLISHED broadcasts
   // on the private session topic.
@@ -366,20 +353,73 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
         .on("postgres_changes", { event: "UPDATE", schema: "public", table: "sessions", filter: `id=eq.${sessionId}` },
           (payload) => setSession((prev) => ({ ...(prev as Session), ...(payload.new as Partial<Session>) } as Session))
         )
-        .on("broadcast", { event: "game:join" }, () => onParticipantsChanged())
+        // game:join — append the new seat optimistically. The payload now
+        // carries nickname/score/streak/team_id/avatar_id/joined_at (see
+        // migration 20261006000000), so no full participants refetch is needed.
+        .on("broadcast", { event: "game:join" }, (msg) => {
+          const p = (msg?.payload ?? msg) as {
+            participant_id?: string;
+            nickname?: string;
+            score?: number;
+            streak?: number;
+            team_id?: string | null;
+            avatar_id?: string | null;
+            joined_at?: string;
+          } | null;
+          if (!p?.participant_id) return;
+          setParticipants((prev) => {
+            if (prev.some((x) => x.id === p.participant_id)) return prev;
+            return [
+              ...prev,
+              {
+                id: p.participant_id,
+                nickname: p.nickname ?? "Player",
+                score: p.score ?? 0,
+                streak: p.streak ?? 0,
+                team_id: p.team_id ?? null,
+                avatar_id: p.avatar_id ?? null,
+                joined_at: p.joined_at ?? new Date().toISOString(),
+              },
+            ];
+          });
+          if (identity?.id === p.participant_id) {
+            setMe({
+              id: p.participant_id,
+              nickname: p.nickname ?? "Player",
+              score: p.score ?? 0,
+              streak: p.streak ?? 0,
+              team_id: p.team_id ?? null,
+              avatar_id: p.avatar_id ?? null,
+              joined_at: p.joined_at ?? new Date().toISOString(),
+            });
+          }
+        })
         .on("broadcast", { event: "game:answer_row" }, (msg) => countAnsweredEvent(msg))
-        .on("broadcast", { event: "game:answer" }, () => onParticipantsChanged())
-        // Phase 9D.3: load-bearing, not redundant. With the publication diet
-        // applied, an anonymous player receives NO `sessions` postgres_changes
-        // (measured: the private-broadcast probe sees 0, and a real /play page
-        // stays on round 1 while the server advances). These participants
-        // bindings are what actually deliver a transition to a player, via the
-        // coalesced refetch in onParticipantsChanged(). Removing them requires
-        // transitions on the broadcast transport first.
-        .on("postgres_changes", { event: "*", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
-          () => onParticipantsChanged())
-        .on("postgres_changes", { event: "UPDATE", schema: "public", table: "participants", filter: `session_id=eq.${sessionId}` },
-          (payload) => countAnsweredEvent(payload)),
+        // game:answer — optimistic single-seat delta for the scoreboard and my
+        // own row. NO full refetch: with N players each answering, a full
+        // refetch per broadcast is O(N^2) and is what causes the ~35-player
+        // wall. The resync path reconciles on reconnect via onResync: loadState.
+        .on("broadcast", { event: "game:answer" }, (msg) => {
+          const p = (msg?.payload ?? msg) as {
+            participant_id?: string;
+            score?: number;
+            streak?: number;
+          } | null;
+          if (!p?.participant_id) return;
+          setParticipants((prev) =>
+            prev.map((x) =>
+              x.id === p.participant_id
+                ? { ...x, score: p.score ?? x.score, streak: p.streak ?? x.streak }
+                : x
+            ),
+          );
+          setMe((m) =>
+            m?.id === p.participant_id
+              ? { ...m, score: p.score ?? m.score, streak: p.streak ?? m.streak }
+              : m
+          );
+        })
+    ,
     onResync: loadState,
   });
 

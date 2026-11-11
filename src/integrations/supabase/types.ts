@@ -671,6 +671,7 @@ export type Database = {
           question_type: string;
           quiz_id: string;
           reveal_stages: number | null;
+          section_id: string | null;
           text: string;
           time_limit_sec: number | null;
         };
@@ -698,6 +699,7 @@ export type Database = {
           question_type?: string;
           quiz_id: string;
           reveal_stages?: number | null;
+          section_id?: string | null;
           text: string;
           time_limit_sec?: number | null;
         };
@@ -725,12 +727,52 @@ export type Database = {
           question_type?: string;
           quiz_id?: string;
           reveal_stages?: number | null;
+          section_id?: string | null;
           text?: string;
           time_limit_sec?: number | null;
         };
         Relationships: [
           {
             foreignKeyName: "questions_quiz_id_fkey";
+            columns: ["quiz_id"];
+            isOneToOne: false;
+            referencedRelation: "quizzes";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "questions_section_id_fkey";
+            columns: ["section_id"];
+            isOneToOne: false;
+            referencedRelation: "quiz_sections";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      quiz_sections: {
+        Row: {
+          created_at: string;
+          id: string;
+          position: number;
+          quiz_id: string;
+          title: string;
+        };
+        Insert: {
+          created_at?: string;
+          id?: string;
+          position?: number;
+          quiz_id: string;
+          title: string;
+        };
+        Update: {
+          created_at?: string;
+          id?: string;
+          position?: number;
+          quiz_id?: string;
+          title?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "quiz_sections_quiz_id_fkey";
             columns: ["quiz_id"];
             isOneToOne: false;
             referencedRelation: "quizzes";
@@ -751,6 +793,7 @@ export type Database = {
           owner_id: string;
           owner_principal_id: string | null;
           play_count: number;
+          question_flow: string;
           time_per_question: number;
           title: string;
         };
@@ -766,6 +809,7 @@ export type Database = {
           owner_id: string;
           owner_principal_id?: string | null;
           play_count?: number;
+          question_flow?: string;
           time_per_question?: number;
           title: string;
         };
@@ -781,6 +825,7 @@ export type Database = {
           owner_id?: string;
           owner_principal_id?: string | null;
           play_count?: number;
+          question_flow?: string;
           time_per_question?: number;
           title?: string;
         };
