@@ -912,8 +912,10 @@ export type Database = {
           id: string;
           league_id: string | null;
           paused_at: string | null;
+          presentation_mode: string;
           question_order: Json | null;
           quiz_id: string;
+          section_snapshot: Json | null;
           skipped_question_ids: string[];
           status: string;
           team_mode: boolean;
@@ -931,8 +933,10 @@ export type Database = {
           id?: string;
           league_id?: string | null;
           paused_at?: string | null;
+          presentation_mode?: string;
           question_order?: Json | null;
           quiz_id: string;
+          section_snapshot?: Json | null;
           skipped_question_ids?: string[];
           status?: string;
           team_mode?: boolean;
@@ -950,8 +954,10 @@ export type Database = {
           id?: string;
           league_id?: string | null;
           paused_at?: string | null;
+          presentation_mode?: string;
           question_order?: Json | null;
           quiz_id?: string;
+          section_snapshot?: Json | null;
           skipped_question_ids?: string[];
           status?: string;
           team_mode?: boolean;

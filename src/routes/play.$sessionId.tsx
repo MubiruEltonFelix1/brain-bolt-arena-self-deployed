@@ -27,6 +27,8 @@ import { PlayerAvatar } from "@/components/PlayerAvatar";
 import { liveRevealBlur, type GeoRegion } from "@/lib/question-registry";
 import { playSound, haptic, isSoundMuted, toggleSoundMuted, unlockAudio } from "@/lib/sound";
 import { Confetti } from "@/components/Confetti";
+import { SectionHeader } from "@/components/SectionHeader";
+import type { SessionSnapshot } from "@/lib/quiz/sections";
 import { Volume2, VolumeX } from "lucide-react";
 
 
@@ -57,6 +59,8 @@ type Session = {
   league_id: string | null;
   paused_at: string | null;
   time_added_ms: number | null;
+  presentation_mode: string | null;
+  section_snapshot: SessionSnapshot | null;
   quiz: { time_per_question: number; title: string } | null;
   branding: import("@/lib/branding").BrandingProfile | null;
 };
@@ -202,6 +206,9 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const answeredQuestionId = useRef<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [soundOn, setSoundOn] = useState(() => !isSoundMuted());
+  // Section currently being shown via the SectionHeader banner. Derived from the
+  // authoritative session snapshot, so host and player stay in sync.
+  const [shownSectionId, setShownSectionId] = useState<string | null>(null);
 
   // AudioContext must be created/resumed after a user gesture (autoplay policy).
   useEffect(() => {
@@ -435,6 +442,28 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const currentQId = currentIdx >= 0 && currentIdx < orderedQuestionIds.length ? orderedQuestionIds[currentIdx] : null;
   const currentQuestion = currentQId ? questions.find((q) => q.id === currentQId) : null;
   const revealed = !!session?.current_question_revealed;
+
+  // Categorized presentation: the current section is derived exclusively from
+  // the immutable session snapshot + question_order, never from live quiz
+  // sections.
+  const presentationMode = session?.presentation_mode ?? "flat";
+  const categorized = presentationMode === "categorized";
+  const snapshot = session?.section_snapshot ?? null;
+  const currentSection = categorized && snapshot && currentQId
+    ? (snapshot.sections as Array<{ id: string; title: string; question_ids: string[] }>).find((s) =>
+        s.question_ids.includes(currentQId),
+      )
+    : null;
+
+  // Detect entering a new section (banner shows once per section entry).
+  const enteringNewSection = categorized && !!currentSection && shownSectionId !== currentSection.id;
+  useEffect(() => {
+    if (enteringNewSection && currentSection) {
+      setShownSectionId(currentSection.id);
+    }
+  }, [enteringNewSection, currentSection?.id]);
+
+  const sectionBanner = enteringNewSection ? currentSection : null;
   const myCurrentAnswer = currentQId ? myAnswers.find((a) => a.question_id === currentQId) : null;
   const hasAnswered = !!myCurrentAnswer || selectedIndex !== null;
 
@@ -803,6 +832,8 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
           />
         )}
 
+        {sectionBanner && <SectionHeader title={sectionBanner.title} />}
+
         {session.status === "active" && currentQuestion && inIntro && (
           <QuestionIntro
             variant="player"
@@ -1004,6 +1035,8 @@ function QuestionView({
           <span className="font-mono text-xs uppercase text-amber-spark">🔥 STREAK x{streak}</span>
         )}
       </div>
+
+      {question.double_points && <DoublePointsBadge />}
 
       {question.double_points && <DoublePointsBadge />}
 

@@ -371,9 +371,7 @@ export function validateQuizSections(input: SectionValidationInput): SectionVali
   }
   for (const [, dupes] of seenTitles) {
     if (dupes.length < 2) continue;
-    const names = dupes
-      .map((s) => `#${orderedSections.indexOf(s) + 1}`)
-      .join(", ");
+    const names = dupes.map((s) => `#${orderedSections.indexOf(s) + 1}`).join(", ");
     warnings.push({
       code: "duplicate_section_title",
       message: `Sections ${names} share the name “${normalizeSectionTitle(dupes[0].title)}”. That is allowed, but a CSV \`section\` column cannot tell them apart.`,
@@ -490,4 +488,111 @@ export function firstBlockingSectionError(validation: SectionValidation): string
 /** Convenience wrapper: returns the blocking message, or null when startable. */
 export function blockReasonForStart(input: SectionValidationInput): string | null {
   return firstBlockingSectionError(validateQuizSections(input));
+}
+
+/* ------------------------------------------------------------------ */
+/* Session snapshot                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A single section as captured in an immutable session snapshot.
+ */
+export interface SectionSnapshotEntry {
+  id: string;
+  title: string;
+  position: number;
+  question_ids: string[];
+}
+
+/**
+ * The immutable section structure captured at session creation. Stored as
+ * `sessions.section_snapshot` and used by host/player clients to reproduce
+ * the original section presentation for the life of the session.
+ */
+export interface SessionSnapshot {
+  presentation_mode: QuestionFlow;
+  sections: SectionSnapshotEntry[];
+}
+
+/** Result of building a session snapshot and its flat question order. */
+export type BuildSessionSnapshotResult = {
+  /** `null` for flat quizzes; the full section structure for categorized. */
+  snapshot: SessionSnapshot | null;
+  /** Flat array of playable question ids in presentation order. */
+  questionOrder: string[];
+};
+
+/**
+ * Builds the immutable session snapshot and the flat `question_order` array
+ * from a categorized quiz's sections and questions.
+ *
+ * For flat quizzes the snapshot is `null` and the question order is the
+ * questions in position order (the caller applies `seededShuffle` separately,
+ * preserving existing flat-quiz behaviour).
+ *
+ * For categorized quizzes:
+ *   * sections are emitted in canonical order (position, created_at, id);
+ *   * questions within each section are emitted by `position`, then `id`;
+ *   * all playable questions appear exactly once in `questionOrder`;
+ *   * playable questions not belonging to any section (scored ones should not
+ *     exist here because validation runs first, but feedback can be ungrouped)
+ *     are appended at the end so nothing is silently dropped.
+ *
+ * This is the single authoritative ordering rule. Dashboard-created and
+ * competition-created sessions must both use it (via this function or its
+ * SQL equivalent) so the two paths never diverge.
+ */
+export function buildSessionSnapshot(
+  flow: QuestionFlow,
+  sections: readonly QuizSection[],
+  questions: readonly SectionableQuestion[],
+): BuildSessionSnapshotResult {
+  const playable = questions.filter(isPlayable);
+
+  if (flow === "flat") {
+    return {
+      snapshot: null,
+      questionOrder: playable
+        .slice()
+        .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id))
+        .map((q) => q.id),
+    };
+  }
+
+  const ordered = sortSections(sections);
+  const sectionEntries: SectionSnapshotEntry[] = [];
+  const questionOrder: string[] = [];
+  const assignedIds = new Set<string>();
+
+  for (const section of ordered) {
+    const bucket = playable
+      .filter((q) => q.section_id === section.id)
+      .slice()
+      .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+    const questionIds = bucket.map((q) => q.id);
+    sectionEntries.push({
+      id: section.id,
+      title: normalizeSectionTitle(section.title),
+      position: section.position,
+      question_ids: questionIds,
+    });
+    questionOrder.push(...questionIds);
+    for (const id of questionIds) assignedIds.add(id);
+  }
+
+  // Ungrouped playable questions (scored ones should not reach here because
+  // validateQuizSections runs first, but feedback may be ungrouped). Append at
+  // the end so no playable question is silently dropped.
+  const ungrouped = playable
+    .filter((q) => !assignedIds.has(q.id))
+    .slice()
+    .sort((a, b) => a.position - b.position || a.id.localeCompare(b.id));
+  questionOrder.push(...ungrouped.map((q) => q.id));
+
+  const snapshot: SessionSnapshot = {
+    presentation_mode: "categorized",
+    sections: sectionEntries,
+  };
+
+  return { snapshot, questionOrder };
 }

@@ -791,5 +791,18 @@ export function createMarkers({ q, yes }) {
         colExists("questions", "section_id") &&
         tableExists("quiz_sections"),
     },
+    {
+      file: "20261008000000_phase_12_session_snapshot.sql",
+      marker:
+        "sessions.presentation_mode and sessions.section_snapshot columns (Phase 12 session snapshots)",
+      applied: () =>
+        colExists("sessions", "presentation_mode") && colExists("sessions", "section_snapshot"),
+    },
+    {
+      file: "20261009000000_phase_12_competition_rpc_snapshot.sql",
+      marker:
+        "prepare_competition_session_internal sets presentation_mode and section_snapshot (Phase 12 competition RPC snapshot)",
+      applied: () => fnBodyLike("prepare_competition_session_internal", "section_snapshot"),
+    },
   ];
 }

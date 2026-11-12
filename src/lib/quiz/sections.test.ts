@@ -17,6 +17,7 @@ import {
   sectionTitleKey,
   sortSections,
   validateQuizSections,
+  buildSessionSnapshot,
   type QuizSection,
   type SectionableQuestion,
 } from "./sections";
@@ -183,17 +184,11 @@ describe("validation", () => {
     const result = validateQuizSections({
       flow: "categorized",
       sections,
-      questions: [
-        q("a", 0, { section_id: "s1" }),
-        q("fb", 1, { question_type: "feedback" }),
-      ],
+      questions: [q("a", 0, { section_id: "s1" }), q("fb", 1, { question_type: "feedback" })],
     });
     expect(result.ok).toBe(true);
     expect(result.errors).toEqual([]);
-    expect(result.warnings.map((w) => w.code)).toEqual([
-      "ungrouped_feedback",
-      "empty_section",
-    ]);
+    expect(result.warnings.map((w) => w.code)).toEqual(["ungrouped_feedback", "empty_section"]);
     expect(result.ungroupedPlayableCount).toBe(1);
   });
 
@@ -201,10 +196,7 @@ describe("validation", () => {
     const result = validateQuizSections({
       flow: "categorized",
       sections,
-      questions: [
-        q("a", 0, { section_id: "s1" }),
-        q("off", 1, { is_playable: false }),
-      ],
+      questions: [q("a", 0, { section_id: "s1" }), q("off", 1, { is_playable: false })],
     });
     expect(result.ok).toBe(true);
     expect(result.errors).toEqual([]);
@@ -268,10 +260,7 @@ describe("validation", () => {
     const result = validateQuizSections({
       flow: "categorized",
       sections: [section("s1", "Round 1", 0)],
-      questions: [
-        q("a", 0, { section_id: "s1" }),
-        q("b", 1, { section_id: "elsewhere" }),
-      ],
+      questions: [q("a", 0, { section_id: "s1" }), q("b", 1, { section_id: "elsewhere" })],
     });
     expect(result.groupedPlayableCount).toBe(1);
     expect(result.ok).toBe(false);
@@ -289,5 +278,81 @@ describe("formatQuestionNumbers", () => {
 
   test("de-duplicates and sorts", () => {
     expect(formatQuestionNumbers([5, 5, 2])).toBe("Questions 2 and 5");
+  });
+});
+
+describe("buildSessionSnapshot", () => {
+  const sections = [
+    section("s2", "Sports", 1, "2026-01-02T00:00:00.000Z"),
+    section("s1", "History", 0, "2026-01-01T00:00:00.000Z"),
+  ];
+
+  const questions = [
+    q("q1", 0, { section_id: "s1" }),
+    q("q2", 1, { section_id: "s1" }),
+    q("q3", 2, { section_id: "s2" }),
+    q("q4", 3, { section_id: "s2" }),
+  ];
+
+  test("flat quiz returns null snapshot and position-ordered question order", () => {
+    const result = buildSessionSnapshot("flat", sections, questions);
+    expect(result.snapshot).toBeNull();
+    expect(result.questionOrder).toEqual(["q1", "q2", "q3", "q4"]);
+  });
+
+  test("categorized snapshot captures section ids, titles, positions and question ids", () => {
+    const result = buildSessionSnapshot("categorized", sections, questions);
+    expect(result.snapshot?.presentation_mode).toBe("categorized");
+    expect(result.snapshot?.sections).toEqual([
+      {
+        id: "s1",
+        title: "History",
+        position: 0,
+        question_ids: ["q1", "q2"],
+      },
+      {
+        id: "s2",
+        title: "Sports",
+        position: 1,
+        question_ids: ["q3", "q4"],
+      },
+    ]);
+    // Flat order is sections in rank order, questions by position within section.
+    expect(result.questionOrder).toEqual(["q1", "q2", "q3", "q4"]);
+  });
+
+  test("section ordering is deterministic with duplicate positions", () => {
+    const tied = [
+      section("b", "B", 0, "2026-01-01T00:00:00.000Z"),
+      section("a", "A", 0, "2026-01-01T00:00:00.000Z"),
+    ];
+    const result = buildSessionSnapshot("categorized", tied, []);
+    expect(result.snapshot?.sections.map((s) => s.id)).toEqual(["a", "b"]);
+  });
+
+  test("ungrouped feedback questions are appended at the end, not forced into a section", () => {
+    const result = buildSessionSnapshot("categorized", sections, [
+      ...questions,
+      q("q5", 4, { section_id: null, question_type: "feedback" }),
+    ]);
+    expect(result.questionOrder).toEqual(["q1", "q2", "q3", "q4", "q5"]);
+    expect(result.snapshot?.sections).toHaveLength(2);
+    // No invented section for the feedback slide.
+  });
+
+  test("empty sections still appear in the snapshot with no questions", () => {
+    const result = buildSessionSnapshot("categorized", sections, [
+      q("q1", 0, { section_id: "s1" }),
+    ]);
+    expect(result.snapshot?.sections).toHaveLength(2);
+    expect(result.snapshot?.sections[1].question_ids).toEqual([]);
+  });
+
+  test("questions within a section order by position then id", () => {
+    const result = buildSessionSnapshot("categorized", sections, [
+      q("q2", 1, { section_id: "s1" }),
+      q("q1", 0, { section_id: "s1" }),
+    ]);
+    expect(result.snapshot?.sections[0].question_ids).toEqual(["q1", "q2"]);
   });
 });

@@ -1,11 +1,19 @@
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import type { Json } from "@/integrations/supabase/types";
 import { HostShell } from "@/components/host-shell";
 import { useHostStatus } from "@/hooks/use-host-status";
 import { generateGameCode, seededShuffle } from "@/lib/game";
 import { toastError, toastHostAccessError, safeErrorMessage } from "@/lib/errors";
-import { type QuizSection, validateQuizSections } from "@/lib/quiz/sections";
+import {
+  type QuizSection,
+  type SectionableQuestion,
+  type SessionSnapshot,
+  buildSessionSnapshot,
+  isQuestionFlow,
+  validateQuizSections,
+} from "@/lib/quiz/sections";
 import { toast } from "sonner";
 import { HostAuthorizationCard } from "@/components/HostAuthorizationCard";
 import { EmptyState, SkeletonList } from "@/components/EmptyState";
@@ -24,13 +32,6 @@ type Quiz = {
 };
 type League = { id: string; name: string };
 type BrandingLite = { id: string; organization_name: string };
-/** The minimum a question row needs to be checked against the section rules. */
-type PlayableForGate = {
-  id: string;
-  position: number;
-  question_type: string;
-  section_id: string | null;
-};
 
 function Dashboard() {
   const {
@@ -98,44 +99,6 @@ function Dashboard() {
     load(); /* eslint-disable-next-line */
   }, [user?.id]);
 
-  /**
-   * Blocks starting a CATEGORIZED quiz that cannot be grouped cleanly.
-   *
-   * Returns null — i.e. allows the start — for every standard quiz, and for any
-   * quiz on a database where the Phase 12 columns do not exist yet. That is
-   * what keeps existing quizzes starting exactly as they always have.
-   *
-   * The rules themselves live in src/lib/quiz/sections.ts so the editor's
-   * "ready to play" panel and this gate can never disagree.
-   */
-  async function categorizedStartBlock(
-    quizId: string,
-    playable: PlayableForGate[],
-  ): Promise<string | null> {
-    const { data: quizRow, error: quizErr } = await supabase
-      .from("quizzes")
-      .select("question_flow")
-      .eq("id", quizId)
-      .maybeSingle();
-    const flow = (quizRow as { question_flow?: string } | null)?.question_flow;
-    if (quizErr || flow !== "categorized") return null;
-
-    const { data: sectionRows, error: sectionErr } = await supabase
-      .from("quiz_sections")
-      .select("id,quiz_id,title,position,created_at")
-      .eq("quiz_id", quizId);
-    if (sectionErr) {
-      return `This quiz is categorized but its sections could not be loaded — ${safeErrorMessage(sectionErr)}`;
-    }
-
-    const validation = validateQuizSections({
-      flow: "categorized",
-      sections: (sectionRows as QuizSection[] | null) ?? [],
-      questions: playable.map((q) => ({ ...q, is_playable: true })),
-    });
-    return validation.ok ? null : validation.errors[0].message;
-  }
-
   async function startSession(
     quizId: string,
     opts: { teamMode: boolean; leagueId: string | null; brandingProfileId: string | null },
@@ -150,33 +113,72 @@ function Dashboard() {
     }
     setCreatingId(quizId);
     // Only playable questions enter the frozen session order; excluded ones stay stored in the quiz.
-    // `position`, `question_type` and `section_id` are read for the
-    // categorized-quiz gate below only — the order built here is unchanged.
-    const { data: qs } = await supabase
+    const { data: qs, error: qsErr } = await supabase
       .from("questions")
       .select("id,position,question_type,section_id")
       .eq("quiz_id", quizId)
       .eq("is_playable", true)
       .order("position");
-    if (!qs || qs.length === 0) {
+    if (qsErr || !qs || qs.length === 0) {
       setCreatingId(null);
       toast.error("Nothing to play yet. Include at least one question before starting a game.");
       return;
     }
-    // A categorized quiz with ungrouped (or mis-referenced) questions is
-    // refused here rather than being silently flattened into an arbitrary
-    // order. Standard quizzes always pass.
-    const blocked = await categorizedStartBlock(quizId, qs as PlayableForGate[]);
-    if (blocked) {
+    // Read the quiz's authoring layout so flat and categorized quizzes are
+    // started differently. Absent or unrecognised values read as `flat`.
+    const { data: quizRow, error: quizErr } = await supabase
+      .from("quizzes")
+      .select("question_flow")
+      .eq("id", quizId)
+      .maybeSingle();
+    if (quizErr) {
       setCreatingId(null);
-      toast.error(blocked);
+      toastError(quizErr, { context: "start session" });
       return;
     }
+    const flow = isQuestionFlow(quizRow?.question_flow) ? quizRow.question_flow : "flat";
     const code = generateGameCode();
-    const order = seededShuffle(
-      qs.map((q) => q.id),
-      code,
-    );
+
+    let order: string[];
+    let presentationMode: "flat" | "categorized" = "flat";
+    let sectionSnapshot: SessionSnapshot | null = null;
+
+    if (flow === "categorized") {
+      // Load sections and validate before building anything, so an invalid
+      // categorized quiz is refused rather than silently flattened.
+      const { data: sectionRows, error: sectionErr } = await supabase
+        .from("quiz_sections")
+        .select("id,quiz_id,title,position,created_at")
+        .eq("quiz_id", quizId);
+      if (sectionErr) {
+        setCreatingId(null);
+        toastError(sectionErr, {
+          context: "start session",
+          fallback: "Could not load this quiz's sections.",
+        });
+        return;
+      }
+      const sections = (sectionRows as QuizSection[] | null) ?? [];
+      const validation = validateQuizSections({
+        flow: "categorized",
+        sections,
+        questions: qs as SectionableQuestion[],
+      });
+      if (!validation.ok) {
+        setCreatingId(null);
+        toast.error(validation.errors[0].message);
+        return;
+      }
+      const built = buildSessionSnapshot("categorized", sections, qs as SectionableQuestion[]);
+      order = built.questionOrder;
+      presentationMode = "categorized";
+      sectionSnapshot = built.snapshot ?? null;
+    } else {
+      // Flat quizzes keep the existing behaviour exactly: seeded shuffle of
+      // playable question ids, no snapshot, no new validation requirements.
+      order = seededShuffle(qs.map((q) => q.id), code);
+    }
+
     const { data, error } = await supabase
       .from("sessions")
       .insert({
@@ -187,6 +189,8 @@ function Dashboard() {
         league_id: opts.leagueId,
         branding_profile_id: opts.brandingProfileId,
         question_order: order,
+        presentation_mode: presentationMode,
+        section_snapshot: sectionSnapshot as unknown as Json | null,
       })
       .select("id")
       .single();

@@ -559,7 +559,9 @@ function QuizEditor() {
     // the order deterministic (position, then created_at, then id).
     const reranked = next.map((s, i) => ({ ...s, position: i }));
     setSections(reranked);
-    const changed = reranked.filter((s) => list.find((o) => o.id === s.id)?.position !== s.position);
+    const changed = reranked.filter(
+      (s) => list.find((o) => o.id === s.id)?.position !== s.position,
+    );
     const results = await Promise.all(
       changed.map((s) =>
         supabase.from("quiz_sections").update({ position: s.position }).eq("id", s.id),
@@ -1259,18 +1261,15 @@ function QuizEditor() {
     const baseHeader = CSV_TEMPLATE.split("\n")[0].split(",");
     const choiceTypes = ["mcq", "image_mcq", "image_reveal", "audio"];
     const maxOptions = questions.reduce(
-      (max, q) => (choiceTypes.includes(q.question_type) ? Math.max(max, q.options?.length ?? 0) : max),
+      (max, q) =>
+        choiceTypes.includes(q.question_type) ? Math.max(max, q.options?.length ?? 0) : max,
       0,
     );
     const extraOptionColumns = ["option_e", "option_f"].slice(
       0,
       Math.max(0, Math.min(6, maxOptions) - 4),
     );
-    const header = [
-      ...baseHeader.slice(0, 6),
-      ...extraOptionColumns,
-      ...baseHeader.slice(6),
-    ];
+    const header = [...baseHeader.slice(0, 6), ...extraOptionColumns, ...baseHeader.slice(6)];
     const optionColumns = 4 + extraOptionColumns.length;
 
     const typeToken: Record<string, string> = {
@@ -1301,9 +1300,8 @@ function QuizEditor() {
         const isOrdering = q.question_type === "ordering";
         const isText = q.question_type === "type";
         const opts = isChoice ? (q.options ?? []) : [];
-        const optionCells = Array.from(
-          { length: optionColumns },
-          (_, i) => csvEscape(opts[i] ?? ""),
+        const optionCells = Array.from({ length: optionColumns }, (_, i) =>
+          csvEscape(opts[i] ?? ""),
         );
         const correct = isChoice
           ? (letters[q.correct_index] ?? "")
@@ -1350,9 +1348,7 @@ function QuizEditor() {
         .replace(/^-+|-+$/g, "")
         .slice(0, 60) || "quiz";
     downloadBlob(`${slug}-questions.csv`, "text/csv", [header.join(","), ...rows].join("\n"));
-    toast.success(
-      `Exported ${questions.length} question${questions.length === 1 ? "" : "s"}`,
-    );
+    toast.success(`Exported ${questions.length} question${questions.length === 1 ? "" : "s"}`);
   }
 
   async function deleteQuiz() {
@@ -1635,15 +1631,11 @@ function QuizEditor() {
                   })}
                   {grouping.ungrouped && (
                     <div className="space-y-3">
-                      {renderGroupHeader(
-                        "Ungrouped",
-                        grouping.ungrouped.questions.length,
-                        "shock",
-                      )}
+                      {renderGroupHeader("Ungrouped", grouping.ungrouped.questions.length, "shock")}
                       <p className="font-mono text-[11px] text-foreground/50">
-                        These questions are not in any section. Included questions must be
-                        grouped before the quiz can start; feedback slides may stay ungrouped and
-                        play after the last section.
+                        These questions are not in any section. Included questions must be grouped
+                        before the quiz can start; feedback slides may stay ungrouped and play after
+                        the last section.
                       </p>
                       {grouping.ungrouped.questions.map(renderCard)}
                     </div>
@@ -2984,7 +2976,8 @@ function SectionValidationPanel({ validation }: { validation: SectionValidation 
   );
 }
 
-function CsvButton({ onImport }: { onImport: (text: string) => void }) {  return (
+function CsvButton({ onImport }: { onImport: (text: string) => void }) {
+  return (
     <label className="border border-border px-4 py-2.5 font-mono text-xs uppercase cursor-pointer hover:border-volt hover:text-volt">
       Import CSV
       <input

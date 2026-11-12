@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { toastError } from "@/lib/errors";
 import { QRCodeSVG } from "qrcode.react";
 import { QuestionIntro } from "@/components/QuestionIntro";
+import { SectionHeader } from "@/components/SectionHeader";
 import { getQuestionIntroTiming } from "@/lib/question-intro-timing";
 import { getServerAdjustedNow, syncServerClock } from "@/lib/server-clock";
 import { BrandBanner } from "@/components/BrandBanner";
@@ -24,6 +25,7 @@ import { useViewportWidth } from "@/hooks/use-viewport-width";
 import { displayJoinUrl, formatGameCode, joinUrlFor, lobbyLayout, MIN_QR_PX } from "@/lib/lobby-layout";
 import { gameState, playerCountShort } from "@/lib/terminology";
 import { getAnswerKind, getQuestionType } from "@/lib/question-registry";
+import type { SessionSnapshot } from "@/lib/quiz/sections";
 
 export const Route = createFileRoute("/host/$sessionId")({
   component: HostControl,
@@ -51,6 +53,8 @@ type Session = {
   paused_at: string | null;
   time_added_ms: number | null;
   skipped_question_ids: string[] | null;
+  presentation_mode: string | null;
+  section_snapshot: SessionSnapshot | null;
   quiz: { title: string; time_per_question: number } | null;
   branding_profile_id?: string | null;
 };
@@ -126,6 +130,10 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [confirmSkip, setConfirmSkip] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  // Section currently being shown via the SectionHeader banner. Derived from the
+  // authoritative session snapshot, so host and player stay in sync without a
+  // separate Realtime status.
+  const [shownSectionId, setShownSectionId] = useState<string | null>(null);
   // In-flight guard: a reconnect or an impatient double-tap must never fire the
   // same host control twice. Bounded by an 8-second hard timeout so a stuck RPC
   // (slow network at 50-player load, DB lock contention) cannot permanently
@@ -407,6 +415,27 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
     currentIndex >= 0 ? questions.find((q) => q.id === orderedIds[currentIndex]) : null;
   const totalRounds = orderedIds.length;
   const revealed = !!session?.current_question_revealed;
+
+  // Categorized presentation: the current section is derived exclusively from
+  // the immutable session snapshot + question_order, never from live quiz
+  // sections. Editing or deleting sections after session start cannot change
+  // this session's presentation.
+  const presentationMode = session?.presentation_mode ?? "flat";
+  const categorized = presentationMode === "categorized";
+  const snapshot = session?.section_snapshot ?? null;
+  const currentQid = currentIndex >= 0 && currentIndex < orderedIds.length ? orderedIds[currentIndex] : null;
+  const currentSection = categorized && snapshot && currentQid
+    ? (snapshot.sections as Array<{ id: string; title: string; question_ids: string[] }>).find((s) =>
+        s.question_ids.includes(currentQid),
+      )
+    : null;
+
+  // Detect entering a new section (banner shows once per section entry).
+  const enteringNewSection =
+    categorized && !!currentSection && shownSectionId !== currentSection.id;
+  if (enteringNewSection) {
+    setShownSectionId(currentSection.id);
+  }
 
   const quizDefaultSec = session?.quiz?.time_per_question ?? 20;
   const timeLimitSec = currentQuestion?.time_limit_sec ?? quizDefaultSec;
@@ -905,6 +934,9 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
               </div>
             )}
 
+            {enteringNewSection && currentSection && (
+              <SectionHeader title={currentSection.title} />
+            )}
             {session.status === "active" && currentQuestion && inIntro && (
               <QuestionIntro
                 variant="host"
