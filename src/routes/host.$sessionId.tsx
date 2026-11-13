@@ -138,10 +138,13 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [results, setResults] = useState<ServerSessionResults | null>(null);
   const [resultsLoading, setResultsLoading] = useState(false);
   const [resultsError, setResultsError] = useState<string | null>(null);
-  // Section currently being shown via the SectionHeader banner. Derived from the
-  // authoritative session snapshot, so host and player stay in sync without a
-  // separate Realtime status.
-  const [shownSectionId, setShownSectionId] = useState<string | null>(null);
+  // Section opener banner. `bannerSection` is the section whose banner is on
+  // screen; `announcedSectionId` remembers the last section we announced so the
+  // banner fires exactly once per section entry. Driven by an effect (never by
+  // setState during render) so the banner actually paints and persists for its
+  // dismiss duration instead of being discarded on the next render.
+  const [bannerSection, setBannerSection] = useState<{ id: string; title: string } | null>(null);
+  const announcedSectionId = useRef<string | null>(null);
   // In-flight guard: a reconnect or an impatient double-tap must never fire the
   // same host control twice. Bounded by an 8-second hard timeout so a stuck RPC
   // (slow network at 50-player load, DB lock contention) cannot permanently
@@ -469,12 +472,24 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       )
     : null;
 
-  // Detect entering a new section (banner shows once per section entry).
-  const enteringNewSection =
-    categorized && !!currentSection && shownSectionId !== currentSection.id;
-  if (enteringNewSection) {
-    setShownSectionId(currentSection.id);
-  }
+  // Announce each section exactly once, from an effect rather than during
+  // render. Announcing during render discarded the banner before it could
+  // paint, which is why the opener never appeared.
+  const sectionId = currentSection?.id ?? null;
+  const sectionTitle = currentSection?.title ?? null;
+  useEffect(() => {
+    if (!categorized || !sectionId || !sectionTitle) return;
+    if (announcedSectionId.current === sectionId) return;
+    announcedSectionId.current = sectionId;
+    setBannerSection({ id: sectionId, title: sectionTitle });
+  }, [categorized, sectionId, sectionTitle]);
+
+  // Auto-dismiss the banner after the question intro has had time to be read.
+  useEffect(() => {
+    if (!bannerSection) return;
+    const t = setTimeout(() => setBannerSection(null), 3200);
+    return () => clearTimeout(t);
+  }, [bannerSection]);
 
   const quizDefaultSec = session?.quiz?.time_per_question ?? 20;
   const timeLimitSec = currentQuestion?.time_limit_sec ?? quizDefaultSec;
@@ -973,8 +988,8 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
               </div>
             )}
 
-            {enteringNewSection && currentSection && (
-              <SectionHeader title={currentSection.title} />
+            {bannerSection && (
+              <SectionHeader key={bannerSection.id} title={bannerSection.title} />
             )}
             {session.status === "active" && currentQuestion && inIntro && (
               <QuestionIntro

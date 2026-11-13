@@ -206,9 +206,13 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const answeredQuestionId = useRef<string | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
   const [soundOn, setSoundOn] = useState(() => !isSoundMuted());
-  // Section currently being shown via the SectionHeader banner. Derived from the
-  // authoritative session snapshot, so host and player stay in sync.
-  const [shownSectionId, setShownSectionId] = useState<string | null>(null);
+  // Section opener banner. `bannerSection` is the section whose banner is on
+  // screen; `announcedSectionId` remembers the last section we announced so the
+  // banner fires exactly once per section entry. Driven by an effect so the
+  // banner stays mounted for its dismiss duration instead of flashing for a
+  // single render.
+  const [bannerSection, setBannerSection] = useState<{ id: string; title: string } | null>(null);
+  const announcedSectionId = useRef<string | null>(null);
 
   // AudioContext must be created/resumed after a user gesture (autoplay policy).
   useEffect(() => {
@@ -455,15 +459,23 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
       )
     : null;
 
-  // Detect entering a new section (banner shows once per section entry).
-  const enteringNewSection = categorized && !!currentSection && shownSectionId !== currentSection.id;
+  // Announce each section exactly once, from an effect rather than deriving it
+  // inline: deriving it flipped the flag back to false on the next render and
+  // unmounted the banner before its own 3s timer could run.
+  const sectionId = currentSection?.id ?? null;
+  const sectionTitle = currentSection?.title ?? null;
   useEffect(() => {
-    if (enteringNewSection && currentSection) {
-      setShownSectionId(currentSection.id);
-    }
-  }, [enteringNewSection, currentSection?.id]);
+    if (!categorized || !sectionId || !sectionTitle) return;
+    if (announcedSectionId.current === sectionId) return;
+    announcedSectionId.current = sectionId;
+    setBannerSection({ id: sectionId, title: sectionTitle });
+  }, [categorized, sectionId, sectionTitle]);
 
-  const sectionBanner = enteringNewSection ? currentSection : null;
+  useEffect(() => {
+    if (!bannerSection) return;
+    const t = setTimeout(() => setBannerSection(null), 3200);
+    return () => clearTimeout(t);
+  }, [bannerSection]);
   const myCurrentAnswer = currentQId ? myAnswers.find((a) => a.question_id === currentQId) : null;
   const hasAnswered = !!myCurrentAnswer || selectedIndex !== null;
 
@@ -832,7 +844,7 @@ function PlayScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
           />
         )}
 
-        {sectionBanner && <SectionHeader title={sectionBanner.title} />}
+        {bannerSection && <SectionHeader key={bannerSection.id} title={bannerSection.title} />}
 
         {session.status === "active" && currentQuestion && inIntro && (
           <QuestionIntro
