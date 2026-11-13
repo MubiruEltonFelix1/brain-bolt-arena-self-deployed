@@ -25,7 +25,10 @@ import { useViewportWidth } from "@/hooks/use-viewport-width";
 import { displayJoinUrl, formatGameCode, joinUrlFor, lobbyLayout, MIN_QR_PX } from "@/lib/lobby-layout";
 import { gameState, playerCountShort } from "@/lib/terminology";
 import { getAnswerKind, getQuestionType } from "@/lib/question-registry";
+import { getSessionResults } from "@/lib/api/results.functions";
+import type { SessionResults as ServerSessionResults } from "@/lib/api/results.functions";
 import type { SessionSnapshot } from "@/lib/quiz/sections";
+import { SectionResults } from "@/components/host/SectionResults";
 
 export const Route = createFileRoute("/host/$sessionId")({
   component: HostControl,
@@ -130,6 +133,11 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   const [confirmSkip, setConfirmSkip] = useState(false);
   const [moreOpen, setMoreOpen] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  // Completed-session section results, fetched once when the session ends.
+  // Authorized hosts only: `getSessionResults` enforces host ownership server-side.
+  const [results, setResults] = useState<ServerSessionResults | null>(null);
+  const [resultsLoading, setResultsLoading] = useState(false);
+  const [resultsError, setResultsError] = useState<string | null>(null);
   // Section currently being shown via the SectionHeader banner. Derived from the
   // authoritative session snapshot, so host and player stay in sync without a
   // separate Realtime status.
@@ -283,6 +291,37 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
   useEffect(() => {
     void load();
   }, [load]);
+
+  // Fetch completed-session section results once the session ends. Authorized
+  // hosts only; `getSessionResults` enforces host ownership server-side.
+  useEffect(() => {
+    if (session?.status === "ended" && session?.id && !results && !resultsError) {
+      void fetchResults();
+    }
+  }, [session?.status, session?.id, results, resultsError]);
+
+  async function fetchResults() {
+    const id = session?.id;
+    if (!id) return;
+    setResultsLoading(true);
+    setResultsError(null);
+    try {
+      const data = await getSessionResults({ data: { sessionId: id } });
+      if (data.error === "not_authorized") {
+        setResultsError("not_authorized");
+      } else if (data.error === "not_found") {
+        setResultsError("not_found");
+      } else if (data.error === "query_failed") {
+        setResultsError("query_failed");
+      } else {
+        setResults(data);
+      }
+    } catch {
+      setResultsError("query_failed");
+    } finally {
+      setResultsLoading(false);
+    }
+  }
 
   // Realtime emits one row event per participant; coalesce bursts into a
   // single authoritative refetch instead of one round-trip per row.
@@ -1099,6 +1138,31 @@ function HostScreen({ onConn }: { onConn: (c: ConnInfo) => void }) {
                 </div>
                 <Podium participants={participants} />
                 <FinalReview questions={questions} orderedIds={orderedIds} />
+                {resultsError === "not_authorized" ? (
+                  <div className="border border-border p-4 rounded-md bg-background/40 text-center">
+                    <p className="font-mono text-xs uppercase text-foreground/60">Results restricted</p>
+                    <p className="font-mono text-sm text-foreground">
+                      Only the session host can view detailed results.
+                    </p>
+                  </div>
+                ) : (
+                  <>
+                    {resultsLoading ? (
+                      <p className="font-mono text-xs text-foreground/50 text-center">Loading results…</p>
+                    ) : resultsError ? (
+                      <p className="font-mono text-xs text-pink-shock text-center">
+                        Couldn't load section results.
+                      </p>
+                    ) : results ? (
+                      <SectionResults
+                        sections={results.sections}
+                        participantSections={results.participantSections}
+                        questions={results.questions}
+                        participants={participants}
+                      />
+                    ) : null}
+                  </>
+                )}
               </div>
             )}
           </div>
